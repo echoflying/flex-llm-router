@@ -19,7 +19,7 @@ links:                         # 旧版 connections 的兼容别名
 
 旧配置中的 `pools` 会在加载时迁移为 `runners`，旧 `connections` 会迁移为 `links`；旧 API 地址继续保留。新 UI/API 只把 Runner 作为主要资源展示，旧字段仅用于兼容。
 
-Provider 下拉和 Model 候选接口只读取已配置的 Provider/Channel，不执行周期性主动健康检查。Channel 状态仅在加入 Runner、真实流量或上游故障时更新。
+Provider 下拉和 Model 候选接口默认只读取已配置的 Provider/Channel；用户点击 Model 测试/刷新时，才会用该 Provider 的凭据显式请求一次 `/models`，不执行周期性主动健康检查。Channel 状态仅在加入 Runner、真实流量或上游故障时更新。
 
 ## Config 三标签页
 

@@ -95,7 +95,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | GET | `/api/runners` | Canonical Runner list |
 | GET | `/api/runners/{name}/channels` | Runner Channel metrics |
 | GET | `/api/providers` | Provider list and configured model counts |
-| GET | `/api/providers/{provider}/models` | Configured model candidates (`?refresh=1` is an explicit UI refresh marker; no active probe) |
+| GET | `/api/providers/{provider}/models` | Configured candidates; `?refresh=1` explicitly queries that Provider's `/models` endpoint (no periodic probe) |
 | GET | `/api/config/editor` | Config editor data (Runner/Channel/Provider env names; no secrets) |
 | POST | `/api/config/runners/{name}` | Edit Runner membership/order and public model |
 | POST | `/api/config/channels/{id}` | Edit Channel and external exposure toggle |

@@ -7,7 +7,7 @@ import urllib.error,urllib.request
 import litellm,yaml
 from fastapi import FastAPI,HTTPException,Request
 from fastapi.responses import HTMLResponse,JSONResponse,StreamingResponse
-from flex_llm_router.config import FlexConfig,channel_credentials,load_config
+from flex_llm_router.config import FlexConfig,channel_credentials,load_config,validate_runner_name
 from flex_llm_router.scheduler import RoundRobinScheduler
 from flex_llm_router.state import StateStore
 logger=logging.getLogger('uvicorn.error')
@@ -578,6 +578,10 @@ def create_app(config_path:str|Path):
             channels=[body.get('channel')]
         if not name or not public_model:
             raise HTTPException(400,'name is required')
+        try:
+            validate_runner_name(name)
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
         if not isinstance(channels,list) or not channels:
             raise HTTPException(400,'select at least one Channel')
         channels=[str(channel).strip() for channel in channels if str(channel).strip()]

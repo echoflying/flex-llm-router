@@ -1,4 +1,17 @@
-from flex_llm_router.config import Channel, FlexConfig, Limits, Pool, Runner
+import pytest
+
+from flex_llm_router.config import Channel, FlexConfig, Limits, Pool, Runner, validate_runner_name
+
+
+@pytest.mark.parametrize('name', ['coder', 'mix-deepseek-v4-flash', 'runner.v2', 'runner_2'])
+def test_runner_name_accepts_url_safe_identifiers(name):
+    assert validate_runner_name(name) == name
+
+
+@pytest.mark.parametrize('name', ['', ' coder', 'coder name', '/coder', 'coder/slash', '-coder', 'a' * 65])
+def test_runner_name_rejects_spaces_and_unsafe_characters(name):
+    with pytest.raises(ValueError):
+        validate_runner_name(name)
 
 
 def _channel(channel_id='c1'):

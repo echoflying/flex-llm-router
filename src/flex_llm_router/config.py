@@ -1,10 +1,27 @@
 """Configuration loading for Flex's policy-owned pool definitions."""
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+RUNNER_NAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+
+
+def validate_runner_name(value: str) -> str:
+    """Validate the internal Runner key used by API paths and config maps.
+
+    Keep names URL/client safe: ASCII letters/digits plus ``.``, ``_`` and
+    ``-``; no whitespace, slashes, or other punctuation; max 64 characters.
+    Existing YAML is still loaded for compatibility, while newly created
+    Runners are required to follow this rule.
+    """
+    name = str(value or '').strip()
+    if not RUNNER_NAME_PATTERN.fullmatch(name):
+        raise ValueError('Runner 名称只能包含字母、数字、点、下划线和连字符，且必须以字母或数字开头（最多 64 个字符）')
+    return name
 
 class Limits(BaseModel):
     # ① 自我流控（本地闸门，不依赖上游报错）

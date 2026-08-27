@@ -46,6 +46,9 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert 'runner-channel-modal' in text
     assert 'runner-channel-pane' in text and 'runner-summary' in text
     assert 'runner-mode-row' in text and 'runner-copy-row' in text
+    assert 'Base URL 选择：' in text
+    assert 'name="runner_name"' in text and 'autocomplete="off"' in text
+    assert '不支持空格和斜杠' in text
     assert 'remove-channel' in text and 'runner-add' in text
     assert 'runner-save' not in text
     assert '立即保存并参与调度' in text

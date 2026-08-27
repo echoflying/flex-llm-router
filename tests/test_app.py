@@ -44,6 +44,7 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert '上移' in text and '下移' in text
     assert 'runner-strategy-info' in text
     assert 'runner-channel-modal' in text
+    assert 'runner-channel-pane' in text and 'runner-summary' in text
     assert 'name="strategy"' in text and 'type="radio"' in text
     assert 'Provider 在前' in text
 

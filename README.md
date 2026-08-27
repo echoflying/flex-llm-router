@@ -66,7 +66,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 
 - **Scheduler**: round-robin with quota-pacing priority over fallback-only
 - **Limits**: learned safe RPM/TPM, 429 classification, exponential backoff
-- **Config**: `config/pools.yaml` — pools, channels, limits, routing policy
+- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy
 - **State file**: `data/flex.db` (SQLite, `.gitignore`d)
 
 ## Endpoints

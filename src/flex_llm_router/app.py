@@ -822,7 +822,12 @@ def create_app(config_path:str|Path):
                     'data':[]}
         url=base if base.endswith('/models') else base+'/models'
         def fetch_models():
-            req=urllib.request.Request(url,headers={'Authorization':f'Bearer {key}','Accept':'application/json'})
+            # OpenCode's edge rejects Python's default ``urllib`` user agent
+            # (HTTP 403/Cloudflare 1010).  Identify this explicit model-list
+            # probe while keeping the API key confined to the Authorization header.
+            req=urllib.request.Request(url,headers={'Authorization':f'Bearer {key}',
+                                                     'Accept':'application/json',
+                                                     'User-Agent':'flex-router-model-test/1.0'})
             with urllib.request.urlopen(req,timeout=12) as response:
                 return json.loads(response.read().decode('utf-8'))
         try:

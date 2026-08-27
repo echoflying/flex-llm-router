@@ -452,7 +452,11 @@ def create_app(config_path:str|Path):
                                  'last_used_at':state.last_used_at(ch.id)})
             runners.append({'name':name,'public_model':pool.public_model,'base_url':base_url,
                           'lan_url':lan_url,'channels':channels,'strategy_key':strategy_key,
-                          'strategy_name':strategy_name,'strategy_detail':strategy_detail})
+                          'strategy_name':strategy_name,'strategy_detail':strategy_detail,
+                          # Preserve the full selection object so a UI edit of
+                          # only the strategy does not discard hedge/fallback
+                          # settings that are not exposed as form fields.
+                          'selection':selection})
         # CHANNEL 与 POOL 平等: 所有定义的 channel 都列出(外部可直接引用), 不论是否挂 pool.
         # mounted_in 标它属于哪些 pool (仅参考, 不降级).
         channels_all=[]

@@ -32,6 +32,26 @@ def test_config_page_shows_raw_yaml(tmp_config):
     assert '<pre><code>' in r.text
 
 
+def test_config_page_has_three_resource_tabs_in_order(tmp_config):
+    client = TestClient(create_app(tmp_config))
+    text = client.get('/config').text
+    assert 'data-tab="runner">Runner' in text
+    assert 'data-tab="channel">Channel' in text
+    assert 'data-tab="model">Model' in text
+    assert text.index('data-tab="runner"') < text.index('data-tab="channel"') < text.index('data-tab="model"')
+
+
+def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeypatch):
+    monkeypatch.setenv('SENSENOVA_API_KEY', 'do-not-return-this')
+    client = TestClient(create_app(tmp_config))
+    r = client.get('/api/config/editor')
+    assert r.status_code == 200
+    data = r.json()
+    provider = next(p for p in data['providers'] if p['id'] == 'sensenova')
+    assert provider['api_key_env'] == 'SENSENOVA_API_KEY'
+    assert 'do-not-return-this' not in r.text
+
+
 def test_setup_page_shows_env_vars_and_nav(tmp_config):
     client = TestClient(create_app(tmp_config))
     r = client.get('/setup')

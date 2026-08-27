@@ -48,3 +48,18 @@ def test_provider_models_are_deduplicated():
         'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
     })
     assert [m['public_model'] for m in cfg.provider_models('demo')] == ['demo-model', 'demo-model-2']
+
+
+def test_channel_external_exposure_defaults_true_and_alias_is_supported():
+    hidden = _channel('hidden')
+    hidden_data = hidden.model_dump()
+    hidden_data.pop('externally_exposed')
+    hidden_data['exposed'] = False
+    cfg = FlexConfig.model_validate({
+        'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+        'channels': {'hidden': hidden_data,
+                     'visible': _channel('visible').model_dump()},
+        'runners': {'coder': {'channels': ['hidden'], 'tiers': {'hidden': 0}}},
+    })
+    assert cfg.channels['hidden'].externally_exposed is False
+    assert cfg.channels['visible'].externally_exposed is True

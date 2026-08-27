@@ -17,6 +17,7 @@ channels:
   sensenova-deepseek-v4-flash:
     id: sensenova-deepseek-v4-flash
     provider: sensenova
+    externally_exposed: true
     public_model: sensenova-deepseek-v4-flash
     litellm_model: openai/deepseek-v4-flash
     context_window_tokens: 1000000
@@ -40,6 +41,7 @@ channels:
   opencode-go-deepseek-v4-flash:
     id: opencode-go-deepseek-v4-flash
     provider: opencode-go
+    externally_exposed: true
     public_model: opencode-go-deepseek-v4-flash
     litellm_model: openai/deepseek-v4-flash
     context_window_tokens: 1000000
@@ -63,6 +65,7 @@ channels:
   deepseek-official-deepseek-v4-flash:
     id: deepseek-official-deepseek-v4-flash
     provider: deepseek-official
+    externally_exposed: true
     public_model: deepseek-official-deepseek-v4-flash
     litellm_model: openai/deepseek-v4-flash
     context_window_tokens: 1000000
@@ -86,6 +89,7 @@ channels:
   agnes-flash:
     id: agnes-flash
     provider: agnes-official
+    externally_exposed: true
     public_model: agnes-flash
     litellm_model: openai/agnes-2.5-flash
     context_window_tokens: 200000
@@ -108,6 +112,7 @@ channels:
   sensenova-flash-lite:
     id: sensenova-flash-lite
     provider: sensenova
+    externally_exposed: true
     public_model: sensenova-flash-lite
     litellm_model: openai/sensenova-6.8-flash-lite
     context_window_tokens: 1000000

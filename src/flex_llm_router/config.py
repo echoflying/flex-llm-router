@@ -38,6 +38,10 @@ class Channel(BaseModel):
     """A Channel is a specific provider/model instance with capabilities and limits."""
     id: str
     enabled: bool = True
+    # Direct exposure controls whether this Channel is advertised as an
+    # external model in /v1/models.  A hidden Channel may still be selected
+    # internally by a Runner; this is deliberately separate from ``enabled``.
+    externally_exposed: bool = True
     provider: str  # references providers.xxx
     litellm_model: str
     public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.
@@ -48,6 +52,19 @@ class Channel(BaseModel):
     # 成本排位由所属 POOL 的 tiers 显式定义，不在 Channel 上重复配置。
     limits: Limits = Field(default_factory=Limits)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_exposure_aliases(cls, value):
+        """Accept the short legacy/editor aliases while storing one spelling."""
+        if isinstance(value, dict):
+            value = dict(value)
+            if 'externally_exposed' not in value:
+                for alias in ('external_exposed', 'exposed', 'external'):
+                    if alias in value:
+                        value['externally_exposed'] = value[alias]
+                        break
+        return value
 
     @field_validator('id')
     @classmethod

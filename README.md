@@ -33,16 +33,18 @@ when a code or configuration change should take effect.
 | Path | Description |
 |---|---|
 | `/` | **Dashboard** — Runner/Channel 状态、调用指标与快速操作 |
-| `/config` | **YAML editor** — read/write `config/pools.yaml` with schema validation |
+| `/config` | **Config** — Runner、Channel、Model 三标签页，结构化编辑并校验 `config/pools.yaml` |
 | `/setup` | **Environment vars** — .env vs system ENV, Override toggle |
 | `/help` | **Hermes connection** — copy-paste provider URL into Hermes config |
 
 ### Config editor
 
-Edit `config/pools.yaml` in the browser. Save runs schema validation
-(`FlexConfig.model_validate`) before writing. Invalid YAML is rejected with
-error detail. A `.bak` backup is created before overwrite. The running core is
-not restarted automatically; restart it manually after reviewing the change.
+`/config` 固定按 Runner → Channel → Model 显示三个标签页。Runner 编辑
+成员和顺序；Channel 编辑 Provider、LiteLLM model、启用及
+`externally_exposed`；Model 编辑 Provider 的 `.env` 变量名引用，不显示
+密钥值。结构化保存先运行 `FlexConfig.model_validate`，成功后创建 `.bak`
+并热更新进程内配置，不自动重启核心。旧的 `/api/config` 原文校验保存接口
+仍兼容保留。
 
 ### Setup / Override
 
@@ -94,6 +96,10 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | GET | `/api/runners/{name}/channels` | Runner Channel metrics |
 | GET | `/api/providers` | Provider list and configured model counts |
 | GET | `/api/providers/{provider}/models` | Configured model candidates (`?refresh=1` is an explicit UI refresh marker; no active probe) |
+| GET | `/api/config/editor` | Config editor data (Runner/Channel/Provider env names; no secrets) |
+| POST | `/api/config/runners/{name}` | Edit Runner membership/order and public model |
+| POST | `/api/config/channels/{id}` | Edit Channel and external exposure toggle |
+| POST/DELETE | `/api/config/providers[/{name}]` | Add/update or remove an unreferenced Provider |
 | GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |
 | GET | `/api/requests` | Recent attempt log |
 | GET | `/api/traces` | Trace list |

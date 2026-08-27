@@ -8,6 +8,7 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 - **Provider**：配置 URL/API Key 的环境变量名，密钥不落 YAML。
 - **Channel**：恰好一个 Provider + 一个 LiteLLM Model，附带能力、上下文窗口、限额和重试参数。
+- Channel 的 `externally_exposed` 控制是否作为独立模型出现在 `/v1/models`；关闭时仍可作为 Runner 的内部候选。
 - **Runner**：稳定的外部模型名，包含一个或多个 Channel，并复用原 Pool 的策略字段。
 - **links**：兼容旧客户端名称的别名映射；旧 `pools`/`connections` 在加载时一次迁移为 Runner/links。
 

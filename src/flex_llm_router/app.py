@@ -354,7 +354,12 @@ def create_app(config_path:str|Path):
             if pool.public_model == reference:
                 return internal, pool, None
         if reference in config.channels:
-            return reference, None, config.channels[reference]
+            channel=config.channels[reference]
+            # Hidden Channels remain valid Runner members but cannot be used
+            # as a direct external model reference.
+            if not channel.enabled or not channel.externally_exposed:
+                return None, None, None
+            return reference, None, channel
         return None, None, None
     @app.get('/',response_class=HTMLResponse)
     async def dashboard():
@@ -439,7 +444,10 @@ def create_app(config_path:str|Path):
                 real_base=os.getenv(prov.base_url_env,'').strip() or '(unset)'
                 channels.append({'id':ch.id,'provider':ch.provider,'model':ext_model,
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
-                                 'base_url':base_url,'tier':pool.tiers.get(ch_id)})
+                                 'base_url':base_url,'tier':pool.tiers.get(ch_id),
+                                 'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
+                                 'context_window_tokens':ch.context_window_tokens,
+                                 'capabilities':list(ch.capabilities)})
             runners.append({'name':name,'public_model':pool.public_model,'base_url':base_url,
                           'lan_url':lan_url,'channels':channels,'strategy_key':strategy_key,
                           'strategy_name':strategy_name,'strategy_detail':strategy_detail})
@@ -457,7 +465,10 @@ def create_app(config_path:str|Path):
             mounted=[pn for pn,p in config.runners.items() if ch_id in p.channels]
             channels_all.append({'id':ch.id,'provider':ch.provider,'model':config.external_channel_model(ch),
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
-                                 'base_url':base_url,'tier':None,'mounted_in':mounted})
+                                 'base_url':base_url,'tier':None,'mounted_in':mounted,
+                                 'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
+                                 'context_window_tokens':ch.context_window_tokens,
+                                 'capabilities':list(ch.capabilities)})
         # 连接: 逐个解析出目标类型与真实通道, 供 CONFIG 页"拷贝给其他系统"区块展示
         connections=[]
         for name, target in config.links.items():
@@ -476,9 +487,13 @@ def create_app(config_path:str|Path):
                 ctype = 'unknown'
                 chs = []
             connections.append({'name':name,'target':target,'type':ctype,'channels':chs})
+        providers=[{'id':name,'base_url_env':provider.base_url_env,
+                    'api_key_env':provider.api_key_env,
+                    'model_count':len(config.provider_models(name))}
+                   for name,provider in config.providers.items()]
         return {'base_url':base_url,'lan_url':lan_url,'runners':runners,
                 'pools':runners,'channels':channels_all,'connections':connections,
-                'links':connections}
+                'links':connections,'providers':providers}
 
     @app.get('/config',response_class=HTMLResponse)
     async def config_page():
@@ -492,32 +507,116 @@ def create_app(config_path:str|Path):
         try:
             parsed=yaml.safe_load(raw)
             if not isinstance(parsed,dict):raise ValueError('config must be a mapping')
-            cfg=FlexConfig.model_validate(parsed)
         except Exception as e:
             raise HTTPException(400,f'invalid config: {e}') from e
-        missing_env=[]  # 缺失的 .env 变量名(去重)
-        missing_refs=[]  # 哪个 channel 引用了它
-        for ch_id, ch in cfg.channels.items():
-            if not ch.enabled:
-                continue
-            prov = cfg.providers.get(ch.provider)
+        try:
+            backup=persist_config_mapping(parsed, raw)
+        except Exception as e:
+            raise HTTPException(400,f'invalid config: {e}') from e
+        return {'status':'saved','config':True,'backup':str(backup)}
+
+    def persist_config_mapping(mapping:dict, raw_text:str|None=None):
+        """Validate, persist, and hot-apply a structured Config edit.
+
+        Secrets never enter this path: Provider records contain only .env
+        variable names.  ``config`` is replaced after the atomic validation so
+        schedulers and read APIs see the new definition without a core restart.
+        """
+        nonlocal config
+        cfg=FlexConfig.model_validate(mapping)
+        missing_env=[]; missing_refs=[]
+        for ch_id,ch in cfg.channels.items():
+            if not ch.enabled: continue
+            prov=cfg.providers.get(ch.provider)
             if prov is None:
-                missing_refs.append(f'{ch_id}: provider {ch.provider!r} not found')
-                continue
-            for env_name in (prov.base_url_env, prov.api_key_env):
+                missing_refs.append(f'{ch_id}: provider {ch.provider!r} not found'); continue
+            for env_name in (prov.base_url_env,prov.api_key_env):
                 if not os.getenv(env_name,'').strip():
-                    if env_name not in missing_env:
-                        missing_env.append(env_name)
+                    if env_name not in missing_env: missing_env.append(env_name)
                     missing_refs.append(f'{ch_id} -> {env_name}')
         if missing_env:
-            detail=('missing environment variable(s) in .env: ' + ', '.join(missing_env) +
-                    '. Please set them in your .env file. Referenced by: ' + '; '.join(missing_refs))
-            raise HTTPException(400, detail)
+            raise ValueError('missing environment variable(s) in .env: '+', '.join(missing_env)+
+                             '. Please set them in your .env file. Referenced by: '+'; '.join(missing_refs))
+        if raw_text is None:
+            raw_text=yaml.safe_dump(mapping,sort_keys=False,allow_unicode=True)
         backup=config_path_resolved.parent/(config_path_resolved.name+'.bak')
         backup.write_text(config_path_resolved.read_text(encoding='utf-8'),encoding='utf-8')
-        config_path_resolved.write_text(raw,encoding='utf-8')
-        logger.warning('config saved backup=%s',backup)
-        return {'status':'saved','backup':str(backup)}
+        config_path_resolved.write_text(raw_text,encoding='utf-8')
+        config=cfg
+        logger.warning('config saved backup=%s (hot-applied)',backup)
+        return backup
+
+    async def structured_config_error(exc):
+        raise HTTPException(400,f'invalid config edit: {exc}') from exc
+
+    @app.get('/api/config/editor')
+    async def config_editor():
+        """Return editable Runner/Channel/Model records without secret values."""
+        view=await config_view()
+        return view
+
+    @app.post('/api/config/runners/{name}')
+    async def edit_runner(name:str, request:Request):
+        if name not in config.runners: raise HTTPException(404,'unknown runner')
+        body=await request.json()
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        runners=mapping.setdefault('runners',{})
+        current=dict(runners.get(name) or {})
+        for key in ('public_model','selection','context_policy','session_affinity'):
+            if key in body: current[key]=body[key]
+        if 'channels' in body:
+            if not isinstance(body['channels'],list) or not body['channels']:
+                raise HTTPException(400,'channels must be a non-empty list')
+            current['channels']=body['channels']
+            # Keep the Pool/Runner tier map valid when membership is edited in
+            # the UI.  Existing tier values are retained; new Channels join
+            # the last configured tier (or tier 0 for an empty map).
+            old_tiers=current.get('tiers') if isinstance(current.get('tiers'),dict) else {}
+            default_tier=max([int(v) for v in old_tiers.values() if isinstance(v,int)] or [0])
+            current['tiers']={cid:old_tiers.get(cid,default_tier) for cid in body['channels']}
+        if 'tiers' in body: current['tiers']=body['tiers']
+        runners[name]=current
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','runner':name,'backup':str(backup)}
+
+    @app.post('/api/config/channels/{channel_id}')
+    async def edit_channel(channel_id:str, request:Request):
+        if channel_id not in config.channels: raise HTTPException(404,'unknown channel')
+        body=await request.json()
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
+        allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
+                 'context_window_tokens','capabilities','supported_params','limits','retry_policy')
+        for key in allowed:
+            if key in body: current[key]=body[key]
+        channels[channel_id]=current
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','channel':channel_id,'backup':str(backup)}
+
+    @app.post('/api/config/providers')
+    async def edit_provider(request:Request):
+        body=await request.json(); name=str(body.get('id') or body.get('name') or '').strip()
+        if not name: raise HTTPException(400,'provider id is required')
+        base=str(body.get('base_url_env') or '').strip(); key=str(body.get('api_key_env') or '').strip()
+        if not base or not key: raise HTTPException(400,'base_url_env and api_key_env are required')
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        mapping.setdefault('providers',{})[name]={'base_url_env':base,'api_key_env':key}
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','provider':name,'backup':str(backup)}
+
+    @app.delete('/api/config/providers/{name}')
+    async def delete_provider(name:str):
+        if name not in config.providers: raise HTTPException(404,'unknown provider')
+        if any(ch.provider==name for ch in config.channels.values()):
+            raise HTTPException(409,'provider is still referenced by a Channel')
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8') or '{}')
+        mapping.get('providers',{}).pop(name,None)
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'deleted','provider':name,'backup':str(backup)}
     @app.get('/setup',response_class=HTMLResponse)
     async def setup_page():
         env_path=config_path_resolved.parent.parent/'.env'
@@ -676,11 +775,15 @@ def create_app(config_path:str|Path):
         # legacy Link names remain listed so existing clients keep working.
         data_list = config.runner_models()
         # Also include direct channels
-        data_list += [{'id':ch.id,'object':'model','owned_by':ch.provider} for ch in config.channels.values()]
+        data_list += [{'id':ch.id,'object':'model','owned_by':ch.provider}
+                      for ch in config.channels.values()
+                      if ch.enabled and ch.externally_exposed]
         # 连接: 暴露为独立 model 名(指向已解析的 pool/channel), 外部系统可直接引用;
         # 附带 target 便于前端标注"连接 -> 目标"
         data_list += [{'id':name,'object':'model','owned_by':'flex-connection','target':target}
-                      for name, target in config.links.items()]
+                      for name, target in config.links.items()
+                      if target not in config.channels or
+                         (config.channels[target].enabled and config.channels[target].externally_exposed)]
         return {'object':'list','data':data_list}
 
     @app.get('/api/providers')
@@ -690,8 +793,10 @@ def create_app(config_path:str|Path):
         This is a configuration catalogue only; it never performs an active
         health check or sends a probe request.
         """
-        return {'data':[{'id':name,'model_count':len(config.provider_models(name))}
-                        for name in config.providers]}
+        return {'data':[{'id':name,'base_url_env':provider.base_url_env,
+                         'api_key_env':provider.api_key_env,
+                         'model_count':len(config.provider_models(name))}
+                        for name,provider in config.providers.items()]}
 
     @app.get('/api/providers/{provider_name}/models')
     async def provider_models(provider_name:str, refresh:bool=False):

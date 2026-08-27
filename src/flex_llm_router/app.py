@@ -197,6 +197,42 @@ def usage_tokens(response):
     return output,total
 def channel_request_kwargs(channel):
     return {'allowed_openai_params':channel.supported_params} if channel.supported_params else {}
+
+def responses_probe_url(base_url: str) -> str:
+    """Build the Responses endpoint from a provider base URL.
+
+    Providers in the config normally expose either ``.../v1`` (where the
+    endpoint is ``/responses``) or an unversioned API root (DeepSeek's
+    official endpoint).  Be tolerant of an accidentally copied endpoint URL
+    while never including credentials in the resulting value.
+    """
+    base = str(base_url or '').strip().rstrip('/')
+    for suffix in ('/chat/completions', '/responses', '/models'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    return base + '/responses'
+
+def _probe_detail(value: Any) -> str:
+    """Return a bounded, credential-redacted probe detail for the UI/config."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    text = re.sub(r'(?i)((?:api[_-]?key|authorization|token)\s*[=:]\s*)[^\s,}]+', r'\1[redacted]', text)
+    return text[:500]
+
+def classify_responses_probe(http_status: int | None, payload: Any, detail: str = '') -> str:
+    """Classify an actual Responses probe without treating auth/upstream faults as unsupported."""
+    if http_status is not None and 200 <= http_status < 300:
+        if isinstance(payload, dict) and (payload.get('object') == 'response' or isinstance(payload.get('output'), list)):
+            return 'supported'
+        # A successful Chat Completions-shaped payload at /responses is not
+        # the Responses protocol, even though HTTP itself succeeded.
+        return 'unsupported'
+    haystack = f'{detail} {payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)}'.lower()
+    if http_status in (404, 405, 501) or any(marker in haystack for marker in (
+        'not found', 'unknown route', 'unsupported', 'not supported',
+        'does not exist', 'method not allowed', 'no such endpoint')):
+        return 'unsupported'
+    return 'error'
 # B类瞬时限流：每次真实 429 后按 2^n 退避，直到本请求的类型上限。
 TPM_BACKOFF_BASE=4
 RPM_BACKOFF_BASE=8
@@ -449,6 +485,7 @@ def create_app(config_path:str|Path):
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
+                                 'protocol_support':dict(ch.protocol_support),
                                  'last_used_at':state.last_used_at(ch.id)})
             runners.append({'name':name,'public_model':pool.public_model,'base_url':base_url,
                           'lan_url':lan_url,'channels':channels,'strategy_key':strategy_key,
@@ -475,6 +512,7 @@ def create_app(config_path:str|Path):
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
+                                 'protocol_support':dict(ch.protocol_support),
                                  'last_used_at':state.last_used_at(ch.id)})
         # 连接: 逐个解析出目标类型与真实通道, 供 CONFIG 页"拷贝给其他系统"区块展示
         connections=[]
@@ -641,7 +679,8 @@ def create_app(config_path:str|Path):
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
         allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
-                 'context_window_tokens','capabilities','supported_params','limits','retry_policy')
+                 'context_window_tokens','capabilities','supported_params','protocol_support',
+                 'limits','retry_policy')
         for key in allowed:
             if key in body: current[key]=body[key]
         # A disabled Channel can never remain directly exposed, even when an
@@ -672,6 +711,7 @@ def create_app(config_path:str|Path):
               'public_model':str(body.get('public_model') or channel_id).strip(),
               'context_window_tokens':int(body.get('context_window_tokens') or 1000000),
               'capabilities':body.get('capabilities') or ['chat','streaming'],
+              'protocol_support':body.get('protocol_support') or {},
               'externally_exposed':bool(body.get('externally_exposed',True)),
               'enabled':bool(body.get('enabled',True))}
         channels[channel_id]=item
@@ -709,6 +749,7 @@ def create_app(config_path:str|Path):
                 'id':channel_id,'provider':provider,'litellm_model':litellm_model,
                 'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
                 'capabilities':item.get('capabilities') or ['chat','streaming'],
+                'protocol_support':item.get('protocol_support') or {},
                 'externally_exposed':bool(item.get('externally_exposed',True)),
                 'enabled':bool(item.get('enabled',True)),
             }
@@ -737,6 +778,75 @@ def create_app(config_path:str|Path):
         latency=int((time.monotonic()-started)*1000); state.finish(attempt,'success',None,latency)
         state.record_test(channel_id,ch.id,'success',None,latency,'')
         return {'channel':channel_id,'status':'ok','latency_ms':latency}
+
+    @app.post('/api/config/channels/{channel_id}/responses-test')
+    async def config_channel_responses_test(channel_id:str):
+        """Explicitly probe the upstream Responses protocol for one Channel.
+
+        This is intentionally separate from the normal Chat Completions self
+        test.  It performs one tiny real request only when an administrator
+        clicks the action, then persists the last observation on the Channel
+        as ``protocol_support.responses``.  A 401/5xx/network failure is
+        recorded as ``error`` rather than incorrectly claiming the protocol is
+        unsupported; 404/405 and an explicit unsupported response are marked
+        ``unsupported``.
+        """
+        ch=config.channels.get(channel_id)
+        if ch is None:
+            raise HTTPException(404,'unknown channel')
+        started=time.monotonic(); checked_at=int(time.time())
+        endpoint=''; status_code=None; payload=None; detail=''
+        try:
+            base,key=channel_credentials(ch,config.providers)
+            endpoint=responses_probe_url(base)
+            model=ch.litellm_model.rsplit('/',1)[-1]
+            request_body=json.dumps({'model':model,'input':'Reply with exactly OK.','max_output_tokens':8},ensure_ascii=False).encode('utf-8')
+            req=urllib.request.Request(endpoint,data=request_body,method='POST',headers={
+                'Authorization':f'Bearer {key}',
+                'Content-Type':'application/json',
+                'Accept':'application/json',
+                'User-Agent':'flex-router-responses-test/1.0',
+            })
+            try:
+                with urllib.request.urlopen(req,timeout=20) as response:
+                    status_code=response.status
+                    raw=response.read().decode('utf-8','replace')
+                    try: payload=json.loads(raw)
+                    except Exception: payload=raw
+            except urllib.error.HTTPError as exc:
+                status_code=exc.code
+                raw=exc.read().decode('utf-8','replace')
+                try: payload=json.loads(raw)
+                except Exception: payload=raw
+            detail=_probe_detail(payload)
+        except urllib.error.URLError as exc:
+            detail=_probe_detail(getattr(exc,'reason',None) or exc)
+        except Exception as exc:
+            detail=_probe_detail(exc)
+        status=classify_responses_probe(status_code,payload,detail)
+        latency=int((time.monotonic()-started)*1000)
+        observation={'status':status,'checked_at':checked_at,'http_status':status_code,
+                     'endpoint':endpoint,'latency_ms':latency,'detail':detail}
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        channels=mapping.setdefault('channels',{})
+        current=dict(channels.get(channel_id) or {})
+        support=dict(current.get('protocol_support') or {})
+        support['responses']=observation
+        current['protocol_support']=support
+        channels[channel_id]=current
+        try:
+            backup=persist_config_mapping(mapping)
+        except Exception as exc:
+            await structured_config_error(exc)
+        if status == 'supported':
+            state.record_test(channel_id,ch.id,'success',None,latency,'Responses API supported')
+            return {'channel':channel_id,'protocol':'responses','status':status,
+                    'observation':observation,'backup':str(backup)}
+        state.record_test(channel_id,ch.id,'failure',
+                          'request_error' if status=='unsupported' else 'connection_error',
+                          latency,detail)
+        return {'channel':channel_id,'protocol':'responses','status':status,
+                'observation':observation,'backup':str(backup)}
 
     @app.post('/api/config/providers')
     async def edit_provider(request:Request):

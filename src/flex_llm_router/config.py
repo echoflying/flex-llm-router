@@ -66,6 +66,12 @@ class Channel(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     provider_type: str = 'openai_compatible'
     supported_params: list[str] = Field(default_factory=list)
+    # Protocol capability probes are explicit, on-demand observations rather
+    # than claims inferred from the model name.  Keys currently include
+    # ``responses``; each value stores status/checked_at and a safe summary.
+    # Keeping this extensible lets us add future protocol checks without
+    # changing the Channel identity (which remains Provider + Model).
+    protocol_support: dict[str, dict] = Field(default_factory=dict)
     # 成本排位由所属 POOL 的 tiers 显式定义，不在 Channel 上重复配置。
     limits: Limits = Field(default_factory=Limits)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)

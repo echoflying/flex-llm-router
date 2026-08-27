@@ -105,6 +105,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | POST | `/api/config/channels` | Add a new Provider + Model Channel |
 | POST | `/api/config/channels-bulk` | Add checked models from one Provider as Channels |
 | POST | `/api/config/channels/{id}/test` | Explicit self-test for one Channel |
+| POST | `/api/config/channels/{id}/responses-test` | Explicit Responses API probe; persists the last result on the Channel |
 | POST/DELETE | `/api/config/providers[/{name}]` | Add/update or remove an unreferenced Provider |
 | GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |
 | GET | `/api/requests` | Recent attempt log |

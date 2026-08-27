@@ -97,6 +97,38 @@ def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeyp
     assert 'do-not-return-this' not in r.text
 
 
+def test_responses_probe_persists_channel_protocol_result(tmp_config, monkeypatch):
+    """The explicit Responses probe records its last upstream observation."""
+    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY',
+                 'OPENCODE_GO_API_BASE', 'OPENCODE_GO_API_KEY',
+                 'DEEPSEEK_OFFICIAL_API_BASE', 'DEEPSEEK_OFFICIAL_API_KEY',
+                 'AGNES_API_BASE', 'AGNES_API_KEY'):
+        monkeypatch.setenv(name, 'test-value')
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"id":"resp_test","object":"response","status":"completed","output":[]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    import flex_llm_router.app as app_module
+    monkeypatch.setattr(app_module.urllib.request, 'urlopen', lambda request, timeout=20: FakeResponse())
+    client = TestClient(create_app(tmp_config))
+    response = client.post('/api/config/channels/sensenova-deepseek-v4-flash/responses-test')
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'supported'
+    channel = next(c for c in client.get('/api/config/editor').json()['channels']
+                   if c['id'] == 'sensenova-deepseek-v4-flash')
+    assert channel['protocol_support']['responses']['status'] == 'supported'
+    assert channel['protocol_support']['responses']['http_status'] == 200
+
+
 def test_runner_channel_order_edit_persists_for_scheduler(tmp_config, monkeypatch):
     """Runner order is stored as the channel list consumed by scheduling."""
     for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY',

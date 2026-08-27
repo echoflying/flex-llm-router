@@ -45,6 +45,8 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert 'runner-strategy-info' in text
     assert 'runner-channel-modal' in text
     assert 'runner-channel-pane' in text and 'runner-summary' in text
+    assert 'runner-save' not in text
+    assert '立即保存并参与调度' in text
     assert 'name="strategy"' in text and 'type="radio"' in text
     assert 'Provider 在前' in text
 

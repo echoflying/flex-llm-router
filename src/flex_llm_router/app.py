@@ -3,6 +3,7 @@ import asyncio,html,json,logging,os,re,subprocess,sys,time,uuid
 import anyio
 from pathlib import Path
 from typing import Any
+import urllib.error,urllib.request
 import litellm,yaml
 from fastapi import FastAPI,HTTPException,Request
 from fastapi.responses import HTMLResponse,JSONResponse,StreamingResponse
@@ -800,16 +801,45 @@ def create_app(config_path:str|Path):
 
     @app.get('/api/providers/{provider_name}/models')
     async def provider_models(provider_name:str, refresh:bool=False):
-        """Return configured model candidates for a provider.
+        """Return configured candidates, or query the provider on explicit refresh.
 
-        ``refresh`` is accepted for UI clients that explicitly request a
-        refresh; the current source of truth is the loaded YAML, so refresh is
-        intentionally non-networking and cannot trigger periodic checks.
+        The UI's test button is the only caller that requests ``refresh=1``;
+        there is no periodic active health/model probe.  Keys are used only in
+        the Authorization header and are never included in the response.
         """
         if provider_name not in config.providers:
             raise HTTPException(404,'unknown provider')
-        return {'provider':provider_name,'refreshed':bool(refresh),
-                'data':config.provider_models(provider_name)}
+        configured=config.provider_models(provider_name)
+        if not refresh:
+            return {'provider':provider_name,'refreshed':False,'source':'config',
+                    'available':None,'data':configured}
+        provider=config.providers[provider_name]
+        base=os.getenv(provider.base_url_env,'').strip().rstrip('/')
+        key=os.getenv(provider.api_key_env,'').strip()
+        if not base or not key:
+            return {'provider':provider_name,'refreshed':True,'source':'upstream',
+                    'available':False,'error':'missing provider environment variable',
+                    'data':[]}
+        url=base if base.endswith('/models') else base+'/models'
+        def fetch_models():
+            req=urllib.request.Request(url,headers={'Authorization':f'Bearer {key}','Accept':'application/json'})
+            with urllib.request.urlopen(req,timeout=12) as response:
+                return json.loads(response.read().decode('utf-8'))
+        try:
+            payload=await asyncio.to_thread(fetch_models)
+            raw=payload.get('data',payload) if isinstance(payload,dict) else payload
+            result=[]
+            if isinstance(raw,list):
+                for item in raw:
+                    if isinstance(item,str): result.append({'id':item})
+                    elif isinstance(item,dict) and item.get('id'):
+                        result.append({'id':str(item['id']),'owned_by':item.get('owned_by')})
+            return {'provider':provider_name,'refreshed':True,'source':'upstream',
+                    'available':True,'data':result}
+        except Exception as exc:
+            detail=str(exc).replace(key,'[redacted]')[:240]
+            return {'provider':provider_name,'refreshed':True,'source':'upstream',
+                    'available':False,'error':detail,'data':[]}
 
     @app.get('/api/runners')
     async def runner_list():

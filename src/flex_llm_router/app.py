@@ -448,7 +448,8 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':pool.tiers.get(ch_id),
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'context_window_tokens':ch.context_window_tokens,
-                                 'capabilities':list(ch.capabilities)})
+                                 'capabilities':list(ch.capabilities),
+                                 'last_used_at':state.last_used_at(ch.id)})
             runners.append({'name':name,'public_model':pool.public_model,'base_url':base_url,
                           'lan_url':lan_url,'channels':channels,'strategy_key':strategy_key,
                           'strategy_name':strategy_name,'strategy_detail':strategy_detail})
@@ -469,7 +470,8 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':None,'mounted_in':mounted,
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'context_window_tokens':ch.context_window_tokens,
-                                 'capabilities':list(ch.capabilities)})
+                                 'capabilities':list(ch.capabilities),
+                                 'last_used_at':state.last_used_at(ch.id)})
         # 连接: 逐个解析出目标类型与真实通道, 供 CONFIG 页"拷贝给其他系统"区块展示
         connections=[]
         for name, target in config.links.items():
@@ -595,6 +597,52 @@ def create_app(config_path:str|Path):
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)
         return {'status':'saved','channel':channel_id,'backup':str(backup)}
+
+    @app.post('/api/config/channels')
+    async def create_channel(request:Request):
+        """Create one Channel from a Provider + model pair in the UI."""
+        body=await request.json()
+        channel_id=str(body.get('id') or '').strip()
+        provider=str(body.get('provider') or '').strip()
+        litellm_model=str(body.get('litellm_model') or body.get('model') or '').strip()
+        if not channel_id or not provider or not litellm_model:
+            raise HTTPException(400,'id, provider and model are required')
+        if channel_id in config.channels: raise HTTPException(409,'channel id already exists')
+        if provider not in config.providers: raise HTTPException(400,'unknown provider')
+        if any(ch.provider==provider and ch.litellm_model==litellm_model for ch in config.channels.values()):
+            raise HTTPException(409,'a Channel for this Provider + model already exists')
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        channels=mapping.setdefault('channels',{})
+        item={'id':channel_id,'provider':provider,'litellm_model':litellm_model,
+              'public_model':str(body.get('public_model') or channel_id).strip(),
+              'context_window_tokens':int(body.get('context_window_tokens') or 1000000),
+              'capabilities':body.get('capabilities') or ['chat','streaming'],
+              'externally_exposed':bool(body.get('externally_exposed',True)),
+              'enabled':bool(body.get('enabled',True))}
+        channels[channel_id]=item
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','channel':channel_id,'backup':str(backup)}
+
+    @app.post('/api/config/channels/{channel_id}/test')
+    async def config_channel_test(channel_id:str):
+        """Admin self-test for any Channel, including internally hidden ones."""
+        ch=config.channels.get(channel_id)
+        if ch is None: raise HTTPException(404,'unknown channel')
+        attempt=state.start(channel_id,ch.id,ch.litellm_model,input_tokens=5); started=time.monotonic()
+        try:
+            base,key=channel_credentials(ch,config.providers)
+            await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,
+                                      messages=[{'role':'user','content':'Reply with exactly OK.'}],
+                                      max_tokens=8,**channel_request_kwargs(ch))
+        except Exception as exc:
+            typ=error_type(exc); detail=error_detail(exc); latency=int((time.monotonic()-started)*1000)
+            state.finish(attempt,'failure',typ,latency,error_detail=detail,error_code=error_code(exc))
+            state.record_test(channel_id,ch.id,'failure',typ,latency,detail)
+            raise HTTPException(502,detail)
+        latency=int((time.monotonic()-started)*1000); state.finish(attempt,'success',None,latency)
+        state.record_test(channel_id,ch.id,'success',None,latency,'')
+        return {'channel':channel_id,'status':'ok','latency_ms':latency}
 
     @app.post('/api/config/providers')
     async def edit_provider(request:Request):

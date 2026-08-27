@@ -646,6 +646,8 @@ class StateStore:
     def channels_state(self,pool,ch_id,limits,context_window_tokens,capabilities,provided_model_name,retry_policy=None,provider=None):
         """Build channel state dict for dashboard. Use ch_id directly."""
         now=time.time(); n=self.db.execute('SELECT COUNT(*) FROM attempts WHERE channel=? AND started>=?',(ch_id,now-60)).fetchone()[0]
+        last_used_row=self.db.execute('SELECT MAX(started) AS ts FROM attempts WHERE channel=?',(ch_id,)).fetchone()
+        last_used_at=last_used_row['ts'] if last_used_row else None
         metrics=self.window_metrics(pool,ch_id,now=now)
         quota=self.quota_status(pool,ch_id,now); q=quota['used']
         learned=self.learned_limit(pool,ch_id)
@@ -664,6 +666,7 @@ class StateStore:
             'requests_per_5_hours': limits.max_requests_per_window,
             'calls_last_5_hours': q,
             'calls_today': self.calls_today(ch_id),
+            'last_used_at': last_used_at,
             'next_quota_release_at': quota['next_release_at'],
             'cooldown_until': row['until'] if row else None,
             'cooldown_reason': row['reason'] if row else None,
@@ -673,5 +676,10 @@ class StateStore:
         }
     def recent(self,limit):
         with self.lock:return [dict(r) for r in self.db.execute('SELECT * FROM attempts ORDER BY id DESC LIMIT ?',(limit,)).fetchall()]
+    def last_used_at(self, channel):
+        """Return the latest real attempt timestamp for a Channel."""
+        with self.lock:
+            row=self.db.execute('SELECT MAX(started) AS ts FROM attempts WHERE channel=?',(channel,)).fetchone()
+            return row['ts'] if row and row['ts'] is not None else None
     def errors(self,limit=50):
         with self.lock:return [dict(r) for r in self.db.execute('SELECT * FROM attempts WHERE outcome!=? ORDER BY id DESC LIMIT ?',('success',limit)).fetchall()]

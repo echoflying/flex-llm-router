@@ -1,4 +1,5 @@
 param(
+    [string]$MacUser = 'weifeng',
     [string]$MacHost = '192.168.3.246',
     [string]$MacProject = '~/projects/flex-llm-router'
 )
@@ -17,15 +18,15 @@ if ((git -C $ProjectRoot status --porcelain).Count -gt 0) {
 
 foreach ($name in $rootFiles) {
     $source = Join-Path $ProjectRoot $name
-    & scp -o BatchMode=yes -- $source "${MacHost}:$MacProject/$name"
+    & scp -o BatchMode=yes -- $source "${MacUser}@${MacHost}:$MacProject/$name"
     if ($LASTEXITCODE -ne 0) { throw "scp failed: $name" }
 }
 foreach ($name in $required) {
     $source = Join-Path $ProjectRoot $name
     if (-not (Test-Path $source -PathType Container)) { continue }
-    & scp -o BatchMode=yes -r -- $source "${MacHost}:$MacProject/"
+    & scp -o BatchMode=yes -r -- $source "${MacUser}@${MacHost}:$MacProject/"
     if ($LASTEXITCODE -ne 0) { throw "scp failed: $name" }
 }
 
-Write-Output "Synced committed project files to ${MacHost}:$MacProject"
+Write-Output "Synced committed project files to ${MacUser}@${MacHost}:$MacProject"
 Write-Output 'Excluded by design: .env, data/, logs/, .venv/, .git/, caches, and backups.'

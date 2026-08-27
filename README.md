@@ -1,7 +1,13 @@
 # Flex LLM Router
 
-Policy-driven LLM channel pools backed by LiteLLM. Flex picks which channel
-handles a request; LiteLLM makes the actual provider call.
+Policy-driven LLM routing backed by LiteLLM. Flex picks which channel handles
+a request; LiteLLM makes the actual provider call.
+
+Flex is designed to make LLM access stable and reliable: it keeps provider
+credentials local, applies per-channel quota/RPM/TPM controls, preserves
+conversation affinity, retries transient upstream failures, and records the
+routing outcome for diagnosis. A single external Runner can therefore use
+multiple providers without exposing that switching detail to the client.
 
 ## Quick start
 

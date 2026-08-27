@@ -1,0 +1,130 @@
+<h1>Config</h1>
+<small>{{ config_path }}</small>
+<div class="tabs">
+  <button class="tab active" data-tab="info">配置信息</button>
+  <button class="tab" data-tab="edit">编辑文件</button>
+</div>
+
+<div id="tab-info" class="tabpane" style="max-width:1200px">
+  <div class="mode-toggle">
+    <label><input type="radio" name="cfgmode" value="local" checked> 本机 (127.0.0.1)</label>
+    <label><input type="radio" name="cfgmode" value="lan"> 局域网 (其他机器)</label>
+  </div>
+  <table class="cfgtable">
+    <thead>
+      <tr>
+        <th>拷贝填到其他系统（如 Hermes）的代理地址与模型名</th>
+        <th>模型真实访问通道</th>
+      </tr>
+    </thead>
+    <tbody id="cfg-rows"><tr><td colspan="2"><i>loading…</i></td></tr></tbody>
+  </table>
+  <p><small>Keys remain only in Flex's local .env; do not put channel provider keys elsewhere.</small></p>
+</div>
+
+<div id="tab-edit" class="tabpane" style="display:none">
+<div id="view">
+<button id="edit-btn">Edit</button>
+<pre><code>{{ raw_yaml }}</code></pre>
+</div>
+<div id="edit" style="display:none">
+<textarea id="editor" rows="32" spellcheck="false" style="width:100%;font:13px ui-monospace,monospace;box-sizing:border-box">{{ raw_yaml }}</textarea>
+<br>
+<button id="save-btn">Save</button>
+<button id="cancel-btn">Cancel</button>
+<small id="save-notice"></small>
+</div>
+</div>
+
+<style>
+:root{--border:#e2e8f0;--card:#fff;--foreground:#18212f;--muted-foreground:#667085}
+.mode-toggle{margin:8px 0 14px;display:flex;gap:18px;align-items:center}
+.mode-toggle label{cursor:pointer;font-size:13px}
+.cfgtable{border-collapse:collapse;width:100%;min-width:860px;font-size:13px}
+.cfgtable th,.cfgtable td{border:1px solid var(--border);padding:12px 14px;vertical-align:top;text-align:left}
+.cfgtable thead th{background:#f1f5f9;font-size:13px;font-weight:600}
+.cfgtable thead th:first-child{width:50%}
+.cfgtable .tag{font-size:11px;font-weight:600;color:var(--muted-foreground);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;vertical-align:middle}
+.cfgtable .rowtitle{font-size:15px;font-weight:600;margin-bottom:8px}
+.cfgtable .chlist{margin-top:8px;font-size:11px;color:var(--muted-foreground)}
+.cfgtable .chlist div{margin:1px 0}
+.cfgtable .ref{color:var(--muted-foreground)}
+.cfgtable .ref p{margin:4px 0;display:flex;align-items:center;gap:6px}
+.cfgtable .ref label{font-size:12px;color:var(--muted-foreground);min-width:64px;flex:0 0 64px}
+.cfgtable .ref code{font:12px ui-monospace,monospace;flex:1;min-width:0;word-break:break-all}
+.cfgtable p{margin:4px 0;display:flex;align-items:center;gap:6px}
+.cfgtable label{font-size:12px;color:var(--muted-foreground);min-width:64px;flex:0 0 64px}
+.cfgtable .cpbox{border:1px solid var(--border);border-radius:5px;background:var(--card);font:12px ui-monospace,monospace;flex:1;min-width:0;padding:3px 6px;color:var(--foreground)}
+.cfgtable .cp{border:none;background:none;color:var(--muted-foreground);cursor:pointer;padding:2px;display:inline-flex;flex:0 0 auto}
+.cfgtable .cp:hover{color:var(--foreground)}
+</style>
+
+<script>
+const COPY_ICON='<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const q=s=>document.querySelector(s);
+q('.tabs').addEventListener('click',e=>{
+  const b=e.target.closest('.tab'); if(!b)return;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  b.classList.add('active');
+  const tab=b.dataset.tab;
+  q('#tab-info').style.display = tab==='info'?'block':'none';
+  q('#tab-edit').style.display = tab==='edit'?'block':'none';
+});
+
+// 拷贝行(左栏用): 内容放只读输入框, 拷贝icon在框后面
+function cpy(label,val){
+  return `<p><label>${esc(label)}</label><input class="cpbox" readonly value="${esc(val)}"><button class="cp" title="Copy" data-copy="${esc(val)}">${COPY_ICON}</button></p>`;
+}
+// 纯文本行(右栏参考用)
+function txt(label,val){
+  return `<p><label>${esc(label)}</label><code>${esc(val)}</code></p>`;
+}
+let cfgMode='local';
+q('.mode-toggle').addEventListener('change',e=>{
+  if(e.target.name!=='cfgmode')return;
+  cfgMode=e.target.value; loadInfo();
+});
+async function loadInfo(){
+  try{
+    const r=await fetch('/api/config/view'); const v=await r.json();
+    const baseUrl=v.lan_url && cfgMode==='lan' ? v.lan_url : v.base_url;
+    const rows=q('#cfg-rows'); rows.innerHTML='';
+    const addRow=(tag,title,leftHtml,rightHtml)=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><div class="rowtitle"><span class="tag">${esc(tag)}</span>${esc(title)}</div>${leftHtml}</td><td class="ref">${rightHtml}</td>`;
+      rows.appendChild(tr);
+    };
+    // Runner is the only primary resource shown here.  The old pools and
+    // connections keys remain API-compatible but are intentionally not
+    // rendered as separate user-facing objects.
+    (v.runners||v.pools||[]).forEach(pool=>{
+      let pLeft=cpy('Base URL',baseUrl)+cpy('Model',pool.public_model);
+      let pRight='<p><label>类型</label><code>逻辑路由层（由下方 CHANNEL 组成）</code></p>'
+        +'<p><label>策略</label><code>'+esc(pool.strategy_name||pool.strategy_key||'—')+'</code></p>'
+        +'<p><label>说明</label><code>'+esc(pool.strategy_detail||'—')+'</code></p>'
+        +'<div class="chlist"><small>内部 Channels:</small>'+pool.channels.map(ch=>'<div>'+esc(ch.id)+' · '+esc(ch.provider||'')+' · '+esc(ch.model||'')+(ch.tier!=null?' · tier '+esc(ch.tier):'')+'</div>').join('')+'</div>';
+      addRow('RUNNER',pool.public_model,pLeft,pRight);
+    });
+    rows.querySelectorAll('button.cp').forEach(btn=>{
+      btn.onclick=async()=>{
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        const o=btn.innerHTML; btn.innerHTML='&#10003;'; setTimeout(()=>btn.innerHTML=o,1200);
+      };
+    });
+  }catch(e){ q('#cfg-rows').innerHTML='<tr><td colspan="2"><i>load failed: '+esc(e.message)+'</i></td></tr>'; }
+}
+function esc(s){return String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+loadInfo();
+
+// ---- 编辑文件 TAB ----
+const editor=q('#editor'),view=q('#view'),edit=q('#edit'),notice=q('#save-notice');
+q('#edit-btn').onclick=()=>{view.style.display='none';edit.style.display='block';editor.focus()};
+q('#cancel-btn').onclick=()=>{edit.style.display='none';view.style.display='block';notice.textContent=''};
+q('#save-btn').onclick=async()=>{
+  notice.textContent='Saving…';
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'text/plain'},body:editor.value});
+  const v=await r.json();
+  if(r.ok){notice.textContent='Saved. Restarting…';await fetch('/api/admin/restart',{method:'POST'});setTimeout(()=>location.reload(),2000)}
+  else{const msg=(v&&typeof v.detail==='string')?v.detail:(v&&v.detail&&(v.detail.error||v.detail.detail))||v.error||r.status;notice.textContent='Error: '+msg}
+};
+</script>

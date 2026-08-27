@@ -1,0 +1,287 @@
+"""Configuration loading for Flex's policy-owned pool definitions."""
+from __future__ import annotations
+import os
+from pathlib import Path
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+class Limits(BaseModel):
+    # ① 自我流控（本地闸门，不依赖上游报错）
+    rpm: int | None = Field(default=None, ge=1)
+    tpm: int | None = Field(default=None, ge=1)
+    local_cooldown_seconds: int = Field(default=300, ge=0)
+    # ② 5小时总量控制（A 类硬限制，滑动窗口）
+    window_seconds: int = Field(default=18000, ge=1)
+    max_requests_per_window: int | None = Field(default=None, ge=1)
+    quota_cooldown_seconds: int = Field(default=3600, ge=0)
+    # ③ 被流控后退让（B 类瞬时限流）
+    busy_threshold: int = Field(default=3, ge=1)
+    busy_window_minutes: int = Field(default=5, ge=1)
+    busy_cooldown_seconds: int = Field(default=300, ge=0)
+
+class RetryPolicy(BaseModel):
+    """Per-channel retry behavior for transient errors (429, connection errors, timeouts)."""
+    max_retries: int = Field(default=3, ge=0)
+    backoff: dict = Field(default={'base_seconds': 5, 'max_seconds': 60, 'exponential': True})
+    retry_on: list[str] = Field(default=['rate_limit', 'connection_error', 'timeout', 'server_error'])
+
+    @field_validator('backoff')
+    @classmethod
+    def validate_backoff(cls, v):
+        if 'base_seconds' not in v: v['base_seconds'] = 5
+        if 'max_seconds' not in v: v['max_seconds'] = 60
+        if 'exponential' not in v: v['exponential'] = True
+        return v
+
+class Channel(BaseModel):
+    """A Channel is a specific provider/model instance with capabilities and limits."""
+    id: str
+    enabled: bool = True
+    provider: str  # references providers.xxx
+    litellm_model: str
+    public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.
+    context_window_tokens: int = Field(ge=1)
+    capabilities: list[str] = Field(default_factory=list)
+    provider_type: str = 'openai_compatible'
+    supported_params: list[str] = Field(default_factory=list)
+    # 成本排位由所属 POOL 的 tiers 显式定义，不在 Channel 上重复配置。
+    limits: Limits = Field(default_factory=Limits)
+    retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
+
+    @field_validator('id')
+    @classmethod
+    def non_blank_id(cls, value):
+        if not value.strip(): raise ValueError('channel id must not be blank')
+        return value
+
+class Pool(BaseModel):
+    """A Pool is a named routing group of channels."""
+    public_model: str | None = None
+    # selection 策略(dict, 宽松):
+    #   strategy: cost_aware | round_robin | quota_paced_priority
+    #   fallback: {order: cost_ascending, trigger: [quota_exhausted, busy_persistent, failure],
+    #              max_fallback_tiers: N, reattach: {probe_before_switch_back, quiet_window_seconds, quota_recover_seconds, failure_retry_after}}
+    #   stickiness: {min_stable_seconds: 3600}  # 单通道至少稳定跑这么久才因"平衡"切换(防频繁切, 保缓存)
+    #   retry_next_channel_on: [...]  # 兼容旧字段, 映射到 failure 触发
+    selection: dict = Field(default_factory=lambda: {'strategy': 'cost_aware', 'fallback': {'order': 'cost_ascending', 'trigger': ['quota_exhausted', 'busy_persistent', 'failure'], 'max_fallback_tiers': 2, 'reattach': {'probe_before_switch_back': True, 'quiet_window_seconds': 1200, 'quota_recover_seconds': 3600, 'failure_retry_after': 300}}, 'stickiness': {'min_stable_seconds': 3600}, 'retry_next_channel_on': []})
+    context_policy: dict = Field(default_factory=lambda: {'reserve_output_tokens': 8192})
+    session_affinity: dict = Field(default_factory=lambda: {'enabled': False, 'idle_seconds': 1200, 'minimum_messages': 2})
+    channels: list[str]  # channel IDs to include (order = same-tier priority)
+    # 成本阶梯 tier: channel_id -> int (0=最优先/最便宜, 1, 2...). 显式配置在 POOL 侧,
+    # 不在 Channel 上(排位是池内相对属性). 支持 0 0 1 2 等组合(多免费并列).
+    tiers: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator('channels')
+    @classmethod
+    def unique_channel_refs(cls, channels):
+        if not channels:
+            raise ValueError('a pool needs at least one channel')
+        if len(channels) != len(set(channels)):
+            raise ValueError('channel ids must be unique within a pool')
+        return channels
+
+    @field_validator('tiers')
+    @classmethod
+    def tiers_cover_channels(cls, tiers, info):
+        channels = (info.data or {}).get('channels', [])
+        missing = [c for c in channels if c not in tiers]
+        if missing:
+            raise ValueError(f'tiers must declare a tier for every channel; missing: {missing}')
+        return tiers
+
+class Runner(Pool):
+    """The unified external resource.
+
+    A Runner owns one or more Channels and reuses the existing Pool selection
+    policy.  Pool remains as a compatibility type for older configuration
+    files; new configuration should use ``runners``.
+    """
+    pass
+
+class Provider(BaseModel):
+    """Provider holds base_url and api_key env var names."""
+    base_url_env: str
+    api_key_env: str
+
+    @field_validator('base_url_env', 'api_key_env')
+    @classmethod
+    def non_blank_env(cls, v):
+        if not v.strip(): raise ValueError('env var name must not be blank')
+        return v.strip()
+
+class FlexConfig(BaseModel):
+    version: int = 1
+    providers: dict[str, Provider]
+    channels: dict[str, Channel]  # flat channel registry
+    # Runner is the canonical external resource.  ``pools`` and
+    # ``connections`` are retained as read/write compatibility aliases for a
+    # one-time migration from the previous Link + Pool vocabulary.
+    runners: dict[str, Runner] = Field(default_factory=dict)
+    pools: dict[str, Pool] = Field(default_factory=dict)
+    links: dict[str, str] = Field(default_factory=dict)
+    connections: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_resources(cls, data):
+        """Normalize legacy Pool/Link YAML into the unified Runner schema."""
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if not normalized.get('runners') and normalized.get('pools'):
+            normalized['runners'] = normalized['pools']
+        if not normalized.get('links') and normalized.get('connections'):
+            normalized['links'] = normalized['connections']
+        if not normalized.get('connections') and normalized.get('links'):
+            normalized['connections'] = normalized['links']
+        return normalized
+
+    @model_validator(mode='after')
+    def normalize_runner_aliases(self):
+        # Keep one canonical in-memory definition while exposing old fields to
+        # existing callers.  This also makes a new runners-only YAML usable by
+        # the current scheduler without introducing a second policy engine.
+        if not self.runners and self.pools:
+            self.runners = {name: Runner.model_validate(pool.model_dump()) for name, pool in self.pools.items()}
+        self.pools = {name: Pool.model_validate(runner.model_dump()) for name, runner in self.runners.items()}
+        merged = dict(self.connections)
+        merged.update(self.links)
+        self.links = merged
+        self.connections = dict(merged)
+        return self
+
+    @staticmethod
+    def external_channel_model(ch: 'Channel') -> str:
+        """对外 model 名: 必须显式配置 public_model."""
+        return ch.public_model
+
+    @model_validator(mode='after')
+    def unique_external_models(self):
+        # 全局对外 model 名必须唯一(Runner.public_model + 各 CHANNEL public_model).
+        # 必填且不允许自动去重: 重复/缺失直接报错, 让用户显式配置.
+        names = {}  # name -> source
+        for pname, runner in self.runners.items():
+            pm = runner.public_model
+            if pm in names:
+                raise ValueError(f'external model name conflict: {pm!r} used by {names[pm]} and runner {pname}. Rename explicitly.')
+            names[pm] = f'runner {pname}'
+        for cid, ch in self.channels.items():
+            em = ch.public_model
+            if em in names:
+                raise ValueError(f'external model name conflict: {em!r} used by {names[em]} and channel {cid}. Rename explicitly.')
+            names[em] = f'channel {cid}'
+        return self
+
+    @model_validator(mode='after')
+    def validate_connections(self):
+        """Legacy Link names must resolve to a Runner or Channel."""
+        runner_keys = set(self.runners.keys())
+        runner_public = {r.public_model for r in self.runners.values() if r.public_model}
+        ch_ids = set(self.channels.keys())
+        ch_public = {c.public_model for c in self.channels.values() if c.public_model}
+        reserved = runner_keys | runner_public | ch_ids | ch_public
+        for name, target in self.links.items():
+            valid = (target in runner_keys or target in runner_public
+                     or target in ch_ids or target in ch_public)
+            if not valid:
+                raise ValueError(
+                    f'link {name!r} -> {target!r} is invalid; '
+                    f'target must be a runner key, runner public_model, channel id, or channel public_model')
+            # 连接名若与某个真实对外名撞车(且不是指向自己), 外部请求将无法判断走哪条路径
+            if name in reserved and name != target:
+                raise ValueError(
+                    f'connection name {name!r} conflicts with an existing pool/channel name; rename the connection')
+        return self
+
+    def resolve_connection(self, name: str) -> str | None:
+        """Resolve a legacy alias; new callers should use resolve_runner."""
+        return self.links.get(name)
+
+    def resolve_runner(self, name: str) -> str | None:
+        """Resolve a Runner key/public name or a legacy alias."""
+        if name in self.runners:
+            return name
+        for key, runner in self.runners.items():
+            if runner.public_model == name:
+                return key
+        return self.links.get(name)
+
+    @field_validator('runners')
+    @classmethod
+    def resolve_public_models(cls, runners):
+        for name, runner in runners.items():
+            if runner.public_model is None:
+                runner.public_model = name
+        names = [runner.public_model for runner in runners.values()]
+        if len(names) != len(set(names)):
+            raise ValueError('public_model values must be unique')
+        return runners
+
+    def get_channel(self, channel_id: str) -> tuple[str, Channel]:
+        """Resolve channel_id → (provider_name, Channel)."""
+        ch = self.channels.get(channel_id)
+        if ch is None:
+            raise LookupError(f'channel {channel_id!r} not found')
+        return ch.provider, ch
+
+    def get_pool_channels(self, pool_name: str) -> list[tuple[str, Channel]]:
+        """Return [(provider, Channel), ...] for a pool."""
+        pool = self.runners.get(pool_name)
+        if pool is None:
+            pool = self.pools.get(pool_name)
+        if pool is None:
+            return []
+        results = []
+        for ch_id in pool.channels:
+            try:
+                prov, ch = self.get_channel(ch_id)
+                results.append((prov, ch))
+            except LookupError:
+                continue
+        return results
+
+    def get_runner_channels(self, runner_name: str) -> list[tuple[str, Channel]]:
+        """Return channels for a Runner (Pool-compatible alias)."""
+        return self.get_pool_channels(runner_name)
+
+    def provider_models(self, provider_name: str) -> list[dict]:
+        """Return configured model candidates for provider selection UI/API."""
+        seen = set(); result = []
+        for channel in self.channels.values():
+            if channel.provider != provider_name:
+                continue
+            key = (channel.litellm_model, channel.public_model)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({'id': channel.public_model, 'public_model': channel.public_model,
+                           'litellm_model': channel.litellm_model,
+                           'capabilities': list(channel.capabilities),
+                           'context_window_tokens': channel.context_window_tokens})
+        return result
+
+    def runner_models(self) -> list[dict]:
+        """Return the canonical external Runner model catalogue."""
+        return [{'id': runner.public_model, 'object': 'model', 'owned_by': 'flex-runner',
+                 'runner': name, 'channel_count': len(runner.channels)}
+                for name, runner in self.runners.items()]
+
+def load_config(path: str | Path, override: bool = False) -> FlexConfig:
+    p = Path(path).expanduser().resolve()
+    load_dotenv(p.parent.parent / '.env', override=override)
+    with p.open(encoding='utf-8') as h:
+        raw = yaml.safe_load(h) or {}
+    return FlexConfig.model_validate(raw)
+
+def channel_credentials(channel: Channel, providers: dict) -> tuple[str, str]:
+    """Return (base_url, api_key) from env using the Provider's env var names."""
+    prov = providers.get(channel.provider)
+    if prov is None:
+        raise ValueError(f'provider {channel.provider!r} not found')
+    base = os.getenv(prov.base_url_env, '').strip()
+    key = os.getenv(prov.api_key_env, '').strip()
+    if not base or not key:
+        missing = [n for n, v in ((prov.base_url_env, base), (prov.api_key_env, key)) if not v]
+        raise ValueError(f'provider {channel.provider!r} missing env var(s) in .env: {", ".join(missing)} (set them in your .env file)')
+    return base, key

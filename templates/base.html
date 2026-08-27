@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+body{font:15px system-ui;margin:32px;color:#18212f;background:#f7f9fc}
+h1{margin-bottom:4px}
+small{color:#667}
+nav{margin-bottom:14px;display:flex;align-items:center}
+nav a{color:#2764a8;text-decoration:none;margin-right:18px;padding:3px 0;border-bottom:2px solid transparent}
+nav a:hover{border-bottom-color:#2764a8}
+nav .spacer{flex:1}
+.backend-notice{display:none;position:sticky;top:10px;z-index:10;margin:0 0 14px;padding:10px 13px;border:1px solid #e4c987;border-radius:8px;background:#fff9e9;color:#765615;font-size:13px;box-shadow:0 2px 8px #76561518}.backend-notice.show{display:block}.backend-notice b{margin-right:5px}
+
+{{ extra_css }}
+</style>
+<nav style="margin-bottom:14px">
+<a href="/">Dashboard</a>
+<a href="/traces">调用轨迹</a>
+<a href="/statistics">调用统计</a>
+<a href="/config">Config</a>
+<a href="/setup">Setup</a>
+<a href="/help">Help</a>
+</nav>
+<aside id="backend-notice" class="backend-notice" role="status"><b>核心 Router 正在重启或暂不可用。</b>此页面仍可浏览，数据会在服务恢复后自动重新连接。</aside>
+{{ content }}
+<script>
+(()=>{const note=document.querySelector('#backend-notice'),raw=window.fetch.bind(window);let offline=false;const show=()=>{offline=true;note.classList.add('show')},hide=()=>{offline=false;note.classList.remove('show')};window.fetch=async(...args)=>{try{const r=await raw(...args);if(r.status>=502)show();else if(r.ok)hide();return r}catch(e){show();throw e}};window.addEventListener('unhandledrejection',e=>{show();e.preventDefault()});setInterval(async()=>{if(!offline)return;try{const r=await raw('/healthz',{cache:'no-store'});if(r.ok){hide();location.reload()}}catch(_){show()}},2000)})();
+</script>

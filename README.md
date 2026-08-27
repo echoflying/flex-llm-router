@@ -1,0 +1,83 @@
+# Flex LLM Router
+
+Policy-driven LLM channel pools backed by LiteLLM. Flex picks which channel
+handles a request; LiteLLM makes the actual provider call.
+
+## Quick start
+
+```bash
+cp .env.example .env          # set real API keys
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+flex-router                    # starts on http://127.0.0.1:7800
+```
+
+## Pages
+
+| Path | Description |
+|---|---|
+| `/` | **Dashboard** — channels, metrics, Test/Enable/Disable/Restart |
+| `/config` | **YAML editor** — read/write `config/pools.yaml` with schema validation |
+| `/setup` | **Environment vars** — .env vs system ENV, Override toggle |
+| `/help` | **Hermes connection** — copy-paste provider URL into Hermes config |
+
+### Config editor
+
+Edit `config/pools.yaml` in the browser. Save runs schema validation
+(`FlexConfig.model_validate`) before writing. Invalid YAML is rejected with
+error detail. A `.bak` backup is created before overwrite, and the server
+automatically restarts so changes take effect immediately.
+
+### Setup / Override
+
+Shows all required env vars (6 keys from `pools.yaml`: 3 channels × base+key),
+their presence in `.env` and system ENV, and which source is active.
+
+The **Override** toggle controls whether `.env` values override system ENV
+(ON = dotenv wins, OFF = system ENV wins). Click toggles immediately via
+`load_dotenv(override=…)` and persists to `config/setup.conf` for the next
+server start.
+
+## Templates
+
+HTML pages live in `templates/` as standalone `.html` files. Modify them
+with any text editor and refresh the browser — no server restart needed.
+`base.html` provides the shared frame (navigation + page shell); each page
+extends it via `{{ content }}` placeholder.
+
+## Architecture
+
+```
+Request → Flex (FastAPI) → LiteLLM → upstream provider
+              │
+              └→ StateStore (SQLite)
+                  ├ quota windows (5h sliding)
+                  ├ RPM/TPM learning (60s sliding)
+                  ├ session affinity (HMACed message prefixes)
+                  └ channel tests & cooldowns
+```
+
+- **Scheduler**: round-robin with quota-pacing priority over fallback-only
+- **Limits**: learned safe RPM/TPM, 429 classification, exponential backoff
+- **Config**: `config/pools.yaml` — pools, channels, limits, routing policy
+- **State file**: `data/flex.db` (SQLite, `.gitignore`d)
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/healthz` | Health check |
+| GET | `/v1/models` | OpenAI-compatible model list |
+| POST | `/v1/chat/completions` | Chat completion (non-stream + stream) |
+| GET | `/` | Dashboard HTML |
+| GET | `/config` | Config viewer/editor HTML |
+| GET/POST | `/setup`, `/api/setup/override` | Env management |
+| GET | `/help` | Hermes connection details |
+| GET | `/api/pools/{name}/channels` | Channel metrics |
+| GET | `/api/requests` | Recent attempt log |
+| POST | `/api/pools/{name}/channels/{id}/test` | Channel test |
+| POST | `/api/pools/{name}/channels/{id}/enabled` | Enable/disable |
+| POST | `/api/pools/{name}/channels/{id}/reset` | Reset quota/cooldown |
+| POST | `/api/config` | Validate & save config |
+| POST | `/api/admin/restart` | Launchd restart (macOS) |

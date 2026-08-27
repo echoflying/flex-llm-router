@@ -32,7 +32,7 @@ when a code or configuration change should take effect.
 
 | Path | Description |
 |---|---|
-| `/` | **Dashboard** — channels, metrics, Test/Enable/Disable/Restart |
+| `/` | **Dashboard** — Runner/Channel 状态、调用指标与快速操作 |
 | `/config` | **YAML editor** — read/write `config/pools.yaml` with schema validation |
 | `/setup` | **Environment vars** — .env vs system ENV, Override toggle |
 | `/help` | **Hermes connection** — copy-paste provider URL into Hermes config |
@@ -41,13 +41,14 @@ when a code or configuration change should take effect.
 
 Edit `config/pools.yaml` in the browser. Save runs schema validation
 (`FlexConfig.model_validate`) before writing. Invalid YAML is rejected with
-error detail. A `.bak` backup is created before overwrite, and the server
-automatically restarts so changes take effect immediately.
+error detail. A `.bak` backup is created before overwrite. The running core is
+not restarted automatically; restart it manually after reviewing the change.
 
 ### Setup / Override
 
-Shows all required env vars (6 keys from `pools.yaml`: 3 channels × base+key),
-their presence in `.env` and system ENV, and which source is active.
+Shows all Provider-referenced environment variables from `pools.yaml`, their
+presence in `.env` and system ENV, and which source is active. The list is
+derived from the current Provider definitions; it is not a fixed channel count.
 
 The **Override** toggle controls whether `.env` values override system ENV
 (ON = dotenv wins, OFF = system ENV wins). Click toggles immediately via
@@ -73,8 +74,8 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
                   └ channel tests & cooldowns
 ```
 
-- **Scheduler**: round-robin with quota-pacing priority over fallback-only
-- **Limits**: learned safe RPM/TPM, 429 classification, exponential backoff
+- **Scheduler**: `round_robin`, `cost_aware`, or `quota_paced_priority`, using Runner tiers and Channel state
+- **Limits**: learned safe RPM/TPM, 429 classification, quota windows, exponential backoff
 - **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy
 - **State file**: `data/flex.db` (SQLite, `.gitignore`d)
 
@@ -89,10 +90,21 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | GET | `/config` | Config viewer/editor HTML |
 | GET/POST | `/setup`, `/api/setup/override` | Env management |
 | GET | `/help` | Hermes connection details |
-| GET | `/api/pools/{name}/channels` | Channel metrics |
+| GET | `/api/runners` | Canonical Runner list |
+| GET | `/api/runners/{name}/channels` | Runner Channel metrics |
+| GET | `/api/providers` | Provider list and configured model counts |
+| GET | `/api/providers/{provider}/models` | Configured model candidates (`?refresh=1` is an explicit UI refresh marker; no active probe) |
+| GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |
 | GET | `/api/requests` | Recent attempt log |
+| GET | `/api/traces` | Trace list |
+| GET | `/api/traces/{trace_id}` | Trace detail and events |
+| GET | `/api/traces/{trace_id}/full-request` | Full captured request when optional retention is enabled |
+| GET | `/api/statistics/*` | Error, call, request, hourly and duplicate statistics |
 | POST | `/api/pools/{name}/channels/{id}/test` | Channel test |
 | POST | `/api/pools/{name}/channels/{id}/enabled` | Enable/disable |
 | POST | `/api/pools/{name}/channels/{id}/reset` | Reset quota/cooldown |
 | POST | `/api/config` | Validate & save config |
 | POST | `/api/admin/restart` | Launchd restart (macOS) |
+
+The Runner action endpoints under `/api/runners/{name}/channels/{id}/...` are
+also available; the `/api/pools/...` action paths remain for compatibility.

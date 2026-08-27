@@ -785,6 +785,7 @@ def create_app(config_path:str|Path):
     async def duplicate_statistics(period:str='day'):
         if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')
         return state.duplicate_statistics(period)
+    @app.post('/api/runners/{name}/channels/{channel_id}/reset')
     @app.post('/api/pools/{name}/channels/{channel_id}/reset')
     async def reset_channel(name:str,channel_id:str,scope:str='all'):
         if scope not in ('all','quota','cooldown'):raise HTTPException(400,'scope must be all, quota, or cooldown')
@@ -792,12 +793,14 @@ def create_app(config_path:str|Path):
         if pool is None and direct is None:raise HTTPException(404,'unknown pool')
         state.reset(channel_id,channel_id,scope); logger.warning('pool=%s channel=%s reset scope=%s',internal,channel_id,scope)
         return {'pool':name,'channel':channel_id,'reset':scope}
+    @app.post('/api/runners/{name}/channels/{channel_id}/enabled')
     @app.post('/api/pools/{name}/channels/{channel_id}/enabled')
     async def channel_enabled(name:str,channel_id:str,value:bool):
         internal,pool,direct=pool_for(name)
         if pool is None and direct is None:raise HTTPException(404,'unknown pool')
         state.set_enabled(channel_id,channel_id,value); logger.warning('pool=%s channel=%s enabled=%s',internal,channel_id,value)
         return {'pool':name,'channel':channel_id,'enabled':value}
+    @app.post('/api/runners/{name}/channels/{channel_id}/test')
     @app.post('/api/pools/{name}/channels/{channel_id}/test')
     async def test_channel(name:str,channel_id:str):
         internal,pool,direct=pool_for(name)

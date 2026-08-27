@@ -192,19 +192,15 @@ class FlexConfig(BaseModel):
 
     @model_validator(mode='after')
     def unique_external_models(self):
-        # 全局对外 model 名必须唯一(Runner.public_model + 各 CHANNEL public_model).
-        # 必填且不允许自动去重: 重复/缺失直接报错, 让用户显式配置.
-        names = {}  # name -> source
+        # Runner 是唯一的正式外部资源。Channel 的 public_model 仅作为
+        # 兼容字段/内部标识，不参与外部命名空间；单 Channel Runner
+        # 可以先沿用对应 Channel 的名称。
+        names = {}  # Runner public_model -> source
         for pname, runner in self.runners.items():
             pm = runner.public_model
             if pm in names:
                 raise ValueError(f'external model name conflict: {pm!r} used by {names[pm]} and runner {pname}. Rename explicitly.')
             names[pm] = f'runner {pname}'
-        for cid, ch in self.channels.items():
-            em = ch.public_model
-            if em in names:
-                raise ValueError(f'external model name conflict: {em!r} used by {names[em]} and channel {cid}. Rename explicitly.')
-            names[em] = f'channel {cid}'
         return self
 
     @model_validator(mode='after')

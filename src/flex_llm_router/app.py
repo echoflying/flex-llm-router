@@ -914,19 +914,15 @@ def create_app(config_path:str|Path):
         }
     @app.get('/v1/models')
     async def models():
-        # Runners are the canonical external resources.  Direct Channel and
-        # legacy Link names remain listed so existing clients keep working.
+        # Runners are the only formal external resources. Channels remain
+        # internal implementation members and are not advertised.
         data_list = config.runner_models()
-        # Also include direct channels
-        data_list += [{'id':ch.id,'object':'model','owned_by':ch.provider}
-                      for ch in config.channels.values()
-                      if ch.enabled and ch.externally_exposed]
-        # 连接: 暴露为独立 model 名(指向已解析的 pool/channel), 外部系统可直接引用;
-        # 附带 target 便于前端标注"连接 -> 目标"
+        # Legacy links to Runner resources remain visible. Links pointing
+        # directly to a Channel stay resolvable for compatibility but are not
+        # advertised as external models.
         data_list += [{'id':name,'object':'model','owned_by':'flex-connection','target':target}
                       for name, target in config.links.items()
-                      if target not in config.channels or
-                         (config.channels[target].enabled and config.channels[target].externally_exposed)]
+                      if target in config.runners or any(r.public_model == target for r in config.runners.values())]
         return {'object':'list','data':data_list}
 
     @app.get('/api/providers')

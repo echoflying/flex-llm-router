@@ -40,6 +40,17 @@ def test_runners_are_canonical_and_pool_alias_is_compatible():
     assert cfg.get_runner_channels('coder')[0][1].id == 'c1'
 
 
+def test_single_runner_may_reuse_channel_public_model_name():
+    cfg = FlexConfig.model_validate({
+        'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+        'channels': {'c1': _channel().model_dump()},
+        'runners': {'demo-model': {
+            'public_model': 'demo-model', 'channels': ['c1'], 'tiers': {'c1': 0},
+        }},
+    })
+    assert cfg.runners['demo-model'].public_model == cfg.channels['c1'].public_model
+
+
 def test_legacy_pool_connection_migrate_once():
     pool = Pool(public_model='legacy', channels=['c1'], tiers={'c1': 0})
     cfg = FlexConfig.model_validate({

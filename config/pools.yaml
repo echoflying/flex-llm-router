@@ -140,12 +140,6 @@ runners:
     selection:
       strategy: round_robin
       retry_next_channel_on: []
-      hedge:
-        stages:
-          - after_seconds: 360
-            channels: [sensenova-flash-lite, agnes-flash]
-          - after_seconds: 720
-            channels: [sensenova-flash-lite, sensenova-deepseek-v4-flash]
     context_policy:
       reserve_output_tokens: 8192
     session_affinity:

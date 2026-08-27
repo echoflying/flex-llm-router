@@ -41,9 +41,9 @@ RPM 和 TPM 429 使用独立指数退避。每次真实 429 后记录学习样�
 
 ## 无首字的长请求（Hedge）
 
-尚未收到上游响应对象时，原请求会在 6 分钟、12 分钟各启动一个同 Channel 的并行副本，最先返回响应对象者获胜，其余副本取消。每个尝试若先触发独立的响应对象超时，会立即记为该尝试失败并推进下一个 Hedge 阶段，不必再等到原定时间点；若响应对象已返回但尚未收到 SSE，剩余 Hedge 档位同样以最先收到上游事件者获胜。15 分钟仍无响应对象或 SSE 时，Router 取消所有等待副本、记录 `upstream_total_timeout` 并返回 504；已经开始输出的流不受该首活动时限截断。即使某个上游 HTTP 库未立即响应取消，Router 也不会继续等待它释放：Trace 与调用方会立即得到最终失败状态。该时钟由 7800 内部 watchdog 每秒驱动，和 7801 前端进程、页面是否打开完全无关；Trace 会显示 `watchdog_hedge_due` / `watchdog_deadline_due` 作为到期证据。
+尚未收到上游响应对象时，Runner 按 Channel 数量执行通用 Hedge：3 个或更多 Channel 在 6 分钟、9 分钟依次启动第二、第三 Channel；2 个 Channel 在 6 分钟启动第二 Channel。对应的最终首活动截止分别是 12 分钟和 9 分钟；单 Channel 沿用全局安全截止。最先返回响应对象者获胜，其余副本取消。每个尝试若先触发独立的响应对象超时，会立即记为该尝试失败并推进下一个 Hedge 阶段，不必再等到原定时间点；若响应对象已返回但尚未收到 SSE，剩余 Hedge 档位同样以最先收到上游事件者获胜。Router 取消所有等待副本、记录 `upstream_total_timeout` 并返回 504；已经开始输出的流不受该首活动时限截断。即使某个上游 HTTP 库未立即响应取消，Router 也不会继续等待它释放：Trace 与调用方会立即得到最终失败状态。该时钟由 7800 内部 watchdog 每秒驱动，和 7801 前端进程、页面是否打开完全无关；Trace 会显示 `watchdog_hedge_due` / `watchdog_deadline_due` 作为到期证据。
 
-Pool 的 Hedge 阶段由 `selection.hedge.stages` 配置。每个 stage 的 `after_seconds` 指定等待时间、`channels` 指定并行目标；列表第一项先执行，后续项按顺序执行。任意一份先返回响应对象或 SSE 即获胜，所有其它副本取消；15 分钟仍没有活动则统一返回 504。Trace 的 Hedge 事件会标明实际目标 Channel。
+Runner 可以用 `selection.hedge.stages` 显式覆盖目标；未配置时自动按 Channel 数量采用 6/9/12 分钟策略。每个显式 stage 的 `after_seconds` 指定等待时间、`channels` 指定目标；列表第一项先执行，后续项按顺序执行。任意一份先返回响应对象或 SSE 即获胜，最终截止按 Runner Channel 数量计算。Trace 的 Hedge 事件会标明实际目标 Channel。
 
 每个 stage 会跳过已经有未完成请求的 Channel，并记录 `pre_response_hedge_skipped` / `hedge_skipped`。因此配置中重复出现同一 Channel 不会制造重复在途请求；只有原尝试已经结束后，后续普通重试才可能再次使用它。
 

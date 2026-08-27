@@ -203,8 +203,10 @@ RPM_BACKOFF_BASE=8
 QUEUE_TPM_SECONDS=int(os.getenv('FLEX_QUEUE_TPM','60'))
 QUEUE_RPM_SECONDS=int(os.getenv('FLEX_QUEUE_RPM','300'))
 # 仅在流式请求尚未收到任何可转发 SSE 事件时使用；Hermes 保留 30 分钟总超时。
-# Default pools hedge at 6 / 12 minutes.  The Flash Plus pool has an explicit
-# cross-channel plan below; 15 minutes is the hard first-activity deadline.
+# Runner Hedge defaults are derived from the number of configured Channels.
+# Three Channels: 6m -> second Channel, 9m -> third Channel, 12m hard stop.
+# Two Channels: 6m -> second Channel, 9m hard stop. One Channel keeps the
+# configured global safety deadline because there is no useful fallback.
 HEDGE_DELAYS=(int(os.getenv('FLEX_HEDGE_FIRST_SECONDS','360')),int(os.getenv('FLEX_HEDGE_SECOND_SECONDS','720')))
 UPSTREAM_FIRST_ACTIVITY_TIMEOUT=int(os.getenv('FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT','900'))
 # Per-attempt safety bounds.  These are intentionally shorter than the
@@ -239,7 +241,23 @@ def hedge_plan_for(pool_name,channels,selected,pool=None):
             targets=tuple(str(target) for target in (stage.get('channels') or ()) if str(target) in known)
             if due and targets:plan.append((due,targets))
         if plan:return tuple(plan)
-    return tuple((due,(selected.id,)) for due in HEDGE_DELAYS)
+    # Automatic policy is intentionally based only on Runner membership and
+    # order, never on provider/model names. The initially selected Channel is
+    # the request's model0; subsequent configured Channels are model1/model2.
+    ordered=[selected]+[channel for channel in channels if channel.id!=selected.id]
+    if len(ordered)>=3:
+        return ((360,(ordered[1].id,)),(540,(ordered[2].id,)))
+    if len(ordered)==2:
+        return ((360,(ordered[1].id,)),)
+    return ()
+
+def first_activity_deadline_for(channels):
+    """Return the request hard-stop implied by Runner Channel count."""
+    if len(channels)>=3:
+        return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)
+    if len(channels)==2:
+        return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540)
+    return UPSTREAM_FIRST_ACTIVITY_TIMEOUT
 def requirements(body,stream):
     required={'chat'}
     if stream:required.add('streaming')
@@ -389,10 +407,16 @@ def create_app(config_path:str|Path):
                     stage_text.append(f'{minute} 分钟：{targets}')
             if stages:
                 strategy_name='配置驱动多阶段 Hedge'
-                strategy_detail=('；'.join(stage_text)+'；15 分钟无首活动返回 504') if stage_text else '按 Runner 中 hedge.stages 顺序执行；15 分钟无首活动返回 504'
+                strategy_detail=('；'.join(stage_text)+'；最终截止按 Runner Channel 数量计算') if stage_text else '按 Runner 中 hedge.stages 顺序执行；最终截止按 Channel 数量计算'
             elif strategy_key=='round_robin':
                 strategy_name='轮转均衡 + 同通道 Hedge'
-                strategy_detail='按轮转选择 Channel；6 / 12 分钟无首活动时向原 Channel 发副本；15 分钟截止'
+                count=len(pool.channels)
+                if count>=3:
+                    strategy_detail='按配置顺序选择 Channel；6 分钟重试第二 Channel，9 分钟重试第三 Channel，12 分钟无首活动截止'
+                elif count==2:
+                    strategy_detail='按配置顺序选择 Channel；6 分钟重试第二 Channel，9 分钟无首活动截止'
+                else:
+                    strategy_detail=f'单 Channel；沿用全局 {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60} 分钟无首活动截止'
             elif strategy_key=='cost_aware':
                 strategy_name='成本优先 + 故障回退'
                 strategy_detail='按 tier/成本优先；配额、限流或故障时切换备用 Channel，并保持会话亲和性'
@@ -622,7 +646,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_pool_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','trace_list_query_index','6m_12m_hedges','15m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','trace_list_query_index','channel_count_aware_6m_9m_hedges','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -632,7 +656,8 @@ def create_app(config_path:str|Path):
                 'uptime_human':remaining_clock(uptime),
             },
             'effective_policy':{
-                'default_hedge_seconds':list(HEDGE_DELAYS),
+                'automatic_hedge_seconds':{'two_channels':[360],'three_or_more_channels':[360,540]},
+                'automatic_deadline_seconds':{'one_channel':UPSTREAM_FIRST_ACTIVITY_TIMEOUT,'two_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'three_or_more_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)},
                 'configured_pool_hedges':{
                     pool_name:[{'after_seconds':due,'channels':list(targets)} for due,targets in hedge_plan_for(pool_name,[ch for _,ch in config.get_pool_channels(pool_name)],config.get_pool_channels(pool_name)[0][1],config.pools[pool_name])]
                     for pool_name in config.runners
@@ -641,7 +666,7 @@ def create_app(config_path:str|Path):
                 'first_activity_deadline_seconds':UPSTREAM_FIRST_ACTIVITY_TIMEOUT,
                 'response_timeout_seconds':UPSTREAM_RESPONSE_TIMEOUT,
                 'first_chunk_timeout_seconds':UPSTREAM_FIRST_CHUNK_TIMEOUT,
-                'summary':f'Per-channel {UPSTREAM_RESPONSE_TIMEOUT}s response / {UPSTREAM_FIRST_CHUNK_TIMEOUT}s first SSE; 6m / 12m Hedge; 15m hard deadline',
+                'summary':f'Per-channel {UPSTREAM_RESPONSE_TIMEOUT}s response / {UPSTREAM_FIRST_CHUNK_TIMEOUT}s first SSE; 2 Channel: 6m/9m, 3+ Channels: 6m/9m/12m hard deadline',
             },
             'watchdog':{'active_trace_count':len(app.state.first_activity_watch),'interrupted_traces_closed_on_start':app.state.recovered_traces},
         }
@@ -918,12 +943,13 @@ def create_app(config_path:str|Path):
             state.trace_attempt(rid,ch.id)
             initial_hedges_started=0
             hedge_plan=hedge_plan_for(internal,channels,ch,pool)
+            first_activity_deadline=first_activity_deadline_for(channels)
             channel_by_id={candidate.id:candidate for candidate in channels}
             # The watchdog is owned by the core (7800), not the UI.  It sends
             # deadline signals through this queue, so a hung provider request
             # cannot depend on this coroutine's own timeout calculation.
             watchdog_signals=asyncio.Queue()
-            app.state.first_activity_watch[rid]={'started':req_started,'signals':watchdog_signals,'sent':set(),'hedge_plan':hedge_plan}
+            app.state.first_activity_watch[rid]={'started':req_started,'signals':watchdog_signals,'sent':set(),'hedge_plan':hedge_plan,'deadline_seconds':first_activity_deadline}
             def stop_first_activity_watch():
                 app.state.first_activity_watch.pop(rid,None)
             async def call_upstream(target):
@@ -985,7 +1011,7 @@ def create_app(config_path:str|Path):
                     deadline_forced['value']=True
                     deadline_due['value']=True
                     deadline_event.set()
-                    detail=f'No upstream response before Router {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60}-minute safety deadline; pre-response Hedge hard-stop closed the request.'
+                    detail=f'No upstream response before Router {first_activity_deadline//60}-minute safety deadline; pre-response Hedge hard-stop closed the request.'
                     state.trace_event(rid,'upstream_cancel_requested',http_status=504,detail='Core watchdog requested cancellation of all pending LiteLLM tasks')
                     state.trace_event(rid,'upstream_total_timeout',ch.id,504,detail)
                     now_ms=int((time.monotonic()-req_started)*1000)
@@ -1013,7 +1039,7 @@ def create_app(config_path:str|Path):
                         if remaining<=0:
                             for task,(attempt_id,attempt_started,label,target) in active.items():
                                 if attempt_id!=attempt:
-                                    state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='No upstream response before 15-minute safety deadline')
+                                    state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='No upstream response before Runner safety deadline')
                             cancel_detached(active)
                             raise UpstreamTotalTimeout()
                         next_delay=hedge_plan[initial_hedges_started][0] if initial_hedges_started<len(hedge_plan) else None
@@ -1023,7 +1049,7 @@ def create_app(config_path:str|Path):
                         if deadline_task in done or deadline_due['value']:
                             for task,(attempt_id,attempt_started,label,target) in active.items():
                                 if attempt_id!=attempt:
-                                    state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='Core watchdog cancelled pending hedge at 15-minute deadline')
+                                    state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='Core watchdog cancelled pending hedge at Runner deadline')
                             cancel_detached(active)
                             raise UpstreamTotalTimeout()
                         if watchdog_task in done:
@@ -1032,7 +1058,7 @@ def create_app(config_path:str|Path):
                             if signal=='deadline':
                                 for task,(attempt_id,attempt_started,label,target) in active.items():
                                     if attempt_id!=attempt:
-                                        state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='Core watchdog cancelled pending hedge at 15-minute deadline')
+                                        state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='Core watchdog cancelled pending hedge at Runner deadline')
                                 cancel_detached(active)
                                 raise UpstreamTotalTimeout()
                             hedge_no=int(signal.rsplit('_',1)[1])
@@ -1063,13 +1089,13 @@ def create_app(config_path:str|Path):
                                 if deadline_due['value']:
                                     for other,(other_id,other_started,other_label,other_target) in active.items():
                                         if other_id!=attempt:
-                                            state.finish(other_id,'cancelled','upstream_total_timeout',int((time.monotonic()-other_started)*1000),error_detail='Core watchdog cancelled pending hedge at 15-minute deadline')
+                                            state.finish(other_id,'cancelled','upstream_total_timeout',int((time.monotonic()-other_started)*1000),error_detail='Core watchdog cancelled pending hedge at Runner deadline')
                                     cancel_detached(active)
                                     raise UpstreamTotalTimeout()
                                 raise
                             except asyncio.TimeoutError as hedge_error:
                                 # A single provider must not keep the request
-                                # blocked until the 15-minute global deadline.
+                                # blocked until the Runner's first-activity deadline.
                                 # Treat the bounded attempt as failed, then
                                 # advance the configured Hedge plan while any
                                 # other attempts continue in parallel.
@@ -1103,14 +1129,14 @@ def create_app(config_path:str|Path):
                             # owns the same watchdog record from this point;
                             # leaving these callbacks installed would let the
                             # pre-response callback launch a duplicate Hedge
-                            # at 6/12 minutes even though a response object has
+                            # at 6/9 minutes even though a response object has
                             # already been handed to the SSE consumer.
                             watch_record['on_hedge']=None
                             selected_response=value
                             def stream_deadline_hard_stop():
                                 if watch_record.get('deadline_forced'): return
                                 watch_record['deadline_forced']=True
-                                detail=f'No upstream SSE activity before Router {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60}-minute safety deadline; watchdog closed the trace before the streaming consumer entered.'
+                                detail=f'No upstream SSE activity before Router {first_activity_deadline//60}-minute safety deadline; watchdog closed the trace before the streaming consumer entered.'
                                 state.trace_event(rid,'upstream_cancel_requested',target.id,504,detail='Watchdog hard-stop for a response object whose streaming consumer did not start')
                                 state.trace_event(rid,'upstream_total_timeout',target.id,504,detail)
                                 state.trace_finish(rid,'failed',target.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
@@ -1150,7 +1176,7 @@ def create_app(config_path:str|Path):
             except UpstreamTotalTimeout:
                 stop_first_activity_watch()
                 elapsed=int((time.monotonic()-started)*1000)
-                detail=f'No upstream response before Router {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60}-minute safety deadline; cancelled all pending attempts.'
+                detail=f'No upstream response before Router {first_activity_deadline//60}-minute safety deadline; cancelled all pending attempts.'
                 # The pre-response watchdog may already have persisted the
                 # terminal outcome while this coroutine was unwinding. Avoid
                 # duplicating completion events and analytics in that case.
@@ -1398,7 +1424,7 @@ def create_app(config_path:str|Path):
                     cancel_detached(pending)
                     await close_upstream(iterator)
                     await close_upstream(response)
-                    detail=f'No upstream SSE activity before Router {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60}-minute safety deadline; cancelled all pending attempts.'
+                    detail=f'No upstream SSE activity before Router {first_activity_deadline//60}-minute safety deadline; cancelled all pending attempts.'
                     state.trace_event(rid,'upstream_total_timeout',ch.id,504,detail)
                     state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
                     state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
@@ -1433,6 +1459,7 @@ def create_app(config_path:str|Path):
             now=time.monotonic()
             for trace_id,record in list(app.state.first_activity_watch.items()):
                 elapsed=now-record['started']; sent=record['sent']; signals=record['signals']
+                deadline_seconds=int(record.get('deadline_seconds',UPSTREAM_FIRST_ACTIVITY_TIMEOUT))
                 for index,(delay,target_ids) in enumerate(record.get('hedge_plan',()),1):
                     signal=f'hedge_{index}'
                     if elapsed>=delay and signal not in sent:
@@ -1444,9 +1471,9 @@ def create_app(config_path:str|Path):
                                 callback(index)
                             except Exception as exc:
                                 logger.exception('watchdog hedge launch failed trace=%s: %s',trace_id,exc)
-                if elapsed>=UPSTREAM_FIRST_ACTIVITY_TIMEOUT and 'deadline' not in sent:
+                if elapsed>=deadline_seconds and 'deadline' not in sent:
                     sent.add('deadline'); signals.put_nowait('deadline')
-                    state.trace_event(trace_id,'watchdog_deadline_due',http_status=504,detail=f'Core watchdog reached {UPSTREAM_FIRST_ACTIVITY_TIMEOUT}s without upstream activity; cancellation due.')
+                    state.trace_event(trace_id,'watchdog_deadline_due',http_status=504,detail=f'Core watchdog reached {deadline_seconds}s without upstream activity; cancellation due.')
                     callback=record.get('on_deadline')
                     if callback is not None:
                         try:

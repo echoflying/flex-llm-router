@@ -624,6 +624,45 @@ def create_app(config_path:str|Path):
         except Exception as exc: await structured_config_error(exc)
         return {'status':'saved','channel':channel_id,'backup':str(backup)}
 
+    @app.post('/api/config/channels-bulk')
+    async def create_channels_bulk(request:Request):
+        """Create checked Provider models as Channels in one validated edit."""
+        body=await request.json()
+        provider=str(body.get('provider') or '').strip()
+        items=body.get('models')
+        if provider not in config.providers: raise HTTPException(400,'unknown provider')
+        if not isinstance(items,list) or not items: raise HTTPException(400,'select at least one model')
+        if len(items)>100: raise HTTPException(400,'at most 100 models per edit')
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        channels=mapping.setdefault('channels',{})
+        existing_pairs={(ch.provider,ch.litellm_model) for ch in config.channels.values()}
+        created=[]
+        for item in items:
+            if not isinstance(item,dict): raise HTTPException(400,'invalid model item')
+            litellm_model=str(item.get('litellm_model') or item.get('model') or '').strip()
+            if not litellm_model: raise HTTPException(400,'model is required')
+            if '/' not in litellm_model: litellm_model='openai/'+litellm_model
+            model_tail=litellm_model.rsplit('/',1)[-1]
+            channel_id=provider+'-'+re.sub(r'[^a-zA-Z0-9]+','-',model_tail).strip('-').lower()
+            if not channel_id: raise HTTPException(400,'model cannot form a channel id')
+            if (provider,litellm_model) in existing_pairs:
+                continue
+            if channel_id in channels:
+                raise HTTPException(409,f'channel id conflict: {channel_id}')
+            alias=str(item.get('alias') or item.get('public_model') or channel_id).strip()
+            channels[channel_id]={
+                'id':channel_id,'provider':provider,'litellm_model':litellm_model,
+                'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
+                'capabilities':item.get('capabilities') or ['chat','streaming'],
+                'externally_exposed':bool(item.get('externally_exposed',True)),
+                'enabled':bool(item.get('enabled',True)),
+            }
+            existing_pairs.add((provider,litellm_model)); created.append(channel_id)
+        if not created: return {'status':'unchanged','created':[]}
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','created':created,'backup':str(backup)}
+
     @app.post('/api/config/channels/{channel_id}/test')
     async def config_channel_test(channel_id:str):
         """Admin self-test for any Channel, including internally hidden ones."""

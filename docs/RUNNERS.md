@@ -27,6 +27,7 @@ Provider 下拉和 Model 候选接口默认只读取已配置的 Provider/Channe
 
 - **Runner** 编辑对外模型名、成员 Channel 和成员顺序；策略字段仍复用既有 Pool 策略。
 - **Channel** 编辑 Provider/`litellm_model`，以及 `enabled` 和 `externally_exposed`。关闭 `externally_exposed` 只隐藏该 Channel 的直接外部模型目录项，不会将它从 Runner 内部路由移除。
+- Channel 添加流程先选择 Provider，再显式加载上游模型并勾选一个或多个；系统按 `provider-model` 生成默认 Channel ID，别名写入 `public_model`。已有 Channel 的 Provider/Model 对固定，编辑只修改别名、暴露和启用状态。
 - Channel 页按 Provider 分组，可通过“添加”选择 Provider 与 Model 创建新 Channel；每行显示最后访问时间，并提供“自检 | 编辑”操作。自检仅在点击时发起一次真实调用。
 - **Model** 管理 Provider，并只写入 `base_url_env` / `api_key_env` 这类 `.env` 变量名引用；实际密钥值永远不进入 API 响应或页面。
 

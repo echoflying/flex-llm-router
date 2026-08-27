@@ -100,6 +100,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | POST | `/api/config/runners/{name}` | Edit Runner membership/order and public model |
 | POST | `/api/config/channels/{id}` | Edit Channel and external exposure toggle |
 | POST | `/api/config/channels` | Add a new Provider + Model Channel |
+| POST | `/api/config/channels-bulk` | Add checked models from one Provider as Channels |
 | POST | `/api/config/channels/{id}/test` | Explicit self-test for one Channel |
 | POST/DELETE | `/api/config/providers[/{name}]` | Add/update or remove an unreferenced Provider |
 | GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |

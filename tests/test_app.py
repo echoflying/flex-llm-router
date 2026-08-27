@@ -39,6 +39,9 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert 'data-tab="channel">Channel' in text
     assert 'data-tab="model">Model' in text
     assert text.index('data-tab="runner"') < text.index('data-tab="channel"') < text.index('data-tab="model"')
+    assert '局域网' in text
+    assert '复制' in text
+    assert '上移' in text and '下移' in text
 
 
 def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeypatch):
@@ -50,6 +53,26 @@ def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeyp
     provider = next(p for p in data['providers'] if p['id'] == 'sensenova')
     assert provider['api_key_env'] == 'SENSENOVA_API_KEY'
     assert 'do-not-return-this' not in r.text
+
+
+def test_runner_channel_order_edit_persists_for_scheduler(tmp_config, monkeypatch):
+    """Runner order is stored as the channel list consumed by scheduling."""
+    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY',
+                 'OPENCODE_GO_API_BASE', 'OPENCODE_GO_API_KEY',
+                 'DEEPSEEK_OFFICIAL_API_BASE', 'DEEPSEEK_OFFICIAL_API_KEY',
+                 'AGNES_API_BASE', 'AGNES_API_KEY'):
+        monkeypatch.setenv(name, 'test-value')
+    client = TestClient(create_app(tmp_config))
+    data = client.get('/api/config/editor').json()
+    runner = next(r for r in data['runners'] if r['name'] == 'mix-deepseek-v4-flash')
+    ordered = [c['id'] for c in reversed(runner['channels'])]
+    response = client.post('/api/config/runners/mix-deepseek-v4-flash', json={
+        'channels': ordered,
+    })
+    assert response.status_code == 200, response.text
+    refreshed = client.get('/api/config/editor').json()
+    runner = next(r for r in refreshed['runners'] if r['name'] == 'mix-deepseek-v4-flash')
+    assert [c['id'] for c in runner['channels']] == ordered
 
 
 def test_setup_page_shows_env_vars_and_nav(tmp_config):

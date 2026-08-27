@@ -83,28 +83,6 @@ channels:
       max_retries: 1
       backoff: {base_seconds: 10, max_seconds: 120, exponential: false}
 
-  agnes-2.5-flash:
-    id: agnes-2.5-flash
-    provider: agnes-official
-    public_model: agnes-official-agnes-2.5-flash
-    litellm_model: openai/agnes-2.5-flash
-    context_window_tokens: 200000
-    capabilities: [chat, streaming]
-    provider_type: agnes
-    supported_params: []
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: 1500
-      quota_cooldown_seconds: 3600
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 3
-
   agnes-flash:
     id: agnes-flash
     provider: agnes-official
@@ -217,4 +195,5 @@ links:
   # 单通道别名: 想让某个外部系统直连 sensenova 时用
   sensenova-only: sensenova-deepseek-v4-flash
   # Hermes 后端别名: 直连 AGNES 单通道
-  hermes-backend: agnes-2.5-flash
+  # Preserve the legacy alias while using the single canonical Agnes pair.
+  hermes-backend: agnes-flash

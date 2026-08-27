@@ -19,6 +19,15 @@ pip install -e '.[dev]'
 flex-router                    # starts on http://127.0.0.1:7800
 ```
 
+## Local/Mac synchronization
+
+`D:\\home.it\\flex-llm-router` is the canonical editing checkout. Commit and
+push local changes first, then run `powershell -File scripts/sync_to_mac.ps1`
+to synchronize the committed code to Mac. The script intentionally excludes
+`.env`, databases, logs, virtual environments, caches, and backups. Mac is a
+runtime target, not a second editing source; restart its services manually
+when a code or configuration change should take effect.
+
 ## Pages
 
 | Path | Description |

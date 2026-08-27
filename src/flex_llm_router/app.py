@@ -593,6 +593,10 @@ def create_app(config_path:str|Path):
                  'context_window_tokens','capabilities','supported_params','limits','retry_policy')
         for key in allowed:
             if key in body: current[key]=body[key]
+        # A disabled Channel can never remain directly exposed, even when an
+        # API client bypasses the UI's linked checkboxes.
+        if current.get('enabled') is False:
+            current['externally_exposed']=False
         channels[channel_id]=current
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)

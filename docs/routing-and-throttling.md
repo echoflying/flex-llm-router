@@ -73,4 +73,4 @@ limits:
 powershell -File scripts/sync_to_mac.ps1
 ```
 
-脚本只同步已提交的代码、配置模板、文档和测试，排除 `.env`、数据库、日志、虚拟环境、缓存和备份。同步后需手动重启 Mac 核心服务，修改才会加载；UI 进程是否刷新不影响核心 watchdog。
+脚本只同步已提交的代码、文档和测试；明确排除 Mac 端整个 `config/`（包括 `pools.yaml`、`setup.conf` 及备份）、`.env`、数据库、日志、虚拟环境和缓存，避免覆盖 Mac UI 新增的 Channel/Runner 或运行开关。同步后需手动重启 Mac 核心服务，代码修改才会加载；UI 进程是否刷新不影响核心 watchdog。

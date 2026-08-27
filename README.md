@@ -24,9 +24,11 @@ flex-router                    # starts on http://127.0.0.1:7800
 `D:\\home.it\\flex-llm-router` is the canonical editing checkout. Commit and
 push local changes first, then run `powershell -File scripts/sync_to_mac.ps1`
 to synchronize the committed code to Mac. The script intentionally excludes
-`.env`, databases, logs, virtual environments, caches, and backups. Mac is a
-runtime target, not a second editing source; restart its services manually
-when a code or configuration change should take effect.
+`.env`, the entire Mac runtime `config/` directory, databases, logs, virtual
+environments, and caches, so Channels/Runners and runtime switches changed
+from the Mac UI are not silently overwritten. Mac is a runtime target, not a
+second editing source; restart its services manually when a code change
+should take effect.
 
 ## Pages
 
@@ -78,7 +80,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 
 - **Scheduler**: `round_robin`, `cost_aware`, or `quota_paced_priority`, using Runner tiers and Channel state
 - **Limits**: learned safe RPM/TPM, 429 classification, quota windows, exponential backoff
-- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy
+- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy (Mac runtime `config/` is preserved by sync)
 - **State file**: `data/flex.db` (SQLite, `.gitignore`d)
 
 ## Endpoints

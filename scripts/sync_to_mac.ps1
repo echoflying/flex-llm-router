@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$required = @('config', 'docs', 'frontend', 'review', 'scripts', 'src', 'templates', 'tests')
+$required = @('docs', 'frontend', 'review', 'scripts', 'src', 'templates', 'tests')
 $rootFiles = @('.env.example', '.gitignore', 'DESIGN.md', 'README.md', 'pyproject.toml')
 
 if (-not (Test-Path (Join-Path $ProjectRoot '.git') -PathType Container)) {
@@ -21,6 +21,7 @@ foreach ($name in $rootFiles) {
     & scp -o BatchMode=yes -- $source "${MacUser}@${MacHost}:$MacProject/$name"
     if ($LASTEXITCODE -ne 0) { throw "scp failed: $name" }
 }
+
 foreach ($name in $required) {
     $source = Join-Path $ProjectRoot $name
     if (-not (Test-Path $source -PathType Container)) { continue }
@@ -29,4 +30,4 @@ foreach ($name in $required) {
 }
 
 Write-Output "Synced committed project files to ${MacUser}@${MacHost}:$MacProject"
-Write-Output 'Excluded by design: .env, data/, logs/, .venv/, .git/, caches, and backups.'
+Write-Output 'Excluded by design: .env, config/ (Mac runtime configuration), data/, logs/, .venv/, .git/, caches, and backups.'

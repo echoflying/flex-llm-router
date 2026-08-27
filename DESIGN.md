@@ -47,4 +47,4 @@ Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、�
 
 ## 8. 运行边界
 
-7800 是核心 API、调度器和 watchdog；7801 是独立 UI。UI 重启不会替代核心 watchdog；代码或配置修改后需重启核心才加载新版本。项目的本地正式副本是 `D:\\home.it\\flex-llm-router`，提交并推送后通过 `scripts/sync_to_mac.ps1` 同步 Mac，运行时 `.env`、数据库和日志不参与同步。
+7800 是核心 API、调度器和 watchdog；7801 是独立 UI。UI 重启不会替代核心 watchdog；代码或配置修改后需重启核心才加载新版本。项目的本地正式副本是 `D:\\home.it\\flex-llm-router`，提交并推送后通过 `scripts/sync_to_mac.ps1` 同步 Mac；Mac 端运行时 `.env`、整个 `config/`、数据库和日志不参与同步，避免覆盖 UI 保存的运行配置。

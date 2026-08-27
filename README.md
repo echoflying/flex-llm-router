@@ -42,7 +42,7 @@ when a code or configuration change should take effect.
 `/config` 固定按 Runner → Channel → Model 显示三个标签页。Runner 编辑
 成员和顺序；Channel 编辑 Provider、LiteLLM model、启用及
 `externally_exposed`；Model 编辑 Provider 的 `.env` 变量名引用，不显示
-密钥值。Runner 页面按配置顺序列出 Channel，可上移、下移或在独立弹窗中增加成员；策略名称可查看说明并切换；这些操作确认后会立即保存。页面同时可在本机/局域网 Base URL 间切换，并直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建 `.bak`
+密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；单 Channel Runner 增加第二个 Channel 时要求选择策略；这些操作确认后会立即保存。Channel 是否对外由 Runner 成员关系决定，不在 Channel 页面单独配置。页面同时可在本机/局域网 Base URL 间切换，并直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建 `.bak`
 并热更新进程内配置，不自动重启核心。旧的 `/api/config` 原文校验保存接口
 仍兼容保留。
 

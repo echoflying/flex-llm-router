@@ -562,6 +562,49 @@ def create_app(config_path:str|Path):
         view=await config_view()
         return view
 
+    @app.post('/api/config/runners')
+    async def create_runner(request:Request):
+        """Create a Runner with one or more existing Channels.
+
+        A new Runner is immediately an external resource.  Channel-level
+        ``externally_exposed`` remains a legacy compatibility field; new
+        membership is controlled here by the Runner editor.
+        """
+        body=await request.json()
+        name=str(body.get('name') or '').strip()
+        public_model=str(body.get('public_model') or name).strip()
+        channels=body.get('channels')
+        if channels is None and body.get('channel'):
+            channels=[body.get('channel')]
+        if not name or not public_model:
+            raise HTTPException(400,'name is required')
+        if not isinstance(channels,list) or not channels:
+            raise HTTPException(400,'select at least one Channel')
+        channels=[str(channel).strip() for channel in channels if str(channel).strip()]
+        if not channels:
+            raise HTTPException(400,'select at least one Channel')
+        if len(set(channels)) != len(channels):
+            raise HTTPException(400,'Runner Channels must be unique')
+        if name in config.runners:
+            raise HTTPException(409,'runner name already exists')
+        if any(r.public_model == public_model for r in config.runners.values()):
+            raise HTTPException(409,'public model already exists')
+        missing=[channel for channel in channels if channel not in config.channels]
+        if missing:
+            raise HTTPException(400,'unknown Channel: '+', '.join(missing))
+        selection=body.get('selection') if isinstance(body.get('selection'),dict) else {'strategy':'round_robin'}
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        runners=mapping.setdefault('runners',{})
+        runners[name]={
+            'public_model':public_model,
+            'channels':channels,
+            'tiers':{channel:0 for channel in channels},
+            'selection':selection,
+        }
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','runner':name,'backup':str(backup)}
+
     @app.post('/api/config/runners/{name}')
     async def edit_runner(name:str, request:Request):
         if name not in config.runners: raise HTTPException(404,'unknown runner')

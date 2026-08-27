@@ -46,10 +46,28 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert 'runner-channel-modal' in text
     assert 'runner-channel-pane' in text and 'runner-summary' in text
     assert 'runner-mode-row' in text and 'runner-copy-row' in text
+    assert 'remove-channel' in text and 'runner-add' in text
     assert 'runner-save' not in text
     assert '立即保存并参与调度' in text
     assert 'name="strategy"' in text and 'type="radio"' in text
     assert 'Provider 在前' in text
+
+
+def test_create_runner_with_initial_channel(tmp_config, monkeypatch):
+    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY',
+                 'OPENCODE_GO_API_BASE', 'OPENCODE_GO_API_KEY',
+                 'DEEPSEEK_OFFICIAL_API_BASE', 'DEEPSEEK_OFFICIAL_API_KEY',
+                 'AGNES_API_BASE', 'AGNES_API_KEY'):
+        monkeypatch.setenv(name, 'test-value')
+    client = TestClient(create_app(tmp_config))
+    response = client.post('/api/config/runners', json={
+        'name': 'new-runner',
+        'channel': 'sensenova-deepseek-v4-flash',
+    })
+    assert response.status_code == 200, response.text
+    runners = client.get('/api/config/editor').json()['runners']
+    created = next(r for r in runners if r['name'] == 'new-runner')
+    assert [c['id'] for c in created['channels']] == ['sensenova-deepseek-v4-flash']
 
 
 def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeypatch):

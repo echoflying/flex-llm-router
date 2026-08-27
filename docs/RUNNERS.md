@@ -26,7 +26,9 @@ Provider 下拉和 Model 候选接口默认只读取已配置的 Provider/Channe
 `/config` 固定提供三个标签页，顺序为 **Runner → Channel → Model**：
 
 - **Runner** 以横向表格行展示，每个 Runner 独占一行；左侧为模型名、策略和地址信息，右侧为按顺序纵向排列的 Channel。模型名默认只读，悬停后可点“编辑”；Channel 可上移、下移或通过独立弹窗增加成员，新增项排在末尾，顺序就是调度/Hedge 的候选顺序，所有操作确认后立即保存，不再需要额外保存按钮。策略显示中文名称，`i` 图标查看说明，“更换”弹窗直接列出 Radio 选项切换既有策略；增加 Channel 弹窗按 Provider 分组并把 Provider 放在选项前面。页面可切换本机或局域网 Base URL，并复制 Base URL 与对外模型名。策略字段仍复用既有 Pool 策略。
-- **Channel** 编辑 Provider/`litellm_model`，以及 `enabled` 和 `externally_exposed`。关闭 `externally_exposed` 只隐藏该 Channel 的直接外部模型目录项，不会将它从 Runner 内部路由移除。
+- **Channel** 管理 Provider/`litellm_model` 和 `enabled`。Channel 是否作为外部资源由它是否加入 Runner 决定；旧配置中的 `externally_exposed` 字段仍保留用于兼容，但不再在 Channel 页面单独配置。
+- Runner 页可直接“增加 Runner”：输入名称并选择首个 Channel，创建后立即生效；给单 Channel Runner 增加第二个 Channel 时，弹窗会要求先选择策略。
+- 每个 Channel 行提供“移除”；移除后立即保存，且最后一个 Channel 不允许移除。
 - Channel 添加流程先选择 Provider，再显式加载上游模型并勾选一个或多个；系统按 `provider-model` 生成默认 Channel ID，别名写入 `public_model`。已有 Channel 的 Provider/Model 对固定，编辑只修改别名、暴露和启用状态。
 - Channel 页按 Provider 分组，可通过“添加”选择 Provider 与 Model 创建新 Channel；每行显示最后访问时间，并提供“自检 | 编辑”操作。自检仅在点击时发起一次真实调用。
 - **Model** 管理 Provider，并只写入 `base_url_env` / `api_key_env` 这类 `.env` 变量名引用；实际密钥值永远不进入 API 响应或页面。

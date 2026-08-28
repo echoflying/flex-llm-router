@@ -13,7 +13,7 @@ from flex_llm_router.state import StateStore
 logger=logging.getLogger('uvicorn.error')
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-27.pre-response-deadline-v11'
+ROUTER_BUILD='2026-08-28.stream-idle-hedge-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""

@@ -461,6 +461,19 @@ class StateStore:
             self.db.execute('DELETE FROM session_affinity WHERE updated<?',(cutoff,))
             for prefix in prefixes[minimum_messages-1:]:
                 self.db.execute('INSERT INTO session_affinity(pool,prefix_hmac,channel,updated) VALUES(?,?,?,?) ON CONFLICT(pool,prefix_hmac) DO UPDATE SET updated=excluded.updated',(pool,prefix,channel,now))
+    def forget_affinity(self,pool,messages,channel=None,minimum_messages=2):
+        """Invalidate the conversation's sticky Channel after an upstream fault.
+
+        Affinity is keyed by every message-prefix HMAC, so remove all matching
+        prefixes rather than only the last one.  A failed/partial stream must
+        not keep steering a retried conversation back to the same Channel.
+        ``channel`` is accepted for observability/future selective invalidation;
+        invalidation intentionally clears the conversation mapping as a whole.
+        """
+        prefixes=self._prefixes(messages)
+        if len(prefixes)<minimum_messages:return
+        with self.lock,self.db:
+            self.db.executemany('DELETE FROM session_affinity WHERE pool=? AND prefix_hmac=?',[(pool,prefix) for prefix in prefixes[minimum_messages-1:]])
     def is_enabled(self,pool,ch_id):
         with self.lock:
             row=self.db.execute('SELECT enabled FROM channel_overrides WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()

@@ -52,6 +52,8 @@ Router 监听真实 HTTP `disconnect`。首活动前或流式期间断开，会�
 
 启用 `session_affinity` 时，同一对话优先保持同一 Channel，避免上下文缓存因频繁切换失效。限流、配额或故障时可以向 Runner 中的下一个 tier 回退；恢复探测和回切由配置的 `selection.fallback.reattach` 控制。
 
+会话粘性不是永久绑定：上游发生 429、400、连接/响应超时或流式提前中断时，Router 会清除该对话的粘性记录，避免下一次重发再次命中已失败的 Channel。切换后的 Channel 一旦收到首个 SSE，会先写入临时粘性（事件 `session_affinity_provisional`）；只有完整流结束后才记为最终成功。这样既能让重复请求跟随已经开始响应的 Channel，也不会把未完成的请求误记为完整成功。
+
 ## 观测与诊断
 
 - `/traces` 展示请求级 Trace、每次上游尝试和完整事件序列。

@@ -1557,6 +1557,8 @@ def create_app(config_path:str|Path):
                                 # other attempts continue in parallel.
                                 elapsed_ms=int((time.monotonic()-attempt_started)*1000)
                                 state.finish(attempt_id,'failure','upstream_response_timeout',elapsed_ms,error_detail='Provider response-object timeout; detached LiteLLM task',error_code=504)
+                                if affinity.get('enabled'):
+                                    state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                                 state.trace_event(rid,'pre_response_timeout',target.id,504,detail=f'{label} exceeded the {UPSTREAM_RESPONSE_TIMEOUT}s response-object bound')
                                 if initial_hedges_started < len(hedge_plan):
                                     initial_hedges_started += 1
@@ -1566,6 +1568,8 @@ def create_app(config_path:str|Path):
                                     continue
                                 raise hedge_error
                             except Exception as hedge_error:
+                                if affinity.get('enabled'):
+                                    state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                                 if label=='original':
                                     for other,(other_id,other_started,other_label,other_target) in active.items():
                                         other.cancel()
@@ -1633,6 +1637,8 @@ def create_app(config_path:str|Path):
                 stop_first_activity_watch()
                 elapsed=int((time.monotonic()-started)*1000)
                 detail=f'No upstream response before Router {first_activity_deadline//60}-minute safety deadline; cancelled all pending attempts.'
+                if affinity.get('enabled'):
+                    state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                 # The pre-response watchdog may already have persisted the
                 # terminal outcome while this coroutine was unwinding. Avoid
                 # duplicating completion events and analytics in that case.
@@ -1644,6 +1650,8 @@ def create_app(config_path:str|Path):
             except Exception as e:
                 stop_first_activity_watch()
                 typ=error_type(e); detail=error_detail(e); last=typ
+                if affinity.get('enabled'):
+                    state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                 state.trace_event(rid,'upstream_error',ch.id,error_code(e),f'{typ}: {detail}')
                 state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=error_code(e) or 0,body=f'{type(e).__name__}: {detail}')
                 state.finish(attempt,'failure',typ,int((time.monotonic()-started)*1000),error_detail=detail,error_code=error_code(e))
@@ -1786,6 +1794,8 @@ def create_app(config_path:str|Path):
                         return await first_event(resp,attempt,started,'original',ch)
                     except asyncio.TimeoutError:
                         elapsed_ms=int((time.monotonic()-started)*1000)
+                        if affinity.get('enabled'):
+                            state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                         state.finish(attempt,'failure','upstream_first_sse_timeout',elapsed_ms,error_detail='Provider returned no first SSE event within the bounded wait',error_code=504)
                         state.trace_event(rid,'upstream_first_sse_timeout',ch.id,504,detail=f'No first SSE event within {UPSTREAM_FIRST_CHUNK_TIMEOUT}s; advancing Hedge plan')
                         raise
@@ -1802,6 +1812,8 @@ def create_app(config_path:str|Path):
                         state.trace_event(rid,'hedge_cancelled',target.id,detail=f'第 {number} 个 Hedge 阶段已取消：另一副本先返回')
                         raise
                     except Exception as exc:
+                        if affinity.get('enabled'):
+                            state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                         state.finish(hedge_attempt,'failure',error_type(exc),latency=int((time.monotonic()-hedge_started)*1000),error_code=error_code(exc))
                         state.trace_event(rid,'hedge_error',target.id,error_code(exc),f'第 {number} 个 Hedge 阶段异常：{error_type(exc)}')
                         raise
@@ -1870,6 +1882,13 @@ def create_app(config_path:str|Path):
                         for target_id in target_ids: schedule_hedge_event(hedge_index,channel_by_id[target_id])
                     iterator,first_item,active_attempt,active_started,label,winner_channel=winner
                     ch=winner_channel; base,key_=channel_credentials(ch,config.providers)
+                    if affinity.get('enabled'):
+                        # A first SSE proves this Channel can serve the current
+                        # conversation. Persist it provisionally so a retry
+                        # cannot reuse stale affinity left by a failed or
+                        # partial Channel; final completion refreshes it.
+                        state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                        state.trace_event(rid,'session_affinity_provisional',ch.id,detail='First upstream SSE received; provisional affinity updated before stream completion')
                     # A protocol event has arrived.  No more first-activity
                     # hedges or deadline checks are appropriate for this trace.
                     stop_first_activity_watch()
@@ -1906,7 +1925,11 @@ def create_app(config_path:str|Path):
                                         new_iterator,new_first,_,_,_,_=await first_event(fallback_response,h_attempt,h_started,'policy fallback',target)
                                         await close_upstream(current_response)
                                         current_response=fallback_response; response=fallback_response; current_iterator=new_iterator; current_item=new_first
-                                        ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; idle_started=time.monotonic(); idle_stage=0; continue
+                                        ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; idle_started=time.monotonic(); idle_stage=0
+                                        if affinity.get('enabled'):
+                                            state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                                            state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Fallback Channel produced first SSE; provisional affinity updated')
+                                        continue
                                     except Exception as exc:
                                         if h_attempt is not None:
                                             state.finish(h_attempt,'failure',error_type(exc),latency=int((time.monotonic()-h_started)*1000),error_detail=error_detail(exc),error_code=error_code(exc))
@@ -1946,6 +1969,9 @@ def create_app(config_path:str|Path):
                                 await close_upstream(current_response)
                                 current_response=new_iterator; response=new_iterator; iterator=new_iterator; current_iterator=new_iterator; current_item=new_first
                                 ch=new_channel; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
+                                if affinity.get('enabled'):
+                                    state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                                    state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Idle Hedge Channel produced first SSE; provisional affinity updated')
                                 idle_started=time.monotonic(); idle_stage=0; emitted=False; buffered=[]; buffered_chars=0; continue
                             except StopAsyncIteration:
                                 if not emitted:
@@ -1985,6 +2011,8 @@ def create_app(config_path:str|Path):
                 except UpstreamTotalTimeout:
                     # Some upstream HTTP stacks do not unblock promptly after
                     # Task.cancel(); never let that keep the caller/Trace running.
+                    if affinity.get('enabled'):
+                        state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                     state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail='First-activity deadline reached; detaching all pending upstream tasks')
                     cancel_detached(pending)
                     await close_upstream(iterator)
@@ -1997,6 +2025,8 @@ def create_app(config_path:str|Path):
                     return
                 except Exception as e:
                     typ=error_type(e); detail=error_detail(e)
+                    if affinity.get('enabled'):
+                        state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                     state.finish(active_attempt,'failure',typ,int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=error_code(e))
                     state.trace_finish(rid,'failed',ch.id,error_code(e) or 502,typ,detail,latency_ms=int((time.monotonic()-req_started)*1000))
                     if typ in ('rate_limit','tpm_limit','quota_exhausted'):

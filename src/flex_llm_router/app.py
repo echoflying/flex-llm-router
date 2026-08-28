@@ -1885,6 +1885,8 @@ def create_app(config_path:str|Path):
                         nonlocal iterator,first_item,active_attempt,active_started,ch,base,key_,response,stream_policy_failed
                         current_iterator=iterator; current_item=first_item; current_response=response
                         fallback_candidates=configured_policy_fallbacks(ch.id); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
+                        idle_started=time.monotonic(); idle_stage=0
+                        idle_deadline=(hedge_plan[-1][0]+180) if hedge_plan else 720
                         while True:
                             chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
                             if policy_reason and not emitted:
@@ -1904,7 +1906,7 @@ def create_app(config_path:str|Path):
                                         new_iterator,new_first,_,_,_,_=await first_event(fallback_response,h_attempt,h_started,'policy fallback',target)
                                         await close_upstream(current_response)
                                         current_response=fallback_response; response=fallback_response; current_iterator=new_iterator; current_item=new_first
-                                        ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; continue
+                                        ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; idle_started=time.monotonic(); idle_stage=0; continue
                                     except Exception as exc:
                                         if h_attempt is not None:
                                             state.finish(h_attempt,'failure',error_type(exc),latency=int((time.monotonic()-h_started)*1000),error_detail=error_detail(exc),error_code=error_code(exc))
@@ -1920,7 +1922,31 @@ def create_app(config_path:str|Path):
                                 buffered=[]; buffered_chars=0; emitted=True
                             elif emitted:
                                 yield current_item
-                            try: current_item=await current_iterator.__anext__()
+                            try:
+                                wait_for=max(0.1,idle_deadline-(time.monotonic()-idle_started))
+                                current_item=await asyncio.wait_for(current_iterator.__anext__(),wait_for)
+                                idle_started=time.monotonic()
+                            except asyncio.TimeoutError:
+                                if idle_stage>=len(hedge_plan):
+                                    detail=f'上游 SSE 已有活动，但连续 {idle_deadline//60} 分钟没有后续事件；按流式空闲截止终止'
+                                    state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
+                                    raise UpstreamTotalTimeout()
+                                idle_stage += 1; due,target_ids=hedge_plan[idle_stage-1]
+                                target=next((channel_by_id[target_id] for target_id in target_ids if target_id in channel_by_id and target_id!=ch.id),None)
+                                if target is None:
+                                    state.trace_event(rid,'stream_idle_hedge_skipped',ch.id,detail=f'流式空闲第 {idle_stage} 阶段没有可切换的其他 Channel')
+                                    idle_started=time.monotonic(); continue
+                                state.trace_event(rid,'stream_idle_hedge_started',target.id,detail=f'上游连续 {due}s 没有后续 SSE；第 {idle_stage} 个流式空闲 Hedge 阶段')
+                                try:
+                                    result=await asyncio.wait_for(hedge_event(idle_stage,target),max(1,idle_deadline-(time.monotonic()-idle_started)))
+                                except Exception as exc:
+                                    state.trace_event(rid,'stream_idle_hedge_error',target.id,error_code(exc),detail=f'{error_type(exc)}: {error_detail(exc)}')
+                                    idle_started=time.monotonic(); continue
+                                new_iterator,new_first,new_attempt,new_started,new_label,new_channel=result
+                                await close_upstream(current_response)
+                                current_response=new_iterator; response=new_iterator; iterator=new_iterator; current_iterator=new_iterator; current_item=new_first
+                                ch=new_channel; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
+                                idle_started=time.monotonic(); idle_stage=0; emitted=False; buffered=[]; buffered_chars=0; continue
                             except StopAsyncIteration:
                                 if not emitted:
                                     for buffered_item in buffered: yield buffered_item

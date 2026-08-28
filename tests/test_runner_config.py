@@ -89,9 +89,9 @@ def test_channel_external_exposure_defaults_true_and_alias_is_supported():
     assert cfg.channels['visible'].externally_exposed is True
 
 
-def test_chn_content_policy_and_ordered_global_fallback_are_preserved():
+def test_chn_content_policy_fallback_and_ordered_global_fallback_are_preserved():
     data = _channel().model_dump()
-    data['chn_content_policy'] = True
+    data['chn_content_policy_fallback'] = True
     fallback = _channel('agnes-flash').model_dump()
     cfg = FlexConfig.model_validate({
         'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
@@ -99,7 +99,7 @@ def test_chn_content_policy_and_ordered_global_fallback_are_preserved():
         'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
         'global_fallback': {'chn_content_policy': ['agnes-flash']},
     })
-    assert cfg.channels['c1'].chn_content_policy is True
+    assert cfg.channels['c1'].chn_content_policy_fallback is True
     assert cfg.global_fallback['chn_content_policy'] == ['agnes-flash']
 
 

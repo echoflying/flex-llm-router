@@ -59,10 +59,10 @@ class Channel(BaseModel):
     # external model in /v1/models.  A hidden Channel may still be selected
     # internally by a Runner; this is deliberately separate from ``enabled``.
     externally_exposed: bool = True
-    # Mark channels whose upstream applies Chinese content-policy screening.
-    # A policy-blocked completion may be retried on the global ordered
-    # ``global_fallback.chn_content_policy`` channel list.
-    chn_content_policy: bool = False
+    # Mark channels that are allowed to serve as a Chinese content-policy
+    # fallback.  This is deliberately a capability of the fallback Channel,
+    # not a claim about whether its own upstream blocks content.
+    chn_content_policy_fallback: bool = False
     provider: str  # references providers.xxx
     litellm_model: str
     public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.
@@ -91,6 +91,10 @@ class Channel(BaseModel):
                     if alias in value:
                         value['externally_exposed'] = value[alias]
                         break
+            # Compatibility with the first spelling, whose meaning was
+            # ambiguous.  Existing true values now mean "eligible fallback".
+            if 'chn_content_policy_fallback' not in value and 'chn_content_policy' in value:
+                value['chn_content_policy_fallback'] = value['chn_content_policy']
         return value
 
     @field_validator('id')
@@ -244,8 +248,17 @@ class FlexConfig(BaseModel):
         # Keep the migration safe for old configs while making the built-in
         # Agnes Official Channel the first fallback when it exists.  An
         # explicit empty list remains an intentional opt-out.
-        if 'chn_content_policy' not in self.global_fallback and 'agnes-flash' in self.channels:
-            self.global_fallback['chn_content_policy'] = ['agnes-flash']
+        if 'chn_content_policy' not in self.global_fallback:
+            marked=[cid for cid,ch in self.channels.items() if ch.chn_content_policy_fallback]
+            # Agnes Official is the default first fallback when present.  An
+            # otherwise unmarked Agnes is promoted only when no fallback has
+            # been explicitly selected, preserving an explicit empty list.
+            if not marked and 'agnes-flash' in self.channels:
+                self.channels['agnes-flash'].chn_content_policy_fallback=True
+                marked=['agnes-flash']
+            elif 'agnes-flash' in marked:
+                marked=['agnes-flash']+[cid for cid in marked if cid!='agnes-flash']
+            self.global_fallback['chn_content_policy'] = marked
         for policy, channel_ids in self.global_fallback.items():
             if not isinstance(channel_ids, list):
                 raise ValueError(f'global fallback {policy!r} must be a list of channel ids')

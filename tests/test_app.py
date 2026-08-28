@@ -98,7 +98,7 @@ def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeyp
     assert all('selection' in runner for runner in data['runners'])
     assert data['global_fallback']['chn_content_policy'] == ['agnes-flash']
     channel = next(c for c in data['channels'] if c['id'] == 'sensenova-deepseek-v4-flash')
-    assert channel['chn_content_policy'] is False
+    assert channel['chn_content_policy_fallback'] is False
     assert 'do-not-return-this' not in r.text
 
 
@@ -106,6 +106,10 @@ def test_global_policy_fallback_edit_persists_order(tmp_config, monkeypatch):
     for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY', 'AGNES_API_BASE', 'AGNES_API_KEY'):
         monkeypatch.setenv(name, 'test-value')
     client = TestClient(create_app(tmp_config))
+    mark = client.post('/api/config/channels/sensenova-deepseek-v4-flash', json={
+        'chn_content_policy_fallback': True,
+    })
+    assert mark.status_code == 200, mark.text
     response = client.post('/api/config/global-fallback', json={
         'policy': 'chn_content_policy',
         'channels': ['sensenova-deepseek-v4-flash', 'agnes-flash'],

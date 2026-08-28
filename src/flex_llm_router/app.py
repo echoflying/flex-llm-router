@@ -502,7 +502,8 @@ def create_app(config_path:str|Path):
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
                                  'base_url':base_url,'tier':pool.tiers.get(ch_id),
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
-                                 'chn_content_policy':ch.chn_content_policy,
+                                 'chn_content_policy_fallback':ch.chn_content_policy_fallback,
+                                 'chn_content_policy':ch.chn_content_policy_fallback,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -530,7 +531,8 @@ def create_app(config_path:str|Path):
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
                                  'base_url':base_url,'tier':None,'mounted_in':mounted,
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
-                                 'chn_content_policy':ch.chn_content_policy,
+                                 'chn_content_policy_fallback':ch.chn_content_policy_fallback,
+                                 'chn_content_policy':ch.chn_content_policy_fallback,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -701,7 +703,7 @@ def create_app(config_path:str|Path):
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
         allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
-                 'chn_content_policy',
+                 'chn_content_policy_fallback','chn_content_policy',
                  'context_window_tokens','capabilities','supported_params','protocol_support',
                  'limits','retry_policy')
         for key in allowed:
@@ -732,6 +734,8 @@ def create_app(config_path:str|Path):
         if len(channel_ids)!=len(set(channel_ids)): raise HTTPException(400,'fallback channels must be unique')
         missing=[cid for cid in channel_ids if cid not in config.channels]
         if missing: raise HTTPException(400,'unknown fallback Channel: '+', '.join(missing))
+        unmarked=[cid for cid in channel_ids if not config.channels[cid].chn_content_policy_fallback]
+        if unmarked: raise HTTPException(400,'fallback Channel 未标记 CHN Content Policy Fallback: '+', '.join(unmarked))
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         fallback=mapping.setdefault('global_fallback',{})
         fallback[policy]=channel_ids
@@ -759,7 +763,7 @@ def create_app(config_path:str|Path):
               'context_window_tokens':int(body.get('context_window_tokens') or 1000000),
               'capabilities':body.get('capabilities') or ['chat','streaming'],
               'protocol_support':body.get('protocol_support') or {},
-              'chn_content_policy':bool(body.get('chn_content_policy',False)),
+              'chn_content_policy_fallback':bool(body.get('chn_content_policy_fallback',body.get('chn_content_policy',False))),
               'externally_exposed':bool(body.get('externally_exposed',True)),
               'enabled':bool(body.get('enabled',True))}
         channels[channel_id]=item
@@ -798,7 +802,7 @@ def create_app(config_path:str|Path):
                 'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
                 'capabilities':item.get('capabilities') or ['chat','streaming'],
                 'protocol_support':item.get('protocol_support') or {},
-                'chn_content_policy':bool(item.get('chn_content_policy',False)),
+                'chn_content_policy_fallback':bool(item.get('chn_content_policy_fallback',item.get('chn_content_policy',False))),
                 'externally_exposed':bool(item.get('externally_exposed',True)),
                 'enabled':bool(item.get('enabled',True)),
             }
@@ -1314,11 +1318,11 @@ def create_app(config_path:str|Path):
         policy_fallback_active=False; policy_fallback_tried=set(); policy_fallback_channels=[]
         def configured_policy_fallbacks(exclude_id=None):
             """Prefer marked Channels in this Runner, then global ordered fallbacks."""
-            local=[c for c in channels if c.chn_content_policy and c.enabled and c.id!=exclude_id]
+            local=[c for c in channels if c.chn_content_policy_fallback and c.enabled and c.id!=exclude_id]
             if local:
                 return local
             ids=config.global_fallback.get('chn_content_policy',[]) if isinstance(config.global_fallback,dict) else []
-            return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].enabled and config.channels[cid].id!=exclude_id]
+            return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].chn_content_policy_fallback and config.channels[cid].enabled and config.channels[cid].id!=exclude_id]
         retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rate_limit':m} 两类独立
         while True:
             request_channels = policy_fallback_channels if policy_fallback_active else channels
@@ -1649,7 +1653,7 @@ def create_app(config_path:str|Path):
                     state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                     cooling=state.cooldown_state(key,ch.id)
                     if typ!='quota_exhausted':state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received from upstream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet; retry/fallback policy continues'))
-                if typ=='content_policy_blocked' and ch.chn_content_policy:
+                if typ=='content_policy_blocked':
                     detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
                     state.trace_event(rid,'content_policy_blocked',ch.id,error_code(e) or 400,detail=detail_policy)
                     fallback_channels=configured_policy_fallbacks(ch.id)
@@ -1730,7 +1734,7 @@ def create_app(config_path:str|Path):
                 if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
                 payload=data(response,name)
                 policy_reason=policy_block_reason(payload)
-                if policy_reason and ch.chn_content_policy:
+                if policy_reason:
                     detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
                     state.finish(attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-started)*1000),error_detail=detail,error_code=200)
                     state.trace_event(rid,'content_policy_blocked',ch.id,200,detail=detail)
@@ -1885,7 +1889,7 @@ def create_app(config_path:str|Path):
                         fallback_candidates=configured_policy_fallbacks(ch.id); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
                         while True:
                             chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
-                            if policy_reason and ch.chn_content_policy and not emitted:
+                            if policy_reason and not emitted:
                                 detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
                                 state.finish(active_attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=200)
                                 state.trace_event(rid,'content_policy_blocked',ch.id,200,detail=detail)
@@ -1909,7 +1913,7 @@ def create_app(config_path:str|Path):
                                         state.trace_event(rid,'policy_fallback_error',target.id,error_code(exc),detail=f'{error_type(exc)}: {error_detail(exc)}')
                                         continue
                                 stream_policy_failed=True
-                            elif policy_reason and ch.chn_content_policy:
+                            elif policy_reason:
                                 stream_policy_failed=True
                                 state.trace_event(rid,'content_policy_blocked_after_output',ch.id,200,detail=f'finish_reason={policy_reason}; fallback suppressed after stream output began')
                             buffered.append(current_item); buffered_chars += len(chunk_content(chunk))

@@ -84,8 +84,8 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 
 ### CHN Content Policy fallback
 
-Each Channel may set `chn_content_policy: true` when its upstream applies
-Chinese content-policy screening.  If a Chat Completions response carries an
+Each Channel may set `chn_content_policy_fallback: true` when it is safe to use
+as a Chinese content-policy fallback.  If a Chat Completions response carries an
 explicit `finish_reason: content_filter` (or an equivalent normalized policy
 signal), Flex records the blocked attempt and tries the ordered global list:
 
@@ -97,15 +97,16 @@ global_fallback:
 ```
 
 Fallbacks are Channel IDs, not public model names.  When the current Runner
-contains other enabled Channels marked `chn_content_policy`, those Channels
-are tried first in Runner order; only a Runner without such a Channel uses the
+contains other enabled Channels marked `chn_content_policy_fallback`, those
+Channels are tried first in Runner order; only a Runner without such a Channel uses the
 global list.  The global list is configured from the Model tab (or
 `POST /api/config/global-fallback`) and is attempted in its listed order,
 without introducing a new scheduling policy.  If every fallback
 also reports a policy block, the request ends with `content_policy_blocked`.
 Normal refusal text without an explicit provider policy signal is not
-rewritten, and a Channel that is not marked `chn_content_policy` is never sent
-through this fallback path.
+rewritten. A Channel that is not marked `chn_content_policy_fallback` is never
+sent through this fallback path. The marker describes fallback eligibility, not
+whether that Channel itself will block content.
 
 When the configuration contains the standard `agnes-flash` Channel and no
 explicit list has been saved yet, it is automatically offered as the first

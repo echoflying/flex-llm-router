@@ -13,8 +13,9 @@
 
 Channel 可设置 `chn_content_policy: true`。此标志只用于识别上游明确返回
 的内容政策信号（例如 `finish_reason: content_filter`），不根据回复文本
-猜测敏感内容。命中后按 `global_fallback.chn_content_policy` 中的 Channel
-ID 顺序尝试全局兜底，建议第一项为 `agnes-flash`；所有兜底均阻断时返回
+猜测敏感内容。命中后如果当前 Runner 还有其他标记通道，则先按 Runner
+顺序尝试；只有 Runner 没有可用标记通道时才按 `global_fallback.chn_content_policy`
+中的 Channel ID 顺序全局兜底，建议第一项为 `agnes-flash`；所有兜底均阻断时返回
 `content_policy_blocked`。
 
 ## 2. 选路

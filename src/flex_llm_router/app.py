@@ -1311,14 +1311,17 @@ def create_app(config_path:str|Path):
             affinity = pool.session_affinity
             reserve = pool.context_policy.get('reserve_output_tokens', 8192)
         tried=set(); last='no_eligible_channel'; retries=0; quota_retry_channel=None; engine_retry_channel=None; five_hour_retry_channel=None
-        policy_fallback_active=False; policy_fallback_tried=set()
-        def configured_policy_fallbacks():
-            """Return enabled global CHN-policy fallback Channels in config order."""
+        policy_fallback_active=False; policy_fallback_tried=set(); policy_fallback_channels=[]
+        def configured_policy_fallbacks(exclude_id=None):
+            """Prefer marked Channels in this Runner, then global ordered fallbacks."""
+            local=[c for c in channels if c.chn_content_policy and c.enabled and c.id!=exclude_id]
+            if local:
+                return local
             ids=config.global_fallback.get('chn_content_policy',[]) if isinstance(config.global_fallback,dict) else []
-            return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].enabled]
+            return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].enabled and config.channels[cid].id!=exclude_id]
         retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rate_limit':m} 两类独立
         while True:
-            request_channels = configured_policy_fallbacks() if policy_fallback_active else channels
+            request_channels = policy_fallback_channels if policy_fallback_active else channels
             if policy_fallback_active and not request_channels:
                 detail='原 Channel 触发中国内容政策限制，但未配置可用的全局 CHN Content Policy Fallback Channel'
                 state.trace_event(rid,'policy_fallback_unavailable',detail=detail)
@@ -1649,14 +1652,15 @@ def create_app(config_path:str|Path):
                 if typ=='content_policy_blocked' and ch.chn_content_policy:
                     detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
                     state.trace_event(rid,'content_policy_blocked',ch.id,error_code(e) or 400,detail=detail_policy)
-                    fallback_channels=configured_policy_fallbacks()
+                    fallback_channels=configured_policy_fallbacks(ch.id)
                     if not policy_fallback_active and fallback_channels:
-                        policy_fallback_active=True; policy_fallback_tried={ch.id}; tried=set(policy_fallback_tried)
-                        state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to global CHN Content Policy Fallback ({", ".join(c.id for c in fallback_channels)})')
+                        policy_fallback_active=True; policy_fallback_tried={ch.id}; policy_fallback_channels=fallback_channels; tried=set(policy_fallback_tried)
+                        scope='Runner 内 CHN Policy Channel' if any(c.id in [x.id for x in channels] for c in fallback_channels) else '全局 CHN Content Policy Fallback'
+                        state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to {scope} ({", ".join(c.id for c in fallback_channels)})')
                         continue
                     if policy_fallback_active:
                         policy_fallback_tried.add(ch.id); tried.add(ch.id)
-                        if any(c.id not in policy_fallback_tried for c in fallback_channels):
+                        if any(c.id not in policy_fallback_tried for c in policy_fallback_channels):
                             state.trace_fallback(rid,f'Fallback {ch.id} also returned content policy block; trying next configured Channel')
                             continue
                     state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked',detail_policy,latency_ms=int((time.monotonic()-req_started)*1000))
@@ -1731,14 +1735,15 @@ def create_app(config_path:str|Path):
                     state.finish(attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-started)*1000),error_detail=detail,error_code=200)
                     state.trace_event(rid,'content_policy_blocked',ch.id,200,detail=detail)
                     if not policy_fallback_active:
-                        fallback_channels=configured_policy_fallbacks()
+                        fallback_channels=configured_policy_fallbacks(ch.id)
                         if fallback_channels:
-                            policy_fallback_active=True; policy_fallback_tried={ch.id}; tried=set(policy_fallback_tried)
-                            state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to global CHN Content Policy Fallback ({", ".join(c.id for c in fallback_channels)})')
+                            policy_fallback_active=True; policy_fallback_tried={ch.id}; policy_fallback_channels=fallback_channels; tried=set(policy_fallback_tried)
+                            scope='Runner 内 CHN Policy Channel' if any(c.id in [x.id for x in channels] for c in fallback_channels) else '全局 CHN Content Policy Fallback'
+                            state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to {scope} ({", ".join(c.id for c in fallback_channels)})')
                             continue
                     else:
                         policy_fallback_tried.add(ch.id); tried.add(ch.id)
-                        remaining=[c for c in configured_policy_fallbacks() if c.id not in policy_fallback_tried]
+                        remaining=[c for c in policy_fallback_channels if c.id not in policy_fallback_tried]
                         if remaining:
                             state.trace_fallback(rid,f'Fallback {ch.id} also returned content policy block; trying next configured Channel')
                             continue
@@ -1877,7 +1882,7 @@ def create_app(config_path:str|Path):
                         refusal when a CHN-policy Channel emits content_filter."""
                         nonlocal iterator,first_item,active_attempt,active_started,ch,base,key_,response,stream_policy_failed
                         current_iterator=iterator; current_item=first_item; current_response=response
-                        fallback_candidates=configured_policy_fallbacks(); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
+                        fallback_candidates=configured_policy_fallbacks(ch.id); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
                         while True:
                             chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
                             if policy_reason and ch.chn_content_policy and not emitted:

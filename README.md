@@ -96,9 +96,12 @@ global_fallback:
     - another-channel
 ```
 
-Fallbacks are Channel IDs, not public model names.  They are configured from
-the Model tab (or `POST /api/config/global-fallback`) and are attempted in the
-listed order, without introducing a new scheduling policy.  If every fallback
+Fallbacks are Channel IDs, not public model names.  When the current Runner
+contains other enabled Channels marked `chn_content_policy`, those Channels
+are tried first in Runner order; only a Runner without such a Channel uses the
+global list.  The global list is configured from the Model tab (or
+`POST /api/config/global-fallback`) and is attempted in its listed order,
+without introducing a new scheduling policy.  If every fallback
 also reports a policy block, the request ends with `content_policy_blocked`.
 Normal refusal text without an explicit provider policy signal is not
 rewritten, and a Channel that is not marked `chn_content_policy` is never sent

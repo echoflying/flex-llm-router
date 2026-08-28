@@ -55,6 +55,8 @@ def test_config_page_has_three_resource_tabs_in_order(tmp_config):
     assert 'name="strategy"' in text and 'type="radio"' in text
     assert 'Provider 在前' in text
     assert '实际 MODEL：' in text
+    assert 'CHN Content Policy' in text
+    assert '全局 CHN Content Policy Fallback' in text
 
 
 def test_create_runner_with_initial_channel(tmp_config, monkeypatch):
@@ -94,7 +96,23 @@ def test_config_editor_exposes_provider_env_names_not_values(tmp_config, monkeyp
     provider = next(p for p in data['providers'] if p['id'] == 'sensenova')
     assert provider['api_key_env'] == 'SENSENOVA_API_KEY'
     assert all('selection' in runner for runner in data['runners'])
+    assert data['global_fallback']['chn_content_policy'] == ['agnes-flash']
+    channel = next(c for c in data['channels'] if c['id'] == 'sensenova-deepseek-v4-flash')
+    assert channel['chn_content_policy'] is False
     assert 'do-not-return-this' not in r.text
+
+
+def test_global_policy_fallback_edit_persists_order(tmp_config, monkeypatch):
+    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY', 'AGNES_API_BASE', 'AGNES_API_KEY'):
+        monkeypatch.setenv(name, 'test-value')
+    client = TestClient(create_app(tmp_config))
+    response = client.post('/api/config/global-fallback', json={
+        'policy': 'chn_content_policy',
+        'channels': ['sensenova-deepseek-v4-flash', 'agnes-flash'],
+    })
+    assert response.status_code == 200, response.text
+    assert client.get('/api/config/editor').json()['global_fallback']['chn_content_policy'] == [
+        'sensenova-deepseek-v4-flash', 'agnes-flash']
 
 
 def test_responses_probe_persists_channel_protocol_result(tmp_config, monkeypatch):

@@ -81,6 +81,32 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 - **Scheduler**: `round_robin`, `cost_aware`, or `quota_paced_priority`, using Runner tiers and Channel state
 - **Limits**: learned safe RPM/TPM, 429 classification, quota windows, exponential backoff
 - **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy (Mac runtime `config/` is preserved by sync)
+
+### CHN Content Policy fallback
+
+Each Channel may set `chn_content_policy: true` when its upstream applies
+Chinese content-policy screening.  If a Chat Completions response carries an
+explicit `finish_reason: content_filter` (or an equivalent normalized policy
+signal), Flex records the blocked attempt and tries the ordered global list:
+
+```yaml
+global_fallback:
+  chn_content_policy:
+    - agnes-flash       # recommended first: Agnes Official
+    - another-channel
+```
+
+Fallbacks are Channel IDs, not public model names.  They are configured from
+the Model tab (or `POST /api/config/global-fallback`) and are attempted in the
+listed order, without introducing a new scheduling policy.  If every fallback
+also reports a policy block, the request ends with `content_policy_blocked`.
+Normal refusal text without an explicit provider policy signal is not
+rewritten, and a Channel that is not marked `chn_content_policy` is never sent
+through this fallback path.
+
+When the configuration contains the standard `agnes-flash` Channel and no
+explicit list has been saved yet, it is automatically offered as the first
+fallback. Saving an empty list is an explicit opt-out.
 - **State file**: `data/flex.db` (SQLite, `.gitignore`d)
 
 ## Endpoints
@@ -106,6 +132,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 | POST | `/api/config/channels-bulk` | Add checked models from one Provider as Channels |
 | POST | `/api/config/channels/{id}/test` | Explicit self-test for one Channel |
 | POST | `/api/config/channels/{id}/responses-test` | Explicit Responses API probe; persists the last result on the Channel |
+| POST | `/api/config/global-fallback` | Set ordered CHN Content Policy fallback Channel IDs |
 | POST/DELETE | `/api/config/providers[/{name}]` | Add/update or remove an unreferenced Provider |
 | GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |
 | GET | `/api/requests` | Recent attempt log |

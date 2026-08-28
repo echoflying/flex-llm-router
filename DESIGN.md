@@ -7,7 +7,7 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 ## 2. 资源抽象
 
 - **Provider**：配置 URL/API Key 的环境变量名，密钥不落 YAML。
-- **Channel**：恰好一个 Provider + 一个 LiteLLM Model，附带能力、上下文窗口、限额和重试参数。
+- **Channel**：恰好一个 Provider + 一个 LiteLLM Model，附带能力、上下文窗口、限额和重试参数。可标记 `chn_content_policy: true`，表示该上游启用中国内容政策审查。
 - Channel 的 `externally_exposed` 控制是否作为独立模型出现在 `/v1/models`；关闭时仍可作为 Runner 的内部候选。
 - **Runner**：稳定的外部模型名，包含一个或多个 Channel，并复用原 Pool 的策略字段。
 - **links**：兼容旧客户端名称的别名映射；旧 `pools`/`connections` 在加载时一次迁移为 Runner/links。
@@ -21,6 +21,14 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 ## 4. 限额与学习
 
 Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、配额冷却以及忙阈值。真实 429 才会触发限流分类、指数退避和学习样本；本地窗口是保护阈值，不等同于供应商账户余额。状态存储在 SQLite 中，并用于 Dashboard、统计和 `/healthz`。
+
+### CHN Content Policy fallback
+
+`global_fallback.chn_content_policy` 是按顺序排列的 Channel ID（建议
+`agnes-flash` 作为第一项）。当被标记的 Channel 返回明确的
+`finish_reason=content_filter` 或等价的 `content_policy_blocked` 信号时，
+Flex 记录原始尝试并按列表逐个请求；列表耗尽后返回
+`content_policy_blocked`。普通拒答文本没有明确政策信号时不触发此路径。
 
 ## 5. 无首活动 Hedge
 

@@ -11,6 +11,12 @@
 
 相同 Provider + Model 不允许配置成多个 Channel；不同凭据、地区、参数或限额不能用重复 Channel 表示。Provider 的模型候选由 `/api/providers/{provider}/models` 从配置读取，不执行周期性主动健康检查。
 
+Channel 可设置 `chn_content_policy: true`。此标志只用于识别上游明确返回
+的内容政策信号（例如 `finish_reason: content_filter`），不根据回复文本
+猜测敏感内容。命中后按 `global_fallback.chn_content_policy` 中的 Channel
+ID 顺序尝试全局兜底，建议第一项为 `agnes-flash`；所有兜底均阻断时返回
+`content_policy_blocked`。
+
 ## 2. 选路
 
 `selection.strategy` 当前支持：

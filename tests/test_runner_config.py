@@ -87,3 +87,27 @@ def test_channel_external_exposure_defaults_true_and_alias_is_supported():
     })
     assert cfg.channels['hidden'].externally_exposed is False
     assert cfg.channels['visible'].externally_exposed is True
+
+
+def test_chn_content_policy_and_ordered_global_fallback_are_preserved():
+    data = _channel().model_dump()
+    data['chn_content_policy'] = True
+    fallback = _channel('agnes-flash').model_dump()
+    cfg = FlexConfig.model_validate({
+        'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+        'channels': {'c1': data, 'agnes-flash': fallback},
+        'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
+        'global_fallback': {'chn_content_policy': ['agnes-flash']},
+    })
+    assert cfg.channels['c1'].chn_content_policy is True
+    assert cfg.global_fallback['chn_content_policy'] == ['agnes-flash']
+
+
+def test_unknown_global_policy_fallback_channel_is_rejected():
+    with pytest.raises(ValueError, match='unknown channel'):
+        FlexConfig.model_validate({
+            'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+            'channels': {'c1': _channel().model_dump()},
+            'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
+            'global_fallback': {'chn_content_policy': ['missing']},
+        })

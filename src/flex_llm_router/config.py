@@ -59,6 +59,10 @@ class Channel(BaseModel):
     # external model in /v1/models.  A hidden Channel may still be selected
     # internally by a Runner; this is deliberately separate from ``enabled``.
     externally_exposed: bool = True
+    # Mark channels whose upstream applies Chinese content-policy screening.
+    # A policy-blocked completion may be retried on the global ordered
+    # ``global_fallback.chn_content_policy`` channel list.
+    chn_content_policy: bool = False
     provider: str  # references providers.xxx
     litellm_model: str
     public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.
@@ -161,6 +165,10 @@ class FlexConfig(BaseModel):
     pools: dict[str, Pool] = Field(default_factory=dict)
     links: dict[str, str] = Field(default_factory=dict)
     connections: dict[str, str] = Field(default_factory=dict)
+    # Ordered global fallback channels for policy-specific recovery.  The
+    # list is intentionally empty by default so old configs remain valid;
+    # operators can put ``agnes-flash`` first in YAML/UI.
+    global_fallback: dict[str, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode='before')
     @classmethod
@@ -228,6 +236,24 @@ class FlexConfig(BaseModel):
             if name in reserved and name != target:
                 raise ValueError(
                     f'connection name {name!r} conflicts with an existing pool/channel name; rename the connection')
+        return self
+
+    @model_validator(mode='after')
+    def validate_global_fallbacks(self):
+        """Ensure configured global fallback references are real Channels."""
+        # Keep the migration safe for old configs while making the built-in
+        # Agnes Official Channel the first fallback when it exists.  An
+        # explicit empty list remains an intentional opt-out.
+        if 'chn_content_policy' not in self.global_fallback and 'agnes-flash' in self.channels:
+            self.global_fallback['chn_content_policy'] = ['agnes-flash']
+        for policy, channel_ids in self.global_fallback.items():
+            if not isinstance(channel_ids, list):
+                raise ValueError(f'global fallback {policy!r} must be a list of channel ids')
+            if len(channel_ids) != len(set(channel_ids)):
+                raise ValueError(f'global fallback {policy!r} contains duplicate channels')
+            missing = [cid for cid in channel_ids if cid not in self.channels]
+            if missing:
+                raise ValueError(f'global fallback {policy!r} references unknown channel(s): {missing}')
         return self
 
     def resolve_connection(self, name: str) -> str | None:

@@ -113,6 +113,23 @@ def response_preview(payload):
     except Exception:return ''
 def chunk_content(chunk):
     return ''.join((choice.get('delta') or {}).get('content') or '' for choice in chunk.get('choices',[]))
+POLICY_FINISH_REASONS={'content_filter','content_policy_blocked','safety_refusal','policy_blocked'}
+def policy_block_reason(payload):
+    """Return a normalized content-policy signal from a Chat Completions payload.
+
+    Providers generally expose ``finish_reason=content_filter``; Hermes may
+    normalize that to ``content_policy_blocked``.  Refusal text alone is not
+    treated as a signal because it is indistinguishable from a normal answer.
+    """
+    if not isinstance(payload,dict): return None
+    for choice in payload.get('choices',[]) or []:
+        if not isinstance(choice,dict): continue
+        reason=str(choice.get('finish_reason') or '').strip().lower()
+        if reason in POLICY_FINISH_REASONS: return reason
+        message=choice.get('message') if isinstance(choice.get('message'),dict) else {}
+        refusal=message.get('refusal')
+        if isinstance(refusal,str) and refusal.strip(): return 'refusal'
+    return None
 def clock(ts):
     return time.strftime('%H:%M:%S',time.localtime(ts)) if ts else '—'
 def remaining_clock(seconds):
@@ -147,6 +164,8 @@ def client_label(headers):
 def error_type(e):
     n=type(e).__name__.lower(); s=getattr(e,'status_code',None)
     detail=(getattr(e,'message',None) or str(e) or '').lower()
+    if any(marker in detail for marker in ('content_policy_blocked','content policy blocked','content_filter','content filter')):
+        return 'content_policy_blocked'
     # 仅识别已验证的上游临时引擎报错；兼容上游偶发的 avaiable 拼写错误。
     # 其他 400 仍为 request_error，避免掩盖请求格式问题。
     if re.search(r'engine\s+is\s+not\s+avai(?:l)?able\s+temporarily',detail):return 'engine_unavailable'
@@ -483,6 +502,7 @@ def create_app(config_path:str|Path):
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
                                  'base_url':base_url,'tier':pool.tiers.get(ch_id),
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
+                                 'chn_content_policy':ch.chn_content_policy,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -510,6 +530,7 @@ def create_app(config_path:str|Path):
                                  'litellm_model':ch.litellm_model,'real_base_url':real_base,
                                  'base_url':base_url,'tier':None,'mounted_in':mounted,
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
+                                 'chn_content_policy':ch.chn_content_policy,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -538,7 +559,8 @@ def create_app(config_path:str|Path):
                    for name,provider in config.providers.items()]
         return {'base_url':base_url,'lan_url':lan_url,'runners':runners,
                 'pools':runners,'channels':channels_all,'connections':connections,
-                'links':connections,'providers':providers}
+                'links':connections,'providers':providers,
+                'global_fallback':{k:list(v) for k,v in config.global_fallback.items()}}
 
     @app.get('/config',response_class=HTMLResponse)
     async def config_page():
@@ -679,6 +701,7 @@ def create_app(config_path:str|Path):
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
         allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
+                 'chn_content_policy',
                  'context_window_tokens','capabilities','supported_params','protocol_support',
                  'limits','retry_policy')
         for key in allowed:
@@ -691,6 +714,30 @@ def create_app(config_path:str|Path):
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)
         return {'status':'saved','channel':channel_id,'backup':str(backup)}
+
+    @app.post('/api/config/global-fallback')
+    async def edit_global_fallback(request:Request):
+        """Persist an ordered global policy fallback list.
+
+        Only channel ids are accepted; secrets and provider credentials never
+        enter this API.  The list order is the retry order.
+        """
+        body=await request.json()
+        policy=str(body.get('policy') or 'chn_content_policy').strip()
+        if policy!='chn_content_policy':
+            raise HTTPException(400,'only chn_content_policy fallback is supported')
+        channel_ids=body.get('channels',[])
+        if not isinstance(channel_ids,list): raise HTTPException(400,'channels must be a list')
+        channel_ids=[str(cid).strip() for cid in channel_ids if str(cid).strip()]
+        if len(channel_ids)!=len(set(channel_ids)): raise HTTPException(400,'fallback channels must be unique')
+        missing=[cid for cid in channel_ids if cid not in config.channels]
+        if missing: raise HTTPException(400,'unknown fallback Channel: '+', '.join(missing))
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        fallback=mapping.setdefault('global_fallback',{})
+        fallback[policy]=channel_ids
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        return {'status':'saved','policy':policy,'channels':channel_ids,'backup':str(backup)}
 
     @app.post('/api/config/channels')
     async def create_channel(request:Request):
@@ -712,6 +759,7 @@ def create_app(config_path:str|Path):
               'context_window_tokens':int(body.get('context_window_tokens') or 1000000),
               'capabilities':body.get('capabilities') or ['chat','streaming'],
               'protocol_support':body.get('protocol_support') or {},
+              'chn_content_policy':bool(body.get('chn_content_policy',False)),
               'externally_exposed':bool(body.get('externally_exposed',True)),
               'enabled':bool(body.get('enabled',True))}
         channels[channel_id]=item
@@ -750,6 +798,7 @@ def create_app(config_path:str|Path):
                 'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
                 'capabilities':item.get('capabilities') or ['chat','streaming'],
                 'protocol_support':item.get('protocol_support') or {},
+                'chn_content_policy':bool(item.get('chn_content_policy',False)),
                 'externally_exposed':bool(item.get('externally_exposed',True)),
                 'enabled':bool(item.get('enabled',True)),
             }
@@ -1262,11 +1311,22 @@ def create_app(config_path:str|Path):
             affinity = pool.session_affinity
             reserve = pool.context_policy.get('reserve_output_tokens', 8192)
         tried=set(); last='no_eligible_channel'; retries=0; quota_retry_channel=None; engine_retry_channel=None; five_hour_retry_channel=None
+        policy_fallback_active=False; policy_fallback_tried=set()
+        def configured_policy_fallbacks():
+            """Return enabled global CHN-policy fallback Channels in config order."""
+            ids=config.global_fallback.get('chn_content_policy',[]) if isinstance(config.global_fallback,dict) else []
+            return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].enabled]
         retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rate_limit':m} 两类独立
         while True:
+            request_channels = configured_policy_fallbacks() if policy_fallback_active else channels
+            if policy_fallback_active and not request_channels:
+                detail='原 Channel 触发中国内容政策限制，但未配置可用的全局 CHN Content Policy Fallback Channel'
+                state.trace_event(rid,'policy_fallback_unavailable',detail=detail)
+                state.trace_finish(rid,'failed',http_status=502,error_type='content_policy_blocked',error_detail=detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                raise HTTPException(502,{'error_type':'content_policy_blocked','error_detail':detail})
             # 每次选路只保留本轮拒绝原因；不能把上一轮的 busy 重复拼进调用轨迹。
             available=[]; rejected=[]
-            for c in channels:
+            for c in request_channels:
                 # 配额异常的原请求必须回到发生异常的同一 Channel 做验证；不能被调度器静默换走。
                 validation_channel=quota_retry_channel or engine_retry_channel or five_hour_retry_channel
                 if validation_channel is not None and c.id!=validation_channel:continue
@@ -1329,13 +1389,13 @@ def create_app(config_path:str|Path):
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
             sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
-            ch=next((candidate for candidate in available if candidate.id==sticky),None) or scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=input_tokens(body,ch.litellm_model),trace_id=rid); started=time.monotonic()
+            ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None)); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=input_tokens(body,ch.litellm_model),trace_id=rid); started=time.monotonic()
             state.trace_event(rid,'channel_selected',ch.id,detail='session affinity hit' if sticky==ch.id else 'scheduler selected channel')
             state.trace_attempt(rid,ch.id)
             initial_hedges_started=0
-            hedge_plan=hedge_plan_for(internal,channels,ch,pool)
-            first_activity_deadline=first_activity_deadline_for(channels)
-            channel_by_id={candidate.id:candidate for candidate in channels}
+            hedge_plan=[] if policy_fallback_active else hedge_plan_for(internal,request_channels,ch,pool)
+            first_activity_deadline=first_activity_deadline_for(request_channels)
+            channel_by_id={candidate.id:candidate for candidate in request_channels}
             # The watchdog is owned by the core (7800), not the UI.  It sends
             # deadline signals through this queue, so a hung provider request
             # cannot depend on this coroutine's own timeout calculation.
@@ -1586,6 +1646,21 @@ def create_app(config_path:str|Path):
                     state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                     cooling=state.cooldown_state(key,ch.id)
                     if typ!='quota_exhausted':state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received from upstream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet; retry/fallback policy continues'))
+                if typ=='content_policy_blocked' and ch.chn_content_policy:
+                    detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
+                    state.trace_event(rid,'content_policy_blocked',ch.id,error_code(e) or 400,detail=detail_policy)
+                    fallback_channels=configured_policy_fallbacks()
+                    if not policy_fallback_active and fallback_channels:
+                        policy_fallback_active=True; policy_fallback_tried={ch.id}; tried=set(policy_fallback_tried)
+                        state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to global CHN Content Policy Fallback ({", ".join(c.id for c in fallback_channels)})')
+                        continue
+                    if policy_fallback_active:
+                        policy_fallback_tried.add(ch.id); tried.add(ch.id)
+                        if any(c.id not in policy_fallback_tried for c in fallback_channels):
+                            state.trace_fallback(rid,f'Fallback {ch.id} also returned content policy block; trying next configured Channel')
+                            continue
+                    state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked',detail_policy,latency_ms=int((time.monotonic()-req_started)*1000))
+                    raise HTTPException(502,{'channel':ch.id,'error_type':'content_policy_blocked','error_detail':detail_policy}) from e
                 logger.warning('req=%s channel=%s failed error=%s detail=%s',name,ch.id,typ,detail)
                 if typ=='quota_exhausted':
                     # “allocated quota exceeded”在低频下可能只是上游的瞬时/子额度异常。
@@ -1648,9 +1723,28 @@ def create_app(config_path:str|Path):
             logger.info('req=%s channel=%s model=%s',name,ch.id,ch.litellm_model)
             if not stream:
                 stop_first_activity_watch()
-                output,total=usage_tokens(response); state.finish(attempt,'success',latency=int((time.monotonic()-started)*1000),output_tokens=output,total_tokens=total); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None; state.observe_success(key,ch.id)
                 if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
                 payload=data(response,name)
+                policy_reason=policy_block_reason(payload)
+                if policy_reason and ch.chn_content_policy:
+                    detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
+                    state.finish(attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-started)*1000),error_detail=detail,error_code=200)
+                    state.trace_event(rid,'content_policy_blocked',ch.id,200,detail=detail)
+                    if not policy_fallback_active:
+                        fallback_channels=configured_policy_fallbacks()
+                        if fallback_channels:
+                            policy_fallback_active=True; policy_fallback_tried={ch.id}; tried=set(policy_fallback_tried)
+                            state.trace_fallback(rid,f'{ch.id} returned content policy block; switching to global CHN Content Policy Fallback ({", ".join(c.id for c in fallback_channels)})')
+                            continue
+                    else:
+                        policy_fallback_tried.add(ch.id); tried.add(ch.id)
+                        remaining=[c for c in configured_policy_fallbacks() if c.id not in policy_fallback_tried]
+                        if remaining:
+                            state.trace_fallback(rid,f'Fallback {ch.id} also returned content policy block; trying next configured Channel')
+                            continue
+                    state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked',detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                    return JSONResponse(status_code=502,content={'error_type':'content_policy_blocked','error_detail':detail,'channel':ch.id})
+                output,total=usage_tokens(response); state.finish(attempt,'success',latency=int((time.monotonic()-started)*1000),output_tokens=output,total_tokens=total); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None; state.observe_success(key,ch.id)
                 if replay_allowed and is_replayable_response(payload):
                     state.replay_store(caller,name,fingerprint,ch.id,payload)
                 state.trace_finish(rid,'success',ch.id,200,output_preview=response_preview(payload),latency_ms=int((time.monotonic()-req_started)*1000))
@@ -1659,8 +1753,8 @@ def create_app(config_path:str|Path):
                 return JSONResponse(content=payload)
             disconnect_notice=asyncio.Event()
             async def events():
-                nonlocal ch,base,key_
-                ttft=None; chunks_seen=0; output_parts=[]; active_attempt=attempt; active_started=started; pending=set(); pending_channels={}; iterator=None
+                nonlocal ch,base,key_,response
+                ttft=None; chunks_seen=0; output_parts=[]; active_attempt=attempt; active_started=started; pending=set(); pending_channels={}; iterator=None; stream_policy_failed=False
                 async def close_upstream(value):
                     close=getattr(value,'aclose',None)
                     if not callable(close):return
@@ -1779,8 +1873,51 @@ def create_app(config_path:str|Path):
                             task.cancel()
                     if pending:await asyncio.gather(*pending,return_exceptions=True)
                     async def selected_items():
-                        yield first_item
-                        async for next_item in iterator:yield next_item
+                        """Yield SSE items, switching before the first visible
+                        refusal when a CHN-policy Channel emits content_filter."""
+                        nonlocal iterator,first_item,active_attempt,active_started,ch,base,key_,response,stream_policy_failed
+                        current_iterator=iterator; current_item=first_item; current_response=response
+                        fallback_candidates=configured_policy_fallbacks(); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
+                        while True:
+                            chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
+                            if policy_reason and ch.chn_content_policy and not emitted:
+                                detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
+                                state.finish(active_attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=200)
+                                state.trace_event(rid,'content_policy_blocked',ch.id,200,detail=detail)
+                                while fallback_index < len(fallback_candidates) and fallback_candidates[fallback_index].id == ch.id:
+                                    fallback_index += 1
+                                if fallback_index < len(fallback_candidates):
+                                    target=fallback_candidates[fallback_index]; fallback_index += 1
+                                    state.trace_fallback(rid,f'{ch.id} returned content policy block; switching stream to global fallback {target.id}')
+                                    h_attempt=None; h_started=time.monotonic()
+                                    try:
+                                        h_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
+                                        h_started=time.monotonic(); state.trace_attempt(rid,target.id); state.trace_event(rid,'policy_fallback_request',target.id,detail='Fallback stream request started')
+                                        fallback_response=await call_upstream(target)
+                                        new_iterator,new_first,_,_,_,_=await first_event(fallback_response,h_attempt,h_started,'policy fallback',target)
+                                        await close_upstream(current_response)
+                                        current_response=fallback_response; response=fallback_response; current_iterator=new_iterator; current_item=new_first
+                                        ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; continue
+                                    except Exception as exc:
+                                        if h_attempt is not None:
+                                            state.finish(h_attempt,'failure',error_type(exc),latency=int((time.monotonic()-h_started)*1000),error_detail=error_detail(exc),error_code=error_code(exc))
+                                        state.trace_event(rid,'policy_fallback_error',target.id,error_code(exc),detail=f'{error_type(exc)}: {error_detail(exc)}')
+                                        continue
+                                stream_policy_failed=True
+                            elif policy_reason and ch.chn_content_policy:
+                                stream_policy_failed=True
+                                state.trace_event(rid,'content_policy_blocked_after_output',ch.id,200,detail=f'finish_reason={policy_reason}; fallback suppressed after stream output began')
+                            buffered.append(current_item); buffered_chars += len(chunk_content(chunk))
+                            if not emitted and (buffered_chars >= 512 or len(buffered) >= 8):
+                                for buffered_item in buffered: yield buffered_item
+                                buffered=[]; buffered_chars=0; emitted=True
+                            elif emitted:
+                                yield current_item
+                            try: current_item=await current_iterator.__anext__()
+                            except StopAsyncIteration:
+                                if not emitted:
+                                    for buffered_item in buffered: yield buffered_item
+                                break
                     async for item in selected_items():
                         chunk=data(item,name)
                         if ttft is None and has_visible_content(chunk):
@@ -1792,6 +1929,10 @@ def create_app(config_path:str|Path):
                             state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=200,body=json.dumps(chunk,ensure_ascii=False)[:20000])
                         yield f"data: {json.dumps(chunk,ensure_ascii=False)}\n\n"
                     state.debug_log(rid,'client_out',pool=key,channel=ch.id,model=name,status=200,body=f'[stream] {chunks_seen} chunks delivered')
+                    if stream_policy_failed:
+                        state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked','All configured CHN Content Policy fallback Channels were exhausted',latency_ms=int((time.monotonic()-req_started)*1000))
+                        yield f'data: {json.dumps({"error":{"type":"content_policy_blocked","detail":"All configured CHN Content Policy fallback Channels were exhausted"}},ensure_ascii=False)}\n\n'
+                        return
                     state.finish(active_attempt,'success',latency=int((time.monotonic()-active_started)*1000),ttft_ms=ttft); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
                     if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
                     state.trace_finish(rid,'success',ch.id,200,output_preview=''.join(output_parts)[:512],ttft_ms=ttft,latency_ms=int((time.monotonic()-req_started)*1000)); yield 'data: [DONE]\n\n'

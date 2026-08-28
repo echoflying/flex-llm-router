@@ -503,7 +503,6 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':pool.tiers.get(ch_id),
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'chn_content_policy_fallback':ch.chn_content_policy_fallback,
-                                 'chn_content_policy':ch.chn_content_policy_fallback,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -532,7 +531,6 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':None,'mounted_in':mounted,
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'chn_content_policy_fallback':ch.chn_content_policy_fallback,
-                                 'chn_content_policy':ch.chn_content_policy_fallback,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -703,7 +701,7 @@ def create_app(config_path:str|Path):
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
         allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
-                 'chn_content_policy_fallback','chn_content_policy',
+                 'chn_content_policy_fallback',
                  'context_window_tokens','capabilities','supported_params','protocol_support',
                  'limits','retry_policy')
         for key in allowed:
@@ -763,7 +761,7 @@ def create_app(config_path:str|Path):
               'context_window_tokens':int(body.get('context_window_tokens') or 1000000),
               'capabilities':body.get('capabilities') or ['chat','streaming'],
               'protocol_support':body.get('protocol_support') or {},
-              'chn_content_policy_fallback':bool(body.get('chn_content_policy_fallback',body.get('chn_content_policy',False))),
+              'chn_content_policy_fallback':bool(body.get('chn_content_policy_fallback',False)),
               'externally_exposed':bool(body.get('externally_exposed',True)),
               'enabled':bool(body.get('enabled',True))}
         channels[channel_id]=item
@@ -802,7 +800,7 @@ def create_app(config_path:str|Path):
                 'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
                 'capabilities':item.get('capabilities') or ['chat','streaming'],
                 'protocol_support':item.get('protocol_support') or {},
-                'chn_content_policy_fallback':bool(item.get('chn_content_policy_fallback',item.get('chn_content_policy',False))),
+                'chn_content_policy_fallback':bool(item.get('chn_content_policy_fallback',False)),
                 'externally_exposed':bool(item.get('externally_exposed',True)),
                 'enabled':bool(item.get('enabled',True)),
             }

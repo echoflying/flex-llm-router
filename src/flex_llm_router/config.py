@@ -86,15 +86,13 @@ class Channel(BaseModel):
         """Accept the short legacy/editor aliases while storing one spelling."""
         if isinstance(value, dict):
             value = dict(value)
+            if 'chn_content_policy' in value:
+                raise ValueError('use chn_content_policy_fallback; chn_content_policy is no longer supported')
             if 'externally_exposed' not in value:
                 for alias in ('external_exposed', 'exposed', 'external'):
                     if alias in value:
                         value['externally_exposed'] = value[alias]
                         break
-            # Compatibility with the first spelling, whose meaning was
-            # ambiguous.  Existing true values now mean "eligible fallback".
-            if 'chn_content_policy_fallback' not in value and 'chn_content_policy' in value:
-                value['chn_content_policy_fallback'] = value['chn_content_policy']
         return value
 
     @field_validator('id')

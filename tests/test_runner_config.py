@@ -111,3 +111,14 @@ def test_unknown_global_policy_fallback_channel_is_rejected():
             'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
             'global_fallback': {'chn_content_policy': ['missing']},
         })
+
+
+def test_removed_chn_content_policy_field_is_rejected():
+    data = _channel().model_dump()
+    data['chn_content_policy'] = True
+    with pytest.raises(ValueError, match='chn_content_policy_fallback'):
+        FlexConfig.model_validate({
+            'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+            'channels': {'c1': data},
+            'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
+        })

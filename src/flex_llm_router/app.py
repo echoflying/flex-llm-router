@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,html,json,logging,os,re,subprocess,sys,time,uuid
+import asyncio,html,json,logging,os,re,shutil,subprocess,sys,time,uuid
 import anyio
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,35 @@ from flex_llm_router.config import FlexConfig,channel_credentials,load_config,va
 from flex_llm_router.scheduler import RoundRobinScheduler
 from flex_llm_router.state import StateStore
 logger=logging.getLogger('uvicorn.error')
+
+def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
+    """Create a timestamped local config backup and retain only the newest ones.
+
+    Runtime configuration is deliberately kept outside the code-sync workflow.
+    Backups sit beside the source file (for example ``pools.yaml.backup.20260829102323``)
+    so a Git rollback cannot remove the last known-good runtime configuration.
+    """
+    if not config_path.exists():
+        return None
+    stamp = time.strftime('%Y%m%d%H%M%S', time.localtime())
+    backup = config_path.with_name(f'{config_path.name}.backup.{stamp}')
+    suffix = 1
+    while backup.exists():
+        backup = config_path.with_name(f'{config_path.name}.backup.{stamp}_{suffix:02d}')
+        suffix += 1
+    shutil.copy2(config_path, backup)
+    backups = sorted(
+        config_path.parent.glob(f'{config_path.name}.backup.*'),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    for stale in backups[max(0, keep):]:
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+    return backup
+
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
 ROUTER_BUILD='2026-08-28.stream-idle-hedge-v1'
@@ -606,8 +635,7 @@ def create_app(config_path:str|Path):
                              '. Please set them in your .env file. Referenced by: '+'; '.join(missing_refs))
         if raw_text is None:
             raw_text=yaml.safe_dump(mapping,sort_keys=False,allow_unicode=True)
-        backup=config_path_resolved.parent/(config_path_resolved.name+'.bak')
-        backup.write_text(config_path_resolved.read_text(encoding='utf-8'),encoding='utf-8')
+        backup=backup_config_file(config_path_resolved, keep=10)
         config_path_resolved.write_text(raw_text,encoding='utf-8')
         config=cfg
         logger.warning('config saved backup=%s (hot-applied)',backup)

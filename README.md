@@ -44,8 +44,9 @@ should take effect.
 `/config` 固定按 Runner → Channel → Model 显示三个标签页。Runner 编辑
 成员和顺序；Runner 名称仅允许字母、数字、点、下划线和连字符（最多 64 个字符，
 不支持空格和斜杠），并在 Runner 区域提供 Base URL 选择和增加入口；Channel 编辑 Provider、LiteLLM model 和启用状态，Provider 单元格按组纵向合并；Model 编辑 Provider 的 `.env` 变量名引用，不显示
-密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；首个 Channel 可直接作为 Runner 名称，增加第二个 Channel 时若名称与任一 Channel 重复会提示先修改名称；这些操作确认后会立即保存。Channel 不单独对外展示，只通过 Runner 成员关系参与路由。页面可直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建 `.bak`
-并热更新进程内配置，不自动重启核心。旧的 `/api/config` 原文校验保存接口
+密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；首个 Channel 可直接作为 Runner 名称，增加第二个 Channel 时若名称与任一 Channel 重复会提示先修改名称；这些操作确认后会立即保存。Channel 不单独对外展示，只通过 Runner 成员关系参与路由。页面可直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建
+`config/pools.yaml.backup.YYYYMMDDHHMMSS`，并自动只保留最近 10 份；随后热更新进程内配置，
+不自动重启核心。旧的 `/api/config` 原文校验保存接口
 仍兼容保留。
 
 ### Setup / Override
@@ -80,7 +81,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
 
 - **Scheduler**: `round_robin`, `cost_aware`, or `quota_paced_priority`, using Runner tiers and Channel state
 - **Limits**: learned safe RPM/TPM, 429 classification, quota windows, exponential backoff
-- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy (Mac runtime `config/` is preserved by sync)
+- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy. Mac runtime config is local-only and preserved by code sync; each Router save creates a timestamped backup (latest 10 retained)
 
 ### CHN Content Policy fallback
 

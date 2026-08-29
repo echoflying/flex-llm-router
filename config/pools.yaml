@@ -143,8 +143,16 @@ runners:
       sensenova-deepseek-v4-flash: 1
       agnes-flash: 1
     selection:
-      strategy: round_robin
-      retry_next_channel_on: []
+      strategy: cost_aware
+      fallback:
+        order: cost_ascending
+        trigger: [quota_exhausted, busy_persistent, failure]
+        max_fallback_tiers: 2
+        reattach:
+          probe_before_switch_back: true
+          quiet_window_seconds: 1200
+          quota_recover_seconds: 3600
+          failure_retry_after: 300
     context_policy:
       reserve_output_tokens: 8192
     session_affinity:

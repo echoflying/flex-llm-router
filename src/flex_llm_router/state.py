@@ -19,7 +19,6 @@ class StateStore:
             # index the correlated channel-count subquery scans the entire
             # attempts table once per retained trace and can starve the
             # asyncio watchdog while the UI polls every few seconds.
-            self.db.execute('CREATE INDEX IF NOT EXISTS attempts_trace_id ON attempts(trace_id)')
             if 'error_detail' not in [row[1] for row in self.db.execute('PRAGMA table_info(channel_tests)')]:self.db.execute('ALTER TABLE channel_tests ADD COLUMN error_detail TEXT')
             for column in ('input_tokens','output_tokens','total_tokens','ttft_ms'):
                 if column not in [row[1] for row in self.db.execute('PRAGMA table_info(attempts)')]:self.db.execute(f'ALTER TABLE attempts ADD COLUMN {column} INTEGER')
@@ -29,6 +28,9 @@ class StateStore:
             if 'trace_id' not in [row[1] for row in self.db.execute('PRAGMA table_info(attempts)')]:self.db.execute('ALTER TABLE attempts ADD COLUMN trace_id TEXT')
             if 'client_label' not in [row[1] for row in self.db.execute('PRAGMA table_info(request_traces)')]:self.db.execute('ALTER TABLE request_traces ADD COLUMN client_label TEXT')
             if 'request_fingerprint' not in [row[1] for row in self.db.execute('PRAGMA table_info(request_traces)')]:self.db.execute('ALTER TABLE request_traces ADD COLUMN request_fingerprint TEXT')
+            # trace_id was added to older databases after the initial table
+            # creation; create its index only after the compatibility ALTER.
+            self.db.execute('CREATE INDEX IF NOT EXISTS attempts_trace_id ON attempts(trace_id)')
             self.db.execute('CREATE INDEX IF NOT EXISTS request_traces_duplicate_lookup ON request_traces(status,client_label,requested_model,request_fingerprint,started)')
             # 短时、精确匹配的非流式结果回放。这里保存的是完整响应（不是 prompt），
             # 因此 TTL 很短且有大小上限；分析表和调用轨迹不会保存这份内容。

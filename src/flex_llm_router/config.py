@@ -156,6 +156,40 @@ class Provider(BaseModel):
         if not v.strip(): raise ValueError('env var name must not be blank')
         return v.strip()
 
+class ProtocolErrorRule(BaseModel):
+    """A narrowly-scoped upstream protocol error that may use fallback routing.
+
+    Rules match provider/model plus the upstream status and error text.  They
+    intentionally do not inspect user messages, so routing remains protocol
+    driven rather than content driven.
+    """
+    id: str
+    provider: str | None = None
+    model: str | None = None
+    http_status: int | list[int] | None = None
+    message_regex: str
+    retry_other_channel: bool = True
+    clear_session_affinity: bool = True
+    only_before_first_sse: bool = True
+
+    @field_validator('id', 'message_regex')
+    @classmethod
+    def non_blank_rule_text(cls, value):
+        if not str(value).strip(): raise ValueError('protocol error rule text must not be blank')
+        return str(value).strip()
+
+    @field_validator('http_status', mode='before')
+    @classmethod
+    def normalize_http_status(cls, value):
+        if value is None: return value
+        values=value if isinstance(value,list) else [value]
+        result=[]
+        for item in values:
+            code=int(item)
+            if code < 100 or code > 599: raise ValueError('protocol error HTTP status must be between 100 and 599')
+            if code not in result: result.append(code)
+        return result
+
 class FlexConfig(BaseModel):
     version: int = 1
     providers: dict[str, Provider]
@@ -171,6 +205,10 @@ class FlexConfig(BaseModel):
     # list is intentionally empty by default so old configs remain valid;
     # operators can put ``agnes-flash`` first in YAML/UI.
     global_fallback: dict[str, list[str]] = Field(default_factory=dict)
+    # Provider/model protocol compatibility rules.  These are deliberately
+    # separate from Channel capability claims and only permit narrowly matched
+    # pre-SSE errors to use another Channel.
+    protocol_error_rules: list[ProtocolErrorRule] = Field(default_factory=list)
 
     @model_validator(mode='before')
     @classmethod

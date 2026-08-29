@@ -133,6 +133,15 @@ channels:
       max_retries: 3
       backoff: {base_seconds: 5, max_seconds: 60, exponential: true}
 
+# 只将明确的上游协议兼容错误纳入回退；普通 400（参数、鉴权、模型不存在）仍直接返回。
+protocol_error_rules:
+  - id: reasoning_content_required
+    http_status: 400
+    message_regex: "reasoning_content.*(required|must|return)"
+    retry_other_channel: true
+    clear_session_affinity: true
+    only_before_first_sse: true
+
 # Runner 是唯一对外资源；每个 Runner 可包含一个或多个内部 Channel。
 # 旧版 pools/connections 配置仍可被加载器一次性迁移。
 runners:

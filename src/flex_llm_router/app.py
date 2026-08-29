@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,html,json,logging,os,re,shutil,subprocess,sys,time,uuid
+import asyncio,fnmatch,html,json,logging,os,re,shutil,subprocess,sys,time,uuid
 import anyio
 from pathlib import Path
 from typing import Any
@@ -7,7 +7,7 @@ import urllib.error,urllib.request
 import litellm,yaml
 from fastapi import FastAPI,HTTPException,Request
 from fastapi.responses import HTMLResponse,JSONResponse,StreamingResponse
-from flex_llm_router.config import FlexConfig,channel_credentials,load_config,validate_runner_name
+from flex_llm_router.config import FlexConfig,ProtocolErrorRule,channel_credentials,load_config,validate_runner_name
 from flex_llm_router.scheduler import RoundRobinScheduler
 from flex_llm_router.state import StateStore
 logger=logging.getLogger('uvicorn.error')
@@ -216,6 +216,35 @@ def error_type(e):
 def error_code(e):
     """Return the provider's HTTP status code if present (e.g. 429, 500, 408), else None."""
     return getattr(e, 'status_code', None)
+
+def protocol_error_rule_for(channel, exc, rules):
+    """Return a configured protocol rule matching one upstream exception.
+
+    Model matching accepts either the full LiteLLM name or its provider-free
+    tail, while provider/model patterns may use shell-style ``*`` wildcards.
+    """
+    if not channel or not rules: return None
+    status=error_code(exc)
+    detail=error_detail(exc)
+    model_names=(str(channel.litellm_model), str(channel.litellm_model).rsplit('/',1)[-1], str(channel.public_model))
+    for rule in rules:
+        if not isinstance(rule, ProtocolErrorRule):
+            continue
+        if rule.provider and not fnmatch.fnmatchcase(str(channel.provider),rule.provider):
+            continue
+        if rule.model and not any(fnmatch.fnmatchcase(model,rule.model) for model in model_names):
+            continue
+        statuses=rule.http_status or []
+        if statuses and status not in statuses:
+            continue
+        try:
+            if re.search(rule.message_regex,detail,re.IGNORECASE|re.DOTALL):
+                return rule
+        except re.error:
+            # Config validation should normally catch this; fail closed if a
+            # live editor bypasses validation or an old process reloads YAML.
+            logger.warning('invalid protocol error regex rule=%s',rule.id)
+    return None
 def error_detail(e):
     """Return the real provider error message, with the litellm class prefix stripped and secrets redacted."""
     raw = getattr(e, 'message', None) or str(e) or type(e).__name__
@@ -589,7 +618,8 @@ def create_app(config_path:str|Path):
         return {'base_url':base_url,'lan_url':lan_url,'runners':runners,
                 'pools':runners,'channels':channels_all,'connections':connections,
                 'links':connections,'providers':providers,
-                'global_fallback':{k:list(v) for k,v in config.global_fallback.items()}}
+                'global_fallback':{k:list(v) for k,v in config.global_fallback.items()},
+                'protocol_error_rules':[rule.model_dump() for rule in config.protocol_error_rules]}
 
     @app.get('/config',response_class=HTMLResponse)
     async def config_page():
@@ -1252,6 +1282,10 @@ def create_app(config_path:str|Path):
     async def duplicate_statistics(period:str='day'):
         if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')
         return state.duplicate_statistics(period)
+    @app.get('/api/statistics/protocol-errors')
+    async def protocol_error_statistics(period:str='day'):
+        if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')
+        return state.protocol_error_statistics(period)
     @app.post('/api/runners/{name}/channels/{channel_id}/reset')
     @app.post('/api/pools/{name}/channels/{channel_id}/reset')
     async def reset_channel(name:str,channel_id:str,scope:str='all'):
@@ -1678,11 +1712,22 @@ def create_app(config_path:str|Path):
             except Exception as e:
                 stop_first_activity_watch()
                 typ=error_type(e); detail=error_detail(e); last=typ
-                if affinity.get('enabled'):
+                protocol_rule=protocol_error_rule_for(ch,e,config.protocol_error_rules)
+                if affinity.get('enabled') and (protocol_rule is None or protocol_rule.clear_session_affinity):
                     state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
                 state.trace_event(rid,'upstream_error',ch.id,error_code(e),f'{typ}: {detail}')
                 state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=error_code(e) or 0,body=f'{type(e).__name__}: {detail}')
                 state.finish(attempt,'failure',typ,int((time.monotonic()-started)*1000),error_detail=detail,error_code=error_code(e))
+                if protocol_rule is not None:
+                    state.record_protocol_error(rid,key,ch.id,ch.provider,ch.litellm_model,protocol_rule.id,error_code(e),detail)
+                    state.trace_event(rid,'protocol_error_classified',ch.id,error_code(e),detail=f'{protocol_rule.id}: matched configured protocol compatibility rule')
+                    # This handler runs before a response/first SSE has been
+                    # delivered, so a matched rule may safely start the same
+                    # request on the next eligible Channel.
+                    if protocol_rule.retry_other_channel:
+                        tried.add(ch.id)
+                        state.trace_fallback(rid,f'{ch.id} matched protocol rule {protocol_rule.id}; retrying on next eligible Channel before first SSE')
+                        continue
                 if typ in ('rate_limit','tpm_limit','quota_exhausted'):
                     state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                     cooling=state.cooldown_state(key,ch.id)
@@ -1797,7 +1842,7 @@ def create_app(config_path:str|Path):
             disconnect_notice=asyncio.Event()
             async def events():
                 nonlocal ch,base,key_,response
-                ttft=None; chunks_seen=0; output_parts=[]; active_attempt=attempt; active_started=started; pending=set(); pending_channels={}; iterator=None; stream_policy_failed=False
+                ttft=None; chunks_seen=0; output_parts=[]; active_attempt=attempt; active_started=started; pending=set(); pending_channels={}; iterator=None; stream_policy_failed=False; first_sse_error=None
                 async def close_upstream(value):
                     close=getattr(value,'aclose',None)
                     if not callable(close):return
@@ -1899,9 +1944,10 @@ def create_app(config_path:str|Path):
                                         hedge_index += 1
                                         _,target_ids=hedge_plan[hedge_index-1]
                                         for target_id in target_ids: schedule_hedge_event(hedge_index,channel_by_id[target_id])
-                                except Exception:
+                                except Exception as exc:
                                     pending.discard(task)
-                            if winner is None and not pending: raise RuntimeError('all hedged upstream streams ended before first event')
+                                    if not isinstance(exc,StopAsyncIteration): first_sse_error=exc
+                            if winner is None and not pending: raise first_sse_error or RuntimeError('all hedged upstream streams ended before first event')
                             continue
                         if time.monotonic()-req_started>=UPSTREAM_FIRST_ACTIVITY_TIMEOUT-0.1: raise UpstreamTotalTimeout()
                         if next_delay is None: continue
@@ -2005,16 +2051,53 @@ def create_app(config_path:str|Path):
                                 if not emitted:
                                     for buffered_item in buffered: yield buffered_item
                                 break
-                    async for item in selected_items():
-                        chunk=data(item,name)
-                        if ttft is None and has_visible_content(chunk):
-                            ttft=int((time.monotonic()-active_started)*1000); state.trace_event(rid,'first_token',ch.id,detail=f'TTFT {ttft}ms')
-                        if sum(len(part) for part in output_parts)<512:
-                            output_parts.append(chunk_content(chunk))
-                        chunks_seen+=1
-                        if chunks_seen<=3 or (chunk.get('choices') and chunk['choices'][0].get('finish_reason')):
-                            state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=200,body=json.dumps(chunk,ensure_ascii=False)[:20000])
-                        yield f"data: {json.dumps(chunk,ensure_ascii=False)}\n\n"
+                    while True:
+                        try:
+                            async for item in selected_items():
+                                chunk=data(item,name)
+                                if ttft is None and has_visible_content(chunk):
+                                    ttft=int((time.monotonic()-active_started)*1000); state.trace_event(rid,'first_token',ch.id,detail=f'TTFT {ttft}ms')
+                                if sum(len(part) for part in output_parts)<512:
+                                    output_parts.append(chunk_content(chunk))
+                                chunks_seen+=1
+                                if chunks_seen<=3 or (chunk.get('choices') and chunk['choices'][0].get('finish_reason')):
+                                    state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=200,body=json.dumps(chunk,ensure_ascii=False)[:20000])
+                                yield f"data: {json.dumps(chunk,ensure_ascii=False)}\n\n"
+                            break
+                        except Exception as exc:
+                            # A provider may return a response object and then
+                            # reject the first SSE request with a protocol 400.
+                            # It is still safe to retry because no downstream
+                            # token has been emitted yet.
+                            rule=protocol_error_rule_for(ch,exc,config.protocol_error_rules)
+                            if rule is None or not rule.retry_other_channel or (rule.only_before_first_sse and chunks_seen>0):
+                                raise
+                            state.record_protocol_error(rid,key,ch.id,ch.provider,ch.litellm_model,rule.id,error_code(exc),error_detail(exc))
+                            state.trace_event(rid,'protocol_error_classified',ch.id,error_code(exc),detail=f'{rule.id}: matched during first-SSE streaming phase')
+                            if rule.clear_session_affinity and affinity.get('enabled'):
+                                state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
+                            tried.add(ch.id)
+                            target=next((candidate for candidate in available if candidate.id not in tried and candidate.enabled),None)
+                            if target is None:
+                                raise
+                            state.finish(active_attempt,'failure',error_type(exc),int((time.monotonic()-active_started)*1000),error_detail=error_detail(exc),error_code=error_code(exc))
+                            state.trace_fallback(rid,f'{ch.id} matched protocol rule {rule.id}; retrying stream on {target.id} before first SSE')
+                            new_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
+                            new_started=time.monotonic(); state.trace_attempt(rid,target.id); state.trace_event(rid,'protocol_fallback_request',target.id,detail=f'{rule.id}: retrying same request before first SSE')
+                            try:
+                                new_response=await call_upstream(target)
+                                new_iterator,new_first,_,_,_,_=await first_event(new_response,new_attempt,new_started,'protocol fallback',target)
+                            except Exception as fallback_exc:
+                                state.finish(new_attempt,'failure',error_type(fallback_exc),int((time.monotonic()-new_started)*1000),error_detail=error_detail(fallback_exc),error_code=error_code(fallback_exc))
+                                state.trace_event(rid,'protocol_fallback_error',target.id,error_code(fallback_exc),detail=f'{rule.id}: {error_type(fallback_exc)}: {error_detail(fallback_exc)}')
+                                raise fallback_exc
+                            await close_upstream(response)
+                            response=new_response; iterator=new_iterator; first_item=new_first; ch=target; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
+                            if affinity.get('enabled'):
+                                state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                                state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Protocol fallback Channel produced first SSE; provisional affinity updated')
+                            state.trace_fallback(rid,f'protocol rule {rule.id}: stream switched from failed Channel to {target.id}')
+                            continue
                     state.debug_log(rid,'client_out',pool=key,channel=ch.id,model=name,status=200,body=f'[stream] {chunks_seen} chunks delivered')
                     if stream_policy_failed:
                         state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked','All configured CHN Content Policy fallback Channels were exhausted',latency_ms=int((time.monotonic()-req_started)*1000))
@@ -2053,8 +2136,12 @@ def create_app(config_path:str|Path):
                     return
                 except Exception as e:
                     typ=error_type(e); detail=error_detail(e)
-                    if affinity.get('enabled'):
+                    protocol_rule=protocol_error_rule_for(ch,e,config.protocol_error_rules)
+                    if affinity.get('enabled') and (protocol_rule is None or protocol_rule.clear_session_affinity):
                         state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
+                    if protocol_rule is not None:
+                        state.record_protocol_error(rid,key,ch.id,ch.provider,ch.litellm_model,protocol_rule.id,error_code(e),detail)
+                        state.trace_event(rid,'protocol_error_classified',ch.id,error_code(e),detail=f'{protocol_rule.id}: stream error after first-SSE phase')
                     state.finish(active_attempt,'failure',typ,int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=error_code(e))
                     state.trace_finish(rid,'failed',ch.id,error_code(e) or 502,typ,detail,latency_ms=int((time.monotonic()-req_started)*1000))
                     if typ in ('rate_limit','tpm_limit','quota_exhausted'):

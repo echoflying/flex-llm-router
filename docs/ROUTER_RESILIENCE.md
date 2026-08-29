@@ -10,6 +10,14 @@
 - 所有等待、重试、冷却、恢复、取消和 Hedge 事件都会写入 Trace。
 - 7800 核心 watchdog 独立于 7801 UI 和浏览器页面，负责长请求截止和收口。
 
+### 协议兼容错误
+
+配置中的 `protocol_error_rules` 只匹配明确的 Provider/Model、HTTP 状态和上游错误签名。
+例如 `reasoning_content` 必须返回的 400 会被归类为协议兼容错误：清除当前会话粘性，
+在没有首个 SSE 时用同一请求尝试下一个可用 Channel，并记录到
+`protocol_error_observations`。普通 400 不会盲目轮转；统计接口为
+`/api/statistics/protocol-errors`。
+
 ## 上游错误
 
 ### `allocated quota exceeded`

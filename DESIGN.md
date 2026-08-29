@@ -18,6 +18,13 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 `selection.strategy` 支持 `round_robin`、`cost_aware` 和 `quota_paced_priority`。`tiers` 属于 Runner，用于表达池内相对优先级，不绑定具体模型名称。启用 `session_affinity` 后，同一对话优先保持原 Channel，减少上下文缓存失效；只有异常、冷却或不可用时才向后回退。异常会清除该对话粘性；切换 Channel 收到首个 SSE 后先写入临时粘性，完整流结束后再确认最终成功，避免重发再次命中失败通道。
 
+### 协议兼容错误回退
+
+`protocol_error_rules` 是按 Provider + Model + HTTP 状态 + 上游错误文本匹配的窄规则表，
+不读取用户消息内容。只有明确登记的协议兼容错误（当前包含
+`reasoning_content` 必须返回）才允许在首个 SSE 之前切换到其它 Channel；普通 400（参数、鉴权、模型不存在）仍直接返回。命中会清除会话粘性并写入
+`protocol_error_observations`，可通过 `/api/statistics/protocol-errors` 查看各规则、Provider、Model 和 Channel 的出现次数及回退请求最终是否成功。
+
 ## 4. 限额与学习
 
 Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、配额冷却以及忙阈值。真实 429 才会触发限流分类、指数退避和学习样本；本地窗口是保护阈值，不等同于供应商账户余额。状态存储在 SQLite 中，并用于 Dashboard、统计和 `/healthz`。

@@ -43,6 +43,11 @@ class StateStore:
                 overlap_ms INTEGER NOT NULL, existing_attempt_count INTEGER NOT NULL DEFAULT 0,
                 existing_has_output INTEGER NOT NULL DEFAULT 0, decision TEXT NOT NULL)''')
             self.db.execute('CREATE INDEX IF NOT EXISTS duplicate_observations_time ON duplicate_observations(observed_at)')
+            self.db.execute('''CREATE TABLE IF NOT EXISTS protocol_error_observations(
+                id INTEGER PRIMARY KEY, observed_at REAL NOT NULL, trace_id TEXT NOT NULL,
+                pool TEXT, channel TEXT, provider TEXT, model TEXT, rule_id TEXT NOT NULL,
+                http_status INTEGER, detail TEXT NOT NULL)''')
+            self.db.execute('CREATE INDEX IF NOT EXISTS protocol_error_observations_time ON protocol_error_observations(observed_at)')
             # Long-lived, prompt-free aggregate source. Trace detail itself remains short-retention.
             self.db.execute('CREATE TABLE IF NOT EXISTS request_outcomes(trace_id TEXT PRIMARY KEY,started REAL,completed REAL,status TEXT)')
             self.db.execute('CREATE TABLE IF NOT EXISTS request_error_outcomes(trace_id TEXT,error_type TEXT,first_at REAL,recovery_seconds REAL,final_failed INTEGER,PRIMARY KEY(trace_id,error_type))')
@@ -219,6 +224,33 @@ class StateStore:
                 SUM(existing_has_output) AS with_output FROM duplicate_observations WHERE observed_at>=?
                 GROUP BY requested_model,client_label ORDER BY count DESC''',(since,)).fetchall()
             return {'period':period,'count':total['count'] or 0,'avg_overlap_ms':total['avg_overlap_ms'],'with_output':total['with_output'] or 0,'rows':[dict(row) for row in rows]}
+    def record_protocol_error(self,trace_id,pool,channel,provider,model,rule_id,http_status,detail):
+        """Persist a prompt-free observation of a matched protocol rule."""
+        now=time.time()
+        safe_detail=(detail or '')[:500]
+        with self.lock,self.db:
+            self.db.execute('''INSERT INTO protocol_error_observations
+                (observed_at,trace_id,pool,channel,provider,model,rule_id,http_status,detail)
+                VALUES(?,?,?,?,?,?,?,?,?)''',
+                (now,trace_id,pool,channel,provider,model,rule_id,http_status,safe_detail))
+            self.db.execute('DELETE FROM protocol_error_observations WHERE observed_at<?',(now-400*86400,))
+            self.db.execute('''DELETE FROM protocol_error_observations
+                WHERE id IN (SELECT id FROM protocol_error_observations ORDER BY observed_at DESC LIMIT -1 OFFSET 5000)''')
+        return now
+    def protocol_error_statistics(self,period='day'):
+        now=time.time()
+        if period=='day':
+            local=time.localtime(now); since=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
+        else: since=now-{'week':7*86400,'month':30*86400}.get(period,86400)
+        with self.lock:
+            rows=self.db.execute('''SELECT p.rule_id,p.provider,p.model,p.channel,
+                COUNT(*) AS occurrences,COUNT(DISTINCT p.trace_id) AS requests,
+                SUM(CASE WHEN o.status='success' THEN 1 ELSE 0 END) AS traces_success
+                FROM protocol_error_observations p LEFT JOIN request_outcomes o ON o.trace_id=p.trace_id
+                WHERE p.observed_at>=?
+                GROUP BY p.rule_id,p.provider,p.model,p.channel ORDER BY occurrences DESC''',(since,)).fetchall()
+            total=self.db.execute('SELECT COUNT(*) AS occurrences,COUNT(DISTINCT trace_id) AS requests FROM protocol_error_observations WHERE observed_at>=?',(since,)).fetchone()
+        return {'period':period,'occurrences':total['occurrences'] or 0,'requests':total['requests'] or 0,'rows':[dict(row) for row in rows]}
     def trace_event(self,trace_id,event,channel=None,http_status=None,detail=None):
         now=time.time()
         with self.lock,self.db:

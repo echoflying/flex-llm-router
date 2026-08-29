@@ -1,6 +1,6 @@
 import pytest
 
-from flex_llm_router.config import Channel, FlexConfig, Limits, Pool, Runner, validate_runner_name
+from flex_llm_router.config import Channel, FlexConfig, Limits, Pool, ProtocolErrorRule, Runner, validate_runner_name
 
 
 @pytest.mark.parametrize('name', ['coder', 'mix-deepseek-v4-flash', 'runner.v2', 'runner_2'])
@@ -122,3 +122,27 @@ def test_removed_chn_content_policy_field_is_rejected():
             'channels': {'c1': data},
             'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
         })
+
+
+def test_protocol_error_rule_normalizes_status_and_keeps_narrow_action():
+    rule = ProtocolErrorRule(
+        id='reasoning_content_required',
+        http_status=400,
+        message_regex=r'reasoning_content.*(required|must)',
+    )
+    assert rule.http_status == [400]
+    assert rule.retry_other_channel is True
+    assert rule.only_before_first_sse is True
+
+
+def test_protocol_error_rules_are_loaded_from_config():
+    cfg = FlexConfig.model_validate({
+        'providers': {'demo': {'base_url_env': 'DEMO_BASE', 'api_key_env': 'DEMO_KEY'}},
+        'channels': {'c1': _channel().model_dump()},
+        'runners': {'coder': {'channels': ['c1'], 'tiers': {'c1': 0}}},
+        'protocol_error_rules': [{
+            'id': 'reasoning_content_required', 'http_status': 400,
+            'message_regex': r'reasoning_content.*required',
+        }],
+    })
+    assert cfg.protocol_error_rules[0].id == 'reasoning_content_required'

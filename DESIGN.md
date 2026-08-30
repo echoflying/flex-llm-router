@@ -35,7 +35,7 @@ RPM/TPM 触发后，TPM 基数为 4 秒、RPM 基数为 8 秒并按 2 倍递增�
 
 `global_fallback.chn_content_policy` 是按顺序排列的 Channel ID（建议
 `agnes-flash` 作为第一项）。当被标记的 Channel 返回明确的
-`finish_reason=content_filter` 或等价的 `content_policy_blocked` 信号时，
+`finish_reason=content_filter`、`data_inspection_failed` 或等价的 `content_policy_blocked` 信号时，
 如果当前 Runner 还有其他标记为 CHN Content Policy Fallback 的 Channel，则优先按 Runner
 顺序尝试它们；Runner 没有可用标记 Channel 时才按全局列表逐个请求；列表耗尽后返回
 `content_policy_blocked`。普通拒答文本没有明确政策信号时不触发此路径。

@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app, hedge_plan_for, first_activity_deadline_for
+from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
@@ -16,6 +16,14 @@ def test_single_channel_hedge_retries_same_channel_at_six_minutes():
     channel = Channel()
     assert hedge_plan_for('solo-runner', [channel], channel, None) == ((360, ('solo',)),)
     assert first_activity_deadline_for([channel]) == 540
+
+
+def test_data_inspection_failure_is_content_policy_error():
+    class UpstreamPolicyError(Exception):
+        status_code = 400
+        message = 'data_inspection_failed: Input text data may contain inappropriate content.'
+
+    assert error_type(UpstreamPolicyError()) == 'content_policy_blocked'
 
 
 @pytest.fixture

@@ -21,7 +21,8 @@
 
 ### 2. 内容政策限制
 
-识别 `content_policy_blocked`、`content_filter` 等明确上游信号。
+识别 `content_policy_blocked`、`content_filter`、`data_inspection_failed`（例如
+`Input text data may contain inappropriate content`）等明确上游信号。
 
 - 非流式：先按当前 Runner 中标记 `chn_content_policy_fallback: true` 的 Channel 顺序尝试；Runner 没有可用标记通道时，按 `global_fallback.chn_content_policy` 顺序尝试。
 - 流式且尚未向下游输出可见内容：可以切换到下一个政策兜底 Channel。

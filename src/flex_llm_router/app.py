@@ -193,7 +193,12 @@ def client_label(headers):
 def error_type(e):
     n=type(e).__name__.lower(); s=getattr(e,'status_code',None)
     detail=(getattr(e,'message',None) or str(e) or '').lower()
-    if any(marker in detail for marker in ('content_policy_blocked','content policy blocked','content_filter','content filter')):
+    if any(marker in detail for marker in (
+        'content_policy_blocked', 'content policy blocked',
+        'content_filter', 'content filter',
+        'data_inspection_failed', 'inappropriate content',
+        'input text data may contain inappropriate content',
+    )):
         return 'content_policy_blocked'
     # 仅识别已验证的上游临时引擎报错；兼容上游偶发的 avaiable 拼写错误。
     # 其他 400 仍为 request_error，避免掩盖请求格式问题。

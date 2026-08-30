@@ -13,7 +13,7 @@
 
 Channel 可设置 `chn_content_policy_fallback: true`，表示该通道可作为内容政策兜底。
 此标志不代表它自身会拦截内容。上游明确返回的内容政策信号（例如
-`finish_reason: content_filter`）触发后，如果当前 Runner 还有其他标记通道，则先按 Runner
+`finish_reason: content_filter` 或 `data_inspection_failed`）触发后，如果当前 Runner 还有其他标记通道，则先按 Runner
 顺序尝试；只有 Runner 没有可用标记通道时才按 `global_fallback.chn_content_policy`
 中的 Channel ID 顺序全局兜底，建议第一项为 `agnes-flash`；所有兜底均阻断时返回
 `content_policy_blocked`。

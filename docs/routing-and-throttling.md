@@ -61,7 +61,7 @@ limits:
 |---|---|---|
 | 3 个或更多 | T=0 原始；T=6 分钟第二 Channel；T=9 分钟第三 Channel | T=12 分钟 |
 | 2 个 | T=0 原始；T=6 分钟第二 Channel | T=9 分钟 |
-| 1 个 | T=0 原始 | `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT` |
+| 1 个 | T=0 原始；T=6 分钟同一 Channel 重试 | T=9 分钟 |
 
 顺序按当前首选 Channel 和 Runner 配置顺序计算，不绑定具体模型或 Provider。也可用 `selection.hedge.stages` 显式指定阶段目标。
 

@@ -3,10 +3,19 @@ from pathlib import Path
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app
+from flex_llm_router.app import create_app, hedge_plan_for, first_activity_deadline_for
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
+
+
+def test_single_channel_hedge_retries_same_channel_at_six_minutes():
+    class Channel:
+        id = 'solo'
+
+    channel = Channel()
+    assert hedge_plan_for('solo-runner', [channel], channel, None) == ((360, ('solo',)),)
+    assert first_activity_deadline_for([channel]) == 540
 
 
 @pytest.fixture

@@ -29,6 +29,8 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、配额冷却以及忙阈值。真实 429 才会触发限流分类、指数退避和学习样本；本地窗口是保护阈值，不等同于供应商账户余额。状态存储在 SQLite 中，并用于 Dashboard、统计和 `/healthz`。
 
+RPM/TPM 触发后，当前请求固定在触发错误的原 Channel 上按指数退避重试（TPM 基数 4 秒、RPM 基数 8 秒），累计等待分别受 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 限制；其它新请求才可以改走同一 Runner 的其它 Channel。
+
 ### CHN Content Policy fallback
 
 `global_fallback.chn_content_policy` 是按顺序排列的 Channel ID（建议
@@ -46,7 +48,7 @@ Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、�
 |---|---|---|
 | 3 个或更多 | 6 分钟第二 Channel；9 分钟第三 Channel | 12 分钟 |
 | 2 个 | 6 分钟第二 Channel | 9 分钟 |
-| 1 个 | 不派副本 | `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT` |
+| 1 个 | 6 分钟同一 Channel 重试 | 9 分钟 |
 
 策略按当前首选 Channel 和 Runner 配置顺序计算，也可由 `selection.hedge.stages` 显式覆盖目标。响应对象/首 SSE 安全边界默认各 180 秒；最先产生有效活动的尝试获胜，输家取消并从客户端视角隐藏。
 

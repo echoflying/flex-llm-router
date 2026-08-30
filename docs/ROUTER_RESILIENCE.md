@@ -79,7 +79,7 @@
 - 未收到任何响应对象或 SSE：
   - 3 个以上 Channel：原始请求、6 分钟第二 Channel、9 分钟第三 Channel，12 分钟硬截止；
   - 2 个 Channel：6 分钟第二 Channel，9 分钟硬截止；
-  - 1 个 Channel：使用 `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT`（默认 15 分钟）。
+  - 1 个 Channel：6 分钟对同一 Channel 发起一次重试，9 分钟硬截止（全局设置只允许进一步缩短截止时间）。
 - 已收到 SSE 后，进入流式空闲计时；连续没有后续 SSE 时按 6/3/3 分钟阶段启动空闲 Hedge，最终硬截止。
 - 每收到新的有效 SSE，空闲计时器重新开始。
 - 最先产生有效响应的副本获胜，其余上游任务取消。

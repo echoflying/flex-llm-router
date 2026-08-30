@@ -319,8 +319,8 @@ QUEUE_RPM_SECONDS=int(os.getenv('FLEX_QUEUE_RPM','300'))
 # 仅在流式请求尚未收到任何可转发 SSE 事件时使用；Hermes 保留 30 分钟总超时。
 # Runner Hedge defaults are derived from the number of configured Channels.
 # Three Channels: 6m -> second Channel, 9m -> third Channel, 12m hard stop.
-# Two Channels: 6m -> second Channel, 9m hard stop. One Channel keeps the
-# configured global safety deadline because there is no useful fallback.
+# Two Channels: 6m -> second Channel, 9m hard stop. One Channel retries the
+# same Channel at 6m and hard-stops at 9m.
 HEDGE_DELAYS=(int(os.getenv('FLEX_HEDGE_FIRST_SECONDS','360')),int(os.getenv('FLEX_HEDGE_SECOND_SECONDS','720')))
 UPSTREAM_FIRST_ACTIVITY_TIMEOUT=int(os.getenv('FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT','900'))
 # Per-attempt safety bounds.  These are intentionally shorter than the
@@ -363,6 +363,11 @@ def hedge_plan_for(pool_name,channels,selected,pool=None):
         return ((360,(ordered[1].id,)),(540,(ordered[2].id,)))
     if len(ordered)==2:
         return ((360,(ordered[1].id,)),)
+    # A single Channel still gets one same-Channel retry. This is not a
+    # provider failover: it is a second request for the same model at T+6m,
+    # followed by the common T+9m hard stop.
+    if len(ordered)==1:
+        return ((360,(ordered[0].id,)),)
     return ()
 
 def first_activity_deadline_for(channels):
@@ -371,7 +376,9 @@ def first_activity_deadline_for(channels):
         return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)
     if len(channels)==2:
         return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540)
-    return UPSTREAM_FIRST_ACTIVITY_TIMEOUT
+    # Single-Channel requests use the same 6m retry / 9m hard-stop window;
+    # the global setting may only shorten this safety deadline.
+    return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540)
 def requirements(body,stream):
     required={'chat'}
     if stream:required.add('streaming')
@@ -535,7 +542,7 @@ def create_app(config_path:str|Path):
                 elif count==2:
                     strategy_detail='按配置顺序选择 Channel；6 分钟重试第二 Channel，9 分钟无首活动截止'
                 else:
-                    strategy_detail=f'单 Channel；沿用全局 {UPSTREAM_FIRST_ACTIVITY_TIMEOUT//60} 分钟无首活动截止'
+                    strategy_detail='单 Channel；6 分钟重试同一 Channel，9 分钟无首活动截止'
             elif strategy_key=='cost_aware':
                 strategy_name='成本优先 + 故障回退'
                 strategy_detail='按 tier/成本优先；配额、限流或故障时切换备用 Channel，并保持会话亲和性'
@@ -1107,7 +1114,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','trace_list_query_index','channel_count_aware_6m_9m_hedges','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1117,17 +1124,17 @@ def create_app(config_path:str|Path):
                 'uptime_human':remaining_clock(uptime),
             },
             'effective_policy':{
-                'automatic_hedge_seconds':{'two_channels':[360],'three_or_more_channels':[360,540]},
-                'automatic_deadline_seconds':{'one_channel':UPSTREAM_FIRST_ACTIVITY_TIMEOUT,'two_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'three_or_more_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)},
+                'automatic_hedge_seconds':{'one_channel':[360],'two_channels':[360],'three_or_more_channels':[360,540]},
+                'automatic_deadline_seconds':{'one_channel':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'two_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'three_or_more_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)},
                 'configured_pool_hedges':{
                     pool_name:[{'after_seconds':due,'channels':list(targets)} for due,targets in hedge_plan_for(pool_name,[ch for _,ch in config.get_pool_channels(pool_name)],config.get_pool_channels(pool_name)[0][1],config.pools[pool_name])]
                     for pool_name in config.runners
                     if config.get_pool_channels(pool_name)
                 },
-                'first_activity_deadline_seconds':UPSTREAM_FIRST_ACTIVITY_TIMEOUT,
+                'first_activity_deadline_seconds':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),
                 'response_timeout_seconds':UPSTREAM_RESPONSE_TIMEOUT,
                 'first_chunk_timeout_seconds':UPSTREAM_FIRST_CHUNK_TIMEOUT,
-                'summary':f'Per-channel {UPSTREAM_RESPONSE_TIMEOUT}s response / {UPSTREAM_FIRST_CHUNK_TIMEOUT}s first SSE; 2 Channel: 6m/9m, 3+ Channels: 6m/9m/12m hard deadline',
+                'summary':f'Per-attempt {UPSTREAM_RESPONSE_TIMEOUT}s response / {UPSTREAM_FIRST_CHUNK_TIMEOUT}s first SSE; 1 Channel: 6m same-Channel retry/9m hard deadline; 2 Channels: 6m/9m; 3+ Channels: 6m/9m/12m',
             },
             'watchdog':{'active_trace_count':len(app.state.first_activity_watch),'interrupted_traces_closed_on_start':app.state.recovered_traces},
         }
@@ -1505,7 +1512,8 @@ def create_app(config_path:str|Path):
                     active_channel_ids={target.id for _,(_,_,_,target) in active.items()}
                     for target_id in target_ids:
                         target=channel_by_id[target_id]
-                        if target.id in active_channel_ids:
+                        same_channel_retry=(len(channels)==1 and target.id==ch.id)
+                        if target.id in active_channel_ids and not same_channel_retry:
                             state.trace_event(rid,'pre_response_hedge_skipped',target.id,detail=f'第 {hedge_no} 个 Hedge 阶段跳过：该 Channel 仍有未完成请求')
                             continue
                         hedge_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
@@ -2042,7 +2050,9 @@ def create_app(config_path:str|Path):
                                     state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
                                     raise UpstreamTotalTimeout()
                                 idle_stage += 1; due,target_ids=hedge_plan[idle_stage-1]
-                                target=next((channel_by_id[target_id] for target_id in target_ids if target_id in channel_by_id and target_id!=ch.id),None)
+                                same_channel_retry=(len(channel_by_id)==1 and ch.id in target_ids)
+                                target=next((channel_by_id[target_id] for target_id in target_ids
+                                             if target_id in channel_by_id and (target_id!=ch.id or same_channel_retry)),None)
                                 if target is None:
                                     state.trace_event(rid,'stream_idle_hedge_skipped',ch.id,detail=f'流式空闲第 {idle_stage} 阶段没有可切换的其他 Channel')
                                     idle_started=time.monotonic(); continue

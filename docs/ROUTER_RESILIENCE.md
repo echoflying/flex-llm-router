@@ -59,13 +59,15 @@
 ### 6. RPM / TPM 瞬时限流
 
 只有收到真实上游限流后才进入退避，不预先占用或主动探测额度。RPM 与 TPM 使用独立计数和退避。
+对外错误类型统一写作 `rpm_limit`（Requests Per Minute）和 `tpm_limit`（Tokens Per
+Minute）；`rate_limit` 仅作为旧数据库记录的兼容读法，展示和新写入均使用 `rpm_limit`。
 限流处理分为两个阶段：第一次真实限流后的短退避重试（Trace 为 `limit_retry_started`），以及重试预算耗尽后升级为 Channel 冷却（Trace 为 `limit_escalated`）。升级后不再把冷却状态伪装成普通重试。
 
 - **TPM**：`4s → 8s → 16s → 32s → ...`。
 - **RPM**：`8s → 16s → 32s → 64s → ...`。
 - 累计等待分别受 `FLEX_QUEUE_TPM`、`FLEX_QUEUE_RPM` 限制（代码默认 TPM 60 秒、RPM 300 秒，Setup 可覆盖）。
 - `cost_aware` Runner：先在原 Channel 按其 `retry_policy.max_retries` 进行上述指数退避；达到次数后才按 tier 成本顺序切换到下一个可用 Channel。
-- 可在 Runner 的 `selection.rate_limit.on_exhausted` 指定第二阶段动作：`failover`（切换备用 Channel）、`wait`（继续等待原 Channel）或 `fail`（立即返回 429）。未配置时保持兼容默认：`cost_aware` 等价 `failover`，其它策略等价 `wait`。
+- 可在 Runner 的 `selection.rpm_limit.on_exhausted` 指定第二阶段动作：`failover`（切换备用 Channel）、`wait`（继续等待原 Channel）或 `fail`（立即返回 429）。未配置时保持兼容默认：`cost_aware` 等价 `failover`，其它策略等价 `wait`。
 - `wait` 模式下当前请求在整个退避序列中固定触发错误的原 Channel；`failover` 模式达到重试预算后清除固定关系并重新选路。
 - 其它新请求仍可避开处于冷却的 Channel，使用同一 Runner 的其它通道。
 - 达到累计上限后，向调用方返回原始限流错误（通常为 HTTP 429）。

@@ -29,10 +29,15 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、配额冷却以及忙阈值。真实 429 才会触发限流分类、指数退避和学习样本；本地窗口是保护阈值，不等同于供应商账户余额。状态存储在 SQLite 中，并用于 Dashboard、统计和 `/healthz`。
 
+公开错误类型使用 `rpm_limit` 表示 Requests Per Minute（RPM）限流，`tpm_limit` 表示
+Tokens Per Minute（TPM）限流；二者是独立事件、独立计数和独立退避预算。旧版本 SQLite
+中可能存在的 `rate_limit` 仅作为历史值读取，并在 API、Trace、统计和 Dashboard 输出时
+规范化为 `rpm_limit`，不会再产生新的 `rate_limit` 记录。
+
 RPM/TPM 触发后，TPM 基数为 4 秒、RPM 基数为 8 秒并按 2 倍递增。`cost_aware` 先在原 Channel 按其 `retry_policy.max_retries` 重试，达到次数后才按 tier 成本顺序回退；其它策略固定原 Channel 直到 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 累计上限。其它新请求仍可改走同一 Runner 的其它 Channel。
 
 限流分为“短退避重试”和“冷却升级”两个阶段。Runner 可在
-`selection.rate_limit.on_exhausted` 指定重试预算耗尽后的 `failover`、`wait` 或
+`selection.rpm_limit.on_exhausted` 指定重试预算耗尽后的 `failover`、`wait` 或
 `fail`；未配置时 `cost_aware` 默认回退，其它策略默认等待。Trace 分别记录
 `limit_retry_started` 和 `limit_escalated`，避免把已确认冷却误显示为普通重试。
 

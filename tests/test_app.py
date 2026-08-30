@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rate_limit_exhausted_action
+from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
@@ -26,11 +26,11 @@ def test_data_inspection_failure_is_content_policy_error():
     assert error_type(UpstreamPolicyError()) == 'content_policy_blocked'
 
 
-def test_rate_limit_exhausted_action_has_strategy_compatible_defaults():
-    assert rate_limit_exhausted_action({'strategy': 'cost_aware'}) == 'failover'
-    assert rate_limit_exhausted_action({'strategy': 'round_robin'}) == 'wait'
-    assert rate_limit_exhausted_action({'strategy': 'round_robin', 'rate_limit': {'on_exhausted': 'failover'}}) == 'failover'
-    assert rate_limit_exhausted_action({'strategy': 'cost_aware', 'rate_limit': {'on_exhausted': 'fail'}}) == 'fail'
+def test_rpm_limit_exhausted_action_has_strategy_compatible_defaults():
+    assert rpm_limit_exhausted_action({'strategy': 'cost_aware'}) == 'failover'
+    assert rpm_limit_exhausted_action({'strategy': 'round_robin'}) == 'wait'
+    assert rpm_limit_exhausted_action({'strategy': 'round_robin', 'rpm_limit': {'on_exhausted': 'failover'}}) == 'failover'
+    assert rpm_limit_exhausted_action({'strategy': 'cost_aware', 'rpm_limit': {'on_exhausted': 'fail'}}) == 'fail'
 
 
 @pytest.fixture

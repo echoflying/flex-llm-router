@@ -9,6 +9,10 @@ LEARNED_MIN_CONFIDENCE=int(os.getenv('FLEX_LEARNED_MIN_CONFIDENCE','100'))
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 RESPONSE_REPLAY_MAX_BYTES=int(os.getenv('FLEX_RESPONSE_REPLAY_MAX_BYTES','1048576'))
 
+def canonical_error_type(value):
+    """Return the public error name while reading legacy SQLite rows safely."""
+    return 'rpm_limit' if value == 'rate_limit' else value
+
 class StateStore:
     def __init__(self, path: str):
         p=Path(path); p.parent.mkdir(parents=True, exist_ok=True)
@@ -265,6 +269,7 @@ class StateStore:
             self.db.execute('UPDATE request_traces SET fallback_count=fallback_count+1,updated=? WHERE trace_id=?',(time.time(),trace_id))
             self.trace_event(trace_id,'fallback',detail=detail)
     def trace_finish(self,trace_id,status,channel=None,http_status=None,error_type=None,error_detail=None,output_preview=None,ttft_ms=None,latency_ms=None):
+        error_type=canonical_error_type(error_type)
         now=time.time()
         with self.lock,self.db:
             self.db.execute('UPDATE request_traces SET updated=?,status=?,final_channel=?,http_status=?,error_type=?,error_detail=?,output_preview=?,ttft_ms=?,latency_ms=? WHERE trace_id=?',(now,status,channel,http_status,error_type,error_detail,output_preview,ttft_ms,latency_ms,trace_id))
@@ -279,6 +284,7 @@ class StateStore:
                     (trace_id,trace['started'],now,status,trace['pool'],first['channel'] if first else None,trace['attempt_count'],trace['final_channel'],trace['requested_model'],trace['client_label'],metrics['input_bucket'],metrics['input_tokens'],metrics['output_tokens'],metrics['total_tokens'],trace['ttft_ms'],trace['latency_ms'],trace['fallback_count'],trace['error_type'],channel_count,int(channel_count>1)))
                 self.db.execute('DELETE FROM request_error_outcomes WHERE trace_id=?',(trace_id,))
                 errors=self.db.execute("SELECT error_type,MIN(started) AS first_at FROM attempts WHERE trace_id=? AND outcome='failure' AND error_type IS NOT NULL GROUP BY error_type",(trace_id,)).fetchall()
+                errors=[{**dict(item),'error_type':canonical_error_type(item['error_type'])} for item in errors]
                 if not errors and error_type: errors=[{'error_type':error_type,'first_at':trace['started']}]
                 for item in errors:
                     recovered=(now-item['first_at']) if status=='success' else None
@@ -346,7 +352,7 @@ class StateStore:
                     FROM attempts GROUP BY trace_id) a ON a.trace_id=t.trace_id'''; args=[]
             if status: sql+=' WHERE t.status=?'; args.append(status)
             sql+=' ORDER BY CASE t.status WHEN \'running\' THEN 0 ELSE 1 END, t.updated DESC LIMIT ?'; args.append(limit)
-            return [dict(row) for row in self.db.execute(sql,args)]
+            return [{**dict(row),'error_type':canonical_error_type(row['error_type'])} for row in self.db.execute(sql,args)]
     def error_statistics(self,period='day'):
         now=time.time()
         if period=='day':
@@ -359,7 +365,7 @@ class StateStore:
                 FROM request_error_outcomes e JOIN request_outcomes o ON o.trace_id=e.trace_id
                 WHERE o.started>=? GROUP BY e.error_type ORDER BY occurrences DESC''',(since,)).fetchall()
             return {'period':period,'since':since,'requests':totals['total'] or 0,'final_failed':totals['failed'] or 0,
-                    'rows':[dict(r) for r in rows]}
+                    'rows':[{**dict(r),'error_type':canonical_error_type(r['error_type'])} for r in rows]}
     def hourly_error_statistics(self):
         now=time.time(); local=time.localtime(now); start=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
         buckets=[{'hour':f'{hour:02d}:00','errors':0,'rpm':0,'tpm':0,'final_failed':0} for hour in range(24)]
@@ -367,8 +373,9 @@ class StateStore:
             rows=self.db.execute('SELECT error_type,first_at,final_failed FROM request_error_outcomes WHERE first_at>=? AND first_at<?',(start,start+86400)).fetchall()
         for row in rows:
             item=buckets[time.localtime(row['first_at']).tm_hour]; item['errors']+=1
-            if row['error_type']=='rate_limit':item['rpm']+=1
-            if row['error_type']=='tpm_limit':item['tpm']+=1
+            error_type=canonical_error_type(row['error_type'])
+            if error_type=='rpm_limit':item['rpm']+=1
+            if error_type=='tpm_limit':item['tpm']+=1
             item['final_failed']+=row['final_failed']
         return {'start':start,'data':buckets}
     def call_statistics(self,period='day',group_by='channel'):
@@ -440,11 +447,13 @@ class StateStore:
                 channel_count=self.db.execute('SELECT COUNT(DISTINCT channel) AS count FROM attempts WHERE trace_id=?',(trace['trace_id'],)).fetchone()['count'] or 0
                 self.db.execute('INSERT INTO request_outcomes(trace_id,started,completed,status,pool,first_channel,attempt_count) VALUES(?,?,?,?,?,?,?) ON CONFLICT(trace_id) DO UPDATE SET pool=excluded.pool,first_channel=excluded.first_channel,attempt_count=excluded.attempt_count,status=excluded.status,completed=excluded.completed',(trace['trace_id'],trace['started'],trace['updated'],trace['status'],trace['pool'],first['channel'] if first else None,trace['attempt_count']))
                 metrics=self._trace_metrics(trace['trace_id'])
+                trace_error_type=canonical_error_type(trace['error_type'])
                 self.db.execute('''UPDATE request_outcomes SET final_channel=?,requested_model=?,client_label=?,input_bucket=?,input_tokens=?,output_tokens=?,total_tokens=?,ttft_ms=?,latency_ms=?,fallback_count=?,error_type=?,channel_count=?,cross_channel=? WHERE trace_id=?''',
-                    (trace['final_channel'],trace['requested_model'],trace['client_label'],metrics['input_bucket'],metrics['input_tokens'],metrics['output_tokens'],metrics['total_tokens'],trace['ttft_ms'],trace['latency_ms'],trace['fallback_count'],trace['error_type'],channel_count,int(channel_count>1),trace['trace_id']))
+                    (trace['final_channel'],trace['requested_model'],trace['client_label'],metrics['input_bucket'],metrics['input_tokens'],metrics['output_tokens'],metrics['total_tokens'],trace['ttft_ms'],trace['latency_ms'],trace['fallback_count'],trace_error_type,channel_count,int(channel_count>1),trace['trace_id']))
                 exists=self.db.execute('SELECT 1 FROM request_error_outcomes WHERE trace_id=? LIMIT 1',(trace['trace_id'],)).fetchone()
                 errors=self.db.execute("SELECT error_type,MIN(started) AS first_at FROM attempts WHERE trace_id=? AND outcome='failure' AND error_type IS NOT NULL GROUP BY error_type",(trace['trace_id'],)).fetchall()
-                if not errors and trace['error_type']: errors=[{'error_type':trace['error_type'],'first_at':trace['started']}]
+                errors=[{**dict(item),'error_type':canonical_error_type(item['error_type'])} for item in errors]
+                if not errors and trace_error_type: errors=[{'error_type':trace_error_type,'first_at':trace['started']}]
                 if not exists:
                     for item in errors:
                         recovery=(trace['updated']-item['first_at']) if trace['status']=='success' else None
@@ -456,13 +465,15 @@ class StateStore:
             if not row:return None
             events=[dict(item) for item in self.db.execute('SELECT * FROM trace_events WHERE trace_id=? ORDER BY id',(trace_id,))]
             attempts=[dict(item) for item in self.db.execute('SELECT * FROM attempts WHERE trace_id=? ORDER BY id',(trace_id,))]
-            return {'trace':dict(row),'events':events,'attempts':attempts}
+            trace=dict(row); trace['error_type']=canonical_error_type(trace.get('error_type'))
+            for attempt in attempts: attempt['error_type']=canonical_error_type(attempt.get('error_type'))
+            return {'trace':trace,'events':events,'attempts':attempts}
     # ---- CHANNEL 质量统计 ----
     def channel_quality(self,window_hours=24):
         """按 channel 聚合质量指标(基于 attempts + states):
         total访问 / success / fallback回退数(被限流/冷却拒后切走) / recovered恢复数(冷却到期或probe清后成功)
         限流率、成功率、请求密度(req/min, 按活跃分钟摊).
-        回退判定: 该 channel 在窗口内出现 rate_limit/tpm_limit/quota_exhausted 失败即计一次回退.
+        回退判定: 该 channel 在窗口内出现 rpm_limit/tpm_limit/quota_exhausted 失败即计一次回退.
         恢复判定: 冷却清除(states 清空)次数近似= probe ok 次数 + 到期自动放行, 这里用
         '失败后再次 success' 的转移次数计恢复."""
         now=time.time(); since=now-window_hours*3600
@@ -476,7 +487,8 @@ class StateStore:
                 if d['failure']>d['recovered']: d['recovered']+=1  # 失败后再次成功=恢复一次
             else:
                 d['failure']+=1; t=r['error_type'] or ''
-                if t in ('rate_limit','tpm_limit','quota_exhausted'):
+                t=canonical_error_type(t)
+                if t in ('rpm_limit','tpm_limit','quota_exhausted'):
                     d['fallback']+=1
                     if t=='tpm_limit':d['tpm']+=1
                     elif t=='quota_exhausted':d['quota']+=1
@@ -538,6 +550,7 @@ class StateStore:
     def set_enabled(self,pool,ch_id,enabled):
         with self.lock,self.db:self.db.execute('INSERT INTO channel_overrides(pool,channel,enabled) VALUES(?,?,?) ON CONFLICT(pool,channel) DO UPDATE SET enabled=excluded.enabled',(pool,ch_id,int(enabled)))
     def record_test(self,pool,ch_id,outcome,error=None,latency=None,detail=None):
+        error=canonical_error_type(error)
         with self.lock,self.db:self.db.execute('INSERT INTO channel_tests(pool,channel,tested_at,outcome,error_type,latency_ms,error_detail) VALUES(?,?,?,?,?,?,?) ON CONFLICT(pool,channel) DO UPDATE SET tested_at=excluded.tested_at,outcome=excluded.outcome,error_type=excluded.error_type,latency_ms=excluded.latency_ms,error_detail=excluded.error_detail',(pool,ch_id,time.time(),outcome,error,latency,detail))
     def _quota_start(self,pool,ch_id,window,now):
         row=self.db.execute('SELECT reset_at FROM quota_resets WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
@@ -562,7 +575,7 @@ class StateStore:
         row=self.db.execute('SELECT * FROM learned_limits WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
         return dict(row) if row else None
     def observe_429(self,pool,ch_id,detail,kind=None,limits=None):
-        """kind: 'quota_exhausted' (A类 总量配额) | 'rate_limit' (B类 瞬时限流/忙) | None(由detail推断).
+        """kind: 'quota_exhausted' (A类 总量配额) | 'rpm_limit' (B类 瞬时限流/忙) | None(由detail推断).
         A类 -> 长冷却(quota_exhausted)，不切回直到冷却到期；B类 -> busy 窗口计数，达阈值才标记 busy 向下切。"""
         now=time.time(); metrics=self.window_metrics(pool,ch_id,now=now); text=(detail or '').lower()
         if kind is None:
@@ -697,6 +710,7 @@ class StateStore:
     def start(self,pool,ch_id,model_name,input_tokens=None,trace_id=None):
         with self.lock,self.db:return self.db.execute('INSERT INTO attempts(started,pool,channel,model,outcome,input_tokens,trace_id) VALUES(?,?,?,?,?,?,?)',(time.time(),pool,ch_id,model_name,'started',input_tokens,trace_id)).lastrowid
     def finish(self,id,outcome,error=None,latency=None,output_tokens=None,total_tokens=None,ttft_ms=None,error_detail=None,error_code=None):
+        error=canonical_error_type(error)
         with self.lock,self.db:self.db.execute('UPDATE attempts SET outcome=?,error_type=?,latency_ms=?,output_tokens=?,total_tokens=?,ttft_ms=?,error_detail=?,error_code=? WHERE id=?',(outcome,error,latency,output_tokens,total_tokens,ttft_ms,error_detail,error_code,id))
     def cooldown(self,pool,ch_id,seconds,reason):
         with self.lock,self.db:self._cool(pool,ch_id,time.time()+seconds,reason)
@@ -723,6 +737,8 @@ class StateStore:
         learned=self.learned_limit(pool,ch_id)
         row=self.db.execute('SELECT until,reason FROM states WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
         t=self.db.execute('SELECT tested_at,outcome,error_type,latency_ms,error_detail FROM channel_tests WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
+        last_test=dict(t) if t else None
+        if last_test: last_test['error_type']=canonical_error_type(last_test.get('error_type'))
         return {
             'id': ch_id,
             'provider': provider,
@@ -741,15 +757,21 @@ class StateStore:
             'cooldown_until': row['until'] if row else None,
             'cooldown_reason': row['reason'] if row else None,
             'learned_limits': learned,
-            'last_test': dict(t) if t else None,
+            'last_test': last_test,
             'retry_policy': dict(retry_policy) if retry_policy else None,
         }
     def recent(self,limit):
-        with self.lock:return [dict(r) for r in self.db.execute('SELECT * FROM attempts ORDER BY id DESC LIMIT ?',(limit,)).fetchall()]
+        with self.lock:
+            rows=[dict(r) for r in self.db.execute('SELECT * FROM attempts ORDER BY id DESC LIMIT ?',(limit,)).fetchall()]
+            for row in rows: row['error_type']=canonical_error_type(row.get('error_type'))
+            return rows
     def last_used_at(self, channel):
         """Return the latest real attempt timestamp for a Channel."""
         with self.lock:
             row=self.db.execute('SELECT MAX(started) AS ts FROM attempts WHERE channel=?',(channel,)).fetchone()
             return row['ts'] if row and row['ts'] is not None else None
     def errors(self,limit=50):
-        with self.lock:return [dict(r) for r in self.db.execute('SELECT * FROM attempts WHERE outcome!=? ORDER BY id DESC LIMIT ?',('success',limit)).fetchall()]
+        with self.lock:
+            rows=[dict(r) for r in self.db.execute('SELECT * FROM attempts WHERE outcome!=? ORDER BY id DESC LIMIT ?',('success',limit)).fetchall()]
+            for row in rows: row['error_type']=canonical_error_type(row.get('error_type'))
+            return rows

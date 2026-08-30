@@ -41,7 +41,7 @@ class RetryPolicy(BaseModel):
     """Per-channel retry behavior for transient errors (429, connection errors, timeouts)."""
     max_retries: int = Field(default=3, ge=0)
     backoff: dict = Field(default={'base_seconds': 5, 'max_seconds': 60, 'exponential': True})
-    retry_on: list[str] = Field(default=['rate_limit', 'connection_error', 'timeout', 'server_error'])
+    retry_on: list[str] = Field(default=['rpm_limit', 'connection_error', 'timeout', 'server_error'])
 
     @field_validator('backoff')
     @classmethod
@@ -108,7 +108,7 @@ class Pool(BaseModel):
     #   strategy: cost_aware | round_robin | quota_paced_priority
     #   fallback: {order: cost_ascending, trigger: [quota_exhausted, busy_persistent, failure],
     #              max_fallback_tiers: N, reattach: {probe_before_switch_back, quiet_window_seconds, quota_recover_seconds, failure_retry_after}}
-    #   rate_limit: {on_exhausted: failover | wait | fail}  # RPM/TPM retry budget exhausted
+    #   rpm_limit: {on_exhausted: failover | wait | fail}  # RPM/TPM retry budget exhausted
     #   stickiness: {min_stable_seconds: 3600}  # 单通道至少稳定跑这么久才因"平衡"切换(防频繁切, 保缓存)
     #   retry_next_channel_on: [...]  # 兼容旧字段, 映射到 failure 触发
     selection: dict = Field(default_factory=lambda: {'strategy': 'cost_aware', 'fallback': {'order': 'cost_ascending', 'trigger': ['quota_exhausted', 'busy_persistent', 'failure'], 'max_fallback_tiers': 2, 'reattach': {'probe_before_switch_back': True, 'quiet_window_seconds': 1200, 'quota_recover_seconds': 3600, 'failure_retry_after': 300}}, 'stickiness': {'min_stable_seconds': 3600}, 'retry_next_channel_on': []})

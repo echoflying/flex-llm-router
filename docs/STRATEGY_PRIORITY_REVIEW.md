@@ -83,7 +83,7 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 | Affinity 只在可用候选中优先 | 先筛候选，再命中 `affinity_channel()` | 已实现 |
 | 失败时清除 Affinity | 多数异常路径调用 `forget_affinity()` | 基本实现，需补齐所有流式结束路径 |
 | RPM/TPM 第一阶段退避 | 独立 `retry_steps`、TPM 4 秒/RPM 8 秒指数序列 | 已实现 |
-| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rate_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现，待真实流量回归 |
+| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rpm_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现，待真实流量回归 |
 | 内容政策 fallback | Runner 标记优先、全局顺序其次 | 已实现 |
 | 协议兼容错误 | `protocol_error_rules` 窄匹配并清除 Affinity | 已实现 |
 | 6/9/12 分钟 Hedge | 按 Channel 数量或显式 stages 生成 | 已实现，但生命周期边界有缺陷 |

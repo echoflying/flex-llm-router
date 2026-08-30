@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.priority-handoff-rate-limit-v1'
+ROUTER_BUILD='2026-08-31.priority-handoff-rpm-limit-v2'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -213,22 +213,22 @@ def error_type(e):
             return 'quota_exhausted'
         # B类细分: tpm / rpm 分开(退避策略不同, 统计分开)
         if 'tpm' in detail or 'tokens per minute' in detail or 'token limit' in detail:return 'tpm_limit'
-        return 'rate_limit'  # rpm 及其他瞬时限流
+        return 'rpm_limit'  # RPM 及其他瞬时限流
     if s and s>=500:return 'server_error'
     if 'timeout' in n:return 'timeout'
     if 'connection' in n or 'apierror' in n:return 'connection_error'
     return 'request_error'
 
-def rate_limit_exhausted_action(selection):
+def rpm_limit_exhausted_action(selection):
     """Resolve the second-stage RPM/TPM action without model-specific rules.
 
-    The optional ``selection.rate_limit.on_exhausted`` setting supports
+    The optional ``selection.rpm_limit.on_exhausted`` setting supports
     ``failover``, ``wait`` and ``fail``.  Older Runner configs retain their
     behavior: cost-aware fails over after the Channel retry budget, while
     other strategies wait until their configured queue cap.
     """
     strategy=selection.get('strategy') if isinstance(selection,dict) else None
-    config=selection.get('rate_limit',{}) if isinstance(selection,dict) else {}
+    config=selection.get('rpm_limit',{}) if isinstance(selection,dict) else {}
     action=config.get('on_exhausted') if isinstance(config,dict) else None
     if action in ('failover','wait','fail'):
         return action
@@ -1134,7 +1134,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rate_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1345,7 +1345,7 @@ def create_app(config_path:str|Path):
             await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,messages=[{'role':'user','content':'Reply with exactly OK.'}],max_tokens=8,**channel_request_kwargs(ch))
         except Exception as e:
             typ=error_type(e); detail=error_detail(e); latency=int((time.monotonic()-started)*1000); state.finish(attempt,'failure',typ,latency,error_detail=detail,error_code=error_code(e)); state.record_test(internal,ch.id,'failure',typ,latency,detail)
-            if typ in ('rate_limit','quota_exhausted'):state.observe_429(channel_id,ch.id,detail,limits=ch.limits)
+            if typ in ('rpm_limit','quota_exhausted'):state.observe_429(channel_id,ch.id,detail,limits=ch.limits)
             logger.warning('channel test failed channel=%s error=%s detail=%s',channel_id,typ,detail)
             raise HTTPException(error_code(e) or 502,{'channel':ch.id,'outcome':'failure','error_type':typ,'error_detail':detail,'latency_ms':latency}) from e
         output,total=usage_tokens(response) if 'response' in locals() else (None,None); latency=int((time.monotonic()-started)*1000); state.finish(attempt,'success',latency=latency,output_tokens=output,total_tokens=total); state.observe_success(channel_id,ch.id); state.record_test(internal,ch.id,'success',latency=latency)
@@ -1419,7 +1419,7 @@ def create_app(config_path:str|Path):
                 return local
             ids=config.global_fallback.get('chn_content_policy',[]) if isinstance(config.global_fallback,dict) else []
             return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].chn_content_policy_fallback and config.channels[cid].enabled and config.channels[cid].id!=exclude_id]
-        retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rate_limit':m} 两类独立
+        retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rpm_limit':m} 两类独立
         limit_escalated=set()  # (error kind, channel) 已进入第二阶段的标记
         while True:
             request_channels = policy_fallback_channels if policy_fallback_active else channels
@@ -1779,7 +1779,7 @@ def create_app(config_path:str|Path):
                 # The limit pin only applies to consecutive RPM/TPM retries.
                 # If the retry returns a different class of error, let that
                 # class apply its own fallback/validation policy.
-                if typ not in ('tpm_limit','rate_limit'):
+                if typ not in ('tpm_limit','rpm_limit'):
                     limit_retry_channel=None
                 protocol_rule=protocol_error_rule_for(ch,e,config.protocol_error_rules)
                 if affinity.get('enabled') and (protocol_rule is None or protocol_rule.clear_session_affinity):
@@ -1797,11 +1797,11 @@ def create_app(config_path:str|Path):
                         tried.add(ch.id)
                         state.trace_fallback(rid,f'{ch.id} matched protocol rule {protocol_rule.id}; retrying on next eligible Channel before first SSE')
                         continue
-                if typ in ('rate_limit','tpm_limit','quota_exhausted'):
-                    state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
+                if typ in ('rpm_limit','tpm_limit','quota_exhausted'):
+                    state.observe_429(key,ch.id,detail,kind={'rpm_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                     cooling=state.cooldown_state(key,ch.id)
                     if typ!='quota_exhausted':state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received from upstream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet; retry/fallback policy continues'))
-                    if typ in ('rate_limit','tpm_limit'):
+                    if typ in ('rpm_limit','tpm_limit'):
                         state.trace_event(rid,'limit_retry_started',ch.id,error_code(e),f'{typ} entered first-stage retry; this request remains pinned to the triggering Channel until retry escalation')
                 if typ=='content_policy_blocked':
                     detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
@@ -1844,7 +1844,7 @@ def create_app(config_path:str|Path):
                 rp = ch.retry_policy
                 # RPM / TPM 使用指数退避；cost_aware 达到 Channel 重试次数
                 # 后回退，其它策略继续到 setup.conf 的累计等待上限。
-                if typ in ('tpm_limit','rate_limit'):
+                if typ in ('tpm_limit','rpm_limit'):
                     cap = QUEUE_TPM_SECONDS if typ=='tpm_limit' else QUEUE_RPM_SECONDS
                     base = TPM_BACKOFF_BASE if typ=='tpm_limit' else RPM_BACKOFF_BASE
                     step = retry_steps.setdefault(typ,0)
@@ -1853,7 +1853,7 @@ def create_app(config_path:str|Path):
                     # 固定原 Channel，直到各自的累计等待上限。
                     cost_aware = isinstance(sel,dict) and sel.get('strategy')=='cost_aware'
                     limit_retry_count = max(0,int(rp.max_retries or 0))
-                    exhausted_action=rate_limit_exhausted_action(sel)
+                    exhausted_action=rpm_limit_exhausted_action(sel)
                     if step >= limit_retry_count and (typ,ch.id) not in limit_escalated:
                         limit_escalated.add((typ,ch.id))
                         state.trace_event(rid,'limit_escalated',ch.id,detail=f'{typ} retry budget exhausted ({limit_retry_count}); second-stage action={exhausted_action}')
@@ -1889,7 +1889,7 @@ def create_app(config_path:str|Path):
                 if not stream and (typ in retry_on or (failure_trigger and typ in ('connection_error','timeout','server_error'))):
                     tried.add(ch.id); state.trace_fallback(rid,f'{ch.id} failed with {typ}; selecting next eligible channel'); retries=0; continue
                 # B类限流达到累计上限后才向调用方失败。
-                if typ in ('tpm_limit','rate_limit'):
+                if typ in ('tpm_limit','rpm_limit'):
                     cap = QUEUE_TPM_SECONDS if typ=='tpm_limit' else QUEUE_RPM_SECONDS
                     waited = time.monotonic() - req_started  # 本请求从开始累计的等待(含退避+排队)
                     remaining = cap - waited
@@ -1905,7 +1905,7 @@ def create_app(config_path:str|Path):
                 stop_first_activity_watch()
                 if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):
                     state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
-                limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rate_limit',ch.id))
+                limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rpm_limit',ch.id))
                 payload=data(response,name)
                 policy_reason=policy_block_reason(payload)
                 if policy_reason:
@@ -2228,7 +2228,7 @@ def create_app(config_path:str|Path):
                     state.finish(active_attempt,'success',latency=int((time.monotonic()-active_started)*1000),ttft_ms=ttft); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
                     if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):
                         state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
-                    limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rate_limit',ch.id))
+                    limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rpm_limit',ch.id))
                     state.trace_finish(rid,'success',ch.id,200,output_preview=''.join(output_parts)[:512],ttft_ms=ttft,latency_ms=int((time.monotonic()-req_started)*1000)); yield 'data: [DONE]\n\n'
                 except asyncio.CancelledError:
                     for task in pending:
@@ -2268,8 +2268,8 @@ def create_app(config_path:str|Path):
                         state.trace_event(rid,'protocol_error_classified',ch.id,error_code(e),detail=f'{protocol_rule.id}: stream error after first-SSE phase')
                     state.finish(active_attempt,'failure',typ,int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=error_code(e))
                     state.trace_finish(rid,'failed',ch.id,error_code(e) or 502,typ,detail,latency_ms=int((time.monotonic()-req_started)*1000))
-                    if typ in ('rate_limit','tpm_limit','quota_exhausted'):
-                        state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
+                    if typ in ('rpm_limit','tpm_limit','quota_exhausted'):
+                        state.observe_429(key,ch.id,detail,kind={'rpm_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                         cooling=state.cooldown_state(key,ch.id)
                         state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received during stream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet'))
                     logger.warning('req=%s channel=%s stream error=%s detail=%s',name,ch.id,typ,detail)

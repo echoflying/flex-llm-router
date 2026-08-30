@@ -1,6 +1,6 @@
 """Tests for StateStore with the new flat Channel structure (no Model/PoolRef)."""
 from flex_llm_router.config import Channel, Limits, Routing
-from flex_llm_router.state import StateStore
+from flex_llm_router.state import StateStore, canonical_error_type
 from flex_llm_router.app import compatibility
 import time
 
@@ -11,6 +11,12 @@ def _make_channel(id='a', **kwargs):
     return Channel(id=id, enabled=True, provider='prov',
                    litellm_model='openai/x', public_model='test/x', context_window_tokens=1000000,
                    capabilities=['chat'], limits=limits, routing=routing)
+
+
+def test_public_error_names_keep_tpm_distinct_and_normalize_legacy_rpm():
+    assert canonical_error_type('rate_limit') == 'rpm_limit'
+    assert canonical_error_type('rpm_limit') == 'rpm_limit'
+    assert canonical_error_type('tpm_limit') == 'tpm_limit'
 
 
 def test_rpm_is_observed_but_not_proactively_blocked(tmp_path):
@@ -127,7 +133,7 @@ def test_error_statistics_tracks_recovery_and_final_failure(tmp_path):
     s=StateStore(tmp_path / 's.db')
     s.trace_begin('ok','model','pool','x','user 1 条',False)
     attempt=s.start('pool','a','openai/x',trace_id='ok')
-    s.finish(attempt,'failure','rate_limit')
+    s.finish(attempt,'failure','rpm_limit')
     s.trace_finish('ok','success')
     s.trace_begin('bad','model','pool','x','user 1 条',False)
     attempt=s.start('pool','a','openai/x',trace_id='bad')
@@ -136,7 +142,7 @@ def test_error_statistics_tracks_recovery_and_final_failure(tmp_path):
     stats=s.error_statistics('day')
     assert stats['requests']==2 and stats['final_failed']==1
     rows={r['error_type']:r for r in stats['rows']}
-    assert rows['rate_limit']['final_failed']==0 and rows['rate_limit']['avg_recovery_seconds'] is not None
+    assert rows['rpm_limit']['final_failed']==0 and rows['rpm_limit']['avg_recovery_seconds'] is not None
     assert rows['tpm_limit']['final_failed']==1 and rows['tpm_limit']['avg_recovery_seconds'] is None
 
 

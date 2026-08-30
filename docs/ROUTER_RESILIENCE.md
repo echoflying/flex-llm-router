@@ -1,71 +1,112 @@
-# Router 韧性与退让策略（当前实现）
+# Router 韧性与错误处理策略（现行实现）
 
-本文以当前 `src/flex_llm_router/app.py`、`state.py` 和 `config/pools.yaml` 为准。目标是在上游无响应、限流或临时故障时保持调用可靠，同时不让 UI 进程承担核心正确性。
+本文描述 `src/flex_llm_router/app.py` 的实际请求生命周期。除特别注明外，策略都作用于单个请求；其他新请求可以根据 Channel 的冷却状态选择其它可用通道。
 
 ## 基本原则
 
-- 只有明确识别的临时错误才自动重试；普通 HTTP 400、模型名错误、参数/工具格式错误立即返回。
-- 没有后台“空”探测：配额异常和引擎不可用的验证由原始请求承担。
-- 冷却、配额和学习状态按 Channel 保存；其它 Runner 请求可选择可用备用 Channel。
-- 所有等待、重试、冷却、恢复、取消和 Hedge 事件都会写入 Trace。
-- 7800 核心 watchdog 独立于 7801 UI 和浏览器页面，负责长请求截止和收口。
+- 只有明确识别的临时错误才自动重试；普通参数、鉴权、模型或工具格式错误不盲目重试。
+- 不做与用户请求无关的后台“空探测”。配额和引擎验证由原始请求承担。
+- 每个请求的每次上游尝试、等待、冷却、切换、恢复、取消和最终结果都写入 Trace。
+- 7800 核心 watchdog 独立负责 Hedge、首活动截止和流式空闲截止；7801 UI 不参与正确性。
 
-### 协议兼容错误
+## 错误分类与处理
 
-配置中的 `protocol_error_rules` 只匹配明确的 Provider/Model、HTTP 状态和上游错误签名。
-例如 `reasoning_content` 必须返回的 400 会被归类为协议兼容错误：清除当前会话粘性，
-在没有首个 SSE 时用同一请求尝试下一个可用 Channel，并记录到
-`protocol_error_observations`。普通 400 不会盲目轮转；统计接口为
-`/api/statistics/protocol-errors`。
+### 1. 请求进入前的本地拒绝
 
-## 上游错误
+- 未知外部模型名：立即返回 `404`。
+- 缺少 `messages` 或请求 JSON 不合法：返回 `400`。
+- Channel 不具备所需能力（流式、工具、JSON 等）：该 Channel 被跳过，继续选择其它可用 Channel。
+- 预计输入加输出超过上下文窗口：该 Channel 被跳过，继续选择其它可用 Channel。
+- 所有 Channel 都不可用：对正在冷却的临时状态等待最早恢复；超过对应等待上限后返回 `503 no_eligible_channel`。
 
-### `allocated quota exceeded`
+### 2. 内容政策限制
 
-这类错误标记为 `quota_exhausted`。原请求固定回到发生异常的同一 Channel 验证：1 分钟、2 分钟、4 分钟；三次仍失败后每 10 分钟复验，直到成功或客户端结束。其它新请求优先选择 Runner 中的其它可用 Channel，不制造后台探测。
+识别 `content_policy_blocked`、`content_filter` 等明确上游信号。
 
-### `engine is not available temporarily`
+- 非流式：先按当前 Runner 中标记 `chn_content_policy_fallback: true` 的 Channel 顺序尝试；Runner 没有可用标记通道时，按 `global_fallback.chn_content_policy` 顺序尝试。
+- 流式且尚未向下游输出可见内容：可以切换到下一个政策兜底 Channel。
+- 已经输出内容后：不再切换，记录 `content_policy_blocked_after_output` 并结束流。
+- 所有兜底通道都失败：返回 `502 content_policy_blocked`。
+- 单纯的拒答文本不会自动判定为政策错误，必须有明确的 finish reason 或错误标记。
 
-只有包含该精确临时引擎错误的 HTTP 400 才进入专门验证流程：15 秒、45 秒、120 秒，之后每 5 分钟复验。其它 HTTP 400 不重试。
+### 3. 协议兼容错误
 
-### RPM / TPM
+`protocol_error_rules` 只匹配明确的 Provider/Model、HTTP 状态和错误签名。例如 `reasoning_content` 必须返回的 `400`：
 
-真实限流发生后才进入 RPM/TPM 退让；两类使用独立指数退避，并受 Setup 中的单请求累计等待上限约束。未收到真实上游限流前，Router 不主动预留或消耗 RPM/TPM。
+- 首个 SSE/输出之前：清除当前会话粘性，尝试下一个可用 Channel，并记录协议错误统计。
+- 流式首个 SSE 阶段发生同类错误：同样可以切换到下一个 Channel。
+- 已经向下游输出后：不再切换，直接结束。
+- 其它普通 `400` 不适用此策略，直接返回。
 
-### 五小时窗口
+### 4. 配额异常 `allocated quota exceeded`
 
-`max_requests_per_window` 是本地滑动窗口保护，不代表账户余额。达到阈值后，原请求固定在该 Channel，按 1、5、10、20 分钟验证，之后每 30 分钟验证一次；尚未发出的本地拒绝不计数。
+这是套餐/总配额类错误，不是普通瞬时限流。
 
-## 无首活动 Hedge
+- 当前请求固定回到发生错误的原 Channel。
+- 等待并验证：`1 分钟 → 2 分钟 → 4 分钟`；三次仍失败后每 `10 分钟`复验。
+- 直到成功、达到客户端总超时或客户端断开；不切换 Channel，不发送后台空探测。
+- 其它新请求可以使用 Runner 中的其它 Channel。
 
-只有在没有上游响应对象或任何 SSE 活动时触发；一旦已有首活动，不切换响应源。
+### 5. 临时引擎不可用 `engine is not available temporarily`
 
-| Runner Channel 数量 | Hedge 时间线 | 最终截止 |
-|---|---|---|
-| 3 个或更多 | T=0 原始；T=6 分钟第二 Channel；T=9 分钟第三 Channel | T=12 分钟 |
-| 2 个 | T=0 原始；T=6 分钟第二 Channel | T=9 分钟 |
-| 1 个 | T=0 原始 | `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT` |
+仅对明确包含该错误文本（兼容 `avaiable` 拼写）的 HTTP 400 使用专门策略：
 
-目标按当前首选 Channel 和 Runner 配置顺序计算，不绑定 Provider/Model 名称。`selection.hedge.stages` 可以显式覆盖目标，但最终截止仍按 Runner Channel 数量计算。
+- 当前请求固定原 Channel；
+- `15 秒 → 45 秒 → 120 秒`，之后每 `5 分钟`复验；
+- 其它 HTTP 400 不进入此流程。
 
-每个实际 LiteLLM 尝试另有默认 180 秒响应对象和 180 秒首 SSE 安全边界；单次超时会推进下一阶段。最先产生有效响应对象或 SSE 的副本获胜，其余副本取消。Trace 会记录 `watchdog_hedge_due`、`hedge_started`、`hedge_won`、`hedge_cancelled` 和 `watchdog_deadline_due` 等事件。
+### 6. RPM / TPM 瞬时限流
 
-## 下游断开与取消
+只有收到真实上游限流后才进入退避，不预先占用或主动探测额度。RPM 与 TPM 使用独立计数和退避。
 
-Router 监听真实 HTTP `disconnect`。首活动前或流式期间断开，会取消原始上游流和未完成 Hedge，并以 `client_disconnected`/`cancelled` 收口。标准 OpenAI 协议没有逻辑任务取消 ID，因此不能仅凭请求内容判断取消。
+- **TPM**：`4s → 8s → 16s → 32s → ...`。
+- **RPM**：`8s → 16s → 32s → 64s → ...`。
+- 累计等待分别受 `FLEX_QUEUE_TPM`、`FLEX_QUEUE_RPM` 限制（代码默认 TPM 60 秒、RPM 300 秒，Setup 可覆盖）。
+- 当前请求在整个退避序列中固定触发错误的原 Channel，不切换到其它 Channel。
+- 其它新请求仍可避开处于冷却的 Channel，使用同一 Runner 的其它通道。
+- 达到累计上限后，向调用方返回原始限流错误（通常为 HTTP 429）。
 
-如果上游 HTTP 客户端不及时响应取消，Router 会将任务脱离主请求清理；Trace 和调用方仍按截止时间结束，不会永久显示进行中。
+### 7. 其它上游故障
+
+包括连接错误、响应超时、HTTP 5xx、空响应或 malformed stream 等：
+
+- 非流式：先按 Channel 的 `retry_policy` 重试；达到该 Channel 的重试次数后，如果 Runner 的 failure 策略允许，再切换到下一个 Channel。
+- 流式且已开始输出：不重新生成另一条响应，记录错误并结束当前流。
+- 首个响应/SSE 尚未到达时：由无首活动 Hedge 机制决定是否启动其它 Channel。
+
+### 8. 流式空闲与首活动截止
+
+- 未收到任何响应对象或 SSE：
+  - 3 个以上 Channel：原始请求、6 分钟第二 Channel、9 分钟第三 Channel，12 分钟硬截止；
+  - 2 个 Channel：6 分钟第二 Channel，9 分钟硬截止；
+  - 1 个 Channel：使用 `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT`（默认 15 分钟）。
+- 已收到 SSE 后，进入流式空闲计时；连续没有后续 SSE 时按 6/3/3 分钟阶段启动空闲 Hedge，最终硬截止。
+- 每收到新的有效 SSE，空闲计时器重新开始。
+- 最先产生有效响应的副本获胜，其余上游任务取消。
+
+### 9. 下游断开与取消
+
+Router 监听 HTTP disconnect：
+
+- 首活动前断开：取消上游任务，Trace 标记 `client_disconnected_before_first_token`。
+- 流式期间断开：取消当前流和所有 Hedge，Trace 标记 `client_disconnected` / `cancelled`。
+- 不依赖标准 OpenAI 请求中的任务 ID；仅依据真实连接状态处理。
+
+### 10. 本地五小时滑动窗口
+
+`max_requests_per_window` 是本地保护阈值，不代表供应商账户余额：
+
+- 当前请求固定在触发保护的原 Channel；
+- 验证间隔：`1、5、10、20 分钟`，之后每 `30 分钟`；
+- 不发送后台空探测；其它新请求可以使用其它 Channel。
 
 ## 会话粘性与回切
 
-启用 `session_affinity` 时，同一对话优先保持同一 Channel，避免上下文缓存因频繁切换失效。限流、配额或故障时可以向 Runner 中的下一个 tier 回退；恢复探测和回切由配置的 `selection.fallback.reattach` 控制。
+会话粘性只决定正常请求的优先 Channel，不覆盖上述固定原 Channel 的验证流程。上游 429、400、连接/响应超时或流式提前中断时会清除旧粘性，避免下一次请求继续命中故障通道。切换后首个 SSE 会建立临时粘性，完整成功后才确认最终粘性。
 
-会话粘性不是永久绑定：上游发生 429、400、连接/响应超时或流式提前中断时，Router 会清除该对话的粘性记录，避免下一次重发再次命中已失败的 Channel。切换后的 Channel 一旦收到首个 SSE，会先写入临时粘性（事件 `session_affinity_provisional`）；只有完整流结束后才记为最终成功。这样既能让重复请求跟随已经开始响应的 Channel，也不会把未完成的请求误记为完整成功。
+## 观测与上限
 
-## 观测与诊断
-
-- `/traces` 展示请求级 Trace、每次上游尝试和完整事件序列。
-- `/statistics` 展示调用、错误、成功/重试和按小时趋势。
-- 可选的三小时全文留存独立于 `FLEX_DEBUG`，默认关闭并受条数/空间上限约束。
-- `/healthz` 返回构建特性、当前自动 Hedge/截止策略、watchdog 活跃数和启动恢复数。
-- 客户端、模型、Runner、Channel、Provider 均记录在请求元数据中；凭据只从本机环境变量读取。
+- Trace 默认保留最近 3 天、最多 1000 条。
+- 完整请求留存独立于普通 Debug，默认关闭，并受时长、条数和空间上限约束。
+- `/healthz` 返回版本、构建特性、Hedge/截止策略、watchdog 活跃数和启动恢复数。
+- 所有错误分类、限流样本和恢复结果进入 SQLite 统计，可在 Dashboard 查看。

@@ -19,8 +19,8 @@ class _Err(Exception):
         self.message = msg
 
 
-def _make_client(tmp_path, monkeypatch, responses):
-    """responses: list; 每次 acompletion 调用弹出一个（最后一个复用）。"""
+def _copy_config(tmp_path):
+    """Copy the runtime config/templates into an isolated test directory."""
     src = _REPO / 'config' / 'pools.yaml'
     dst = tmp_path / 'config' / 'pools.yaml'
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -28,6 +28,12 @@ def _make_client(tmp_path, monkeypatch, responses):
     tpl_src = _REPO / 'templates'
     if tpl_src.exists():
         shutil.copytree(tpl_src, tmp_path / 'templates', dirs_exist_ok=True)
+    return dst
+
+
+def _make_client(tmp_path, monkeypatch, responses):
+    """responses: list; 每次 acompletion 调用弹出一个（最后一个复用）。"""
+    dst = _copy_config(tmp_path)
 
     idx = {'i': 0}
 
@@ -73,6 +79,35 @@ def test_p0_1_retry_uses_per_request_counter_not_rowid(tmp_path, monkeypatch):
     r = client.post('/v1/chat/completions', json={'model': 'mix-deepseek-v4-flash',
                                                    'messages': [{'role': 'user', 'content': 'hi'}]})
     assert r.status_code == 200, r.text  # 走到第三次成功 = 重试逻辑生效
+
+
+def test_rpm_tpm_retry_stays_on_original_channel(tmp_path, monkeypatch):
+    """RPM/TPM retries must pin this request; only other requests may fail over."""
+    import time
+    monkeypatch.setenv('FLEX_STATE_DB', str(tmp_path / 'flex.db'))
+    # Keep the test fast while still exercising the cumulative-cap branch.
+    monkeypatch.setattr(app_mod, 'QUEUE_TPM_SECONDS', 3)
+    seen = []
+
+    class _TpmErr(_Err):
+        def __init__(self):
+            super().__init__('HTTP 429: inference tpm exhausted')
+
+    async def fake_acompletion(**kwargs):
+        seen.append((kwargs.get('model'), kwargs.get('api_base')))
+        if len(seen) == 1:
+            raise _TpmErr()
+        return _ok_response(kwargs.get('model', 'x'))
+
+    monkeypatch.setattr(app_mod.litellm, 'acompletion', fake_acompletion)
+    client = TestClient(app_mod.create_app(str(_copy_config(tmp_path))))
+    response = client.post('/v1/chat/completions', json={
+        'model': 'sensenova-flash-plus',
+        'messages': [{'role': 'user', 'content': 'pin this retry'}],
+    })
+    assert response.status_code == 200, response.text
+    assert len(seen) == 2
+    assert seen[0] == seen[1], 'TPM retry silently switched Channel'
 
 
 def test_p0_3_quota_exhausted_triggers_cooldown(tmp_path, monkeypatch):
@@ -155,4 +190,3 @@ def test_p0_2_probe_recovery_clears_cooldown(tmp_path, monkeypatch):
                           (pool_name, ch_id)).fetchone()
         con.close()
         assert row is None, 'P0-2 回退：探测成功未清冷却（clear_cooldown 未被调用）'
-

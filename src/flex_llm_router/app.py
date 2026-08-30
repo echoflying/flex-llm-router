@@ -1375,6 +1375,11 @@ def create_app(config_path:str|Path):
             affinity = pool.session_affinity
             reserve = pool.context_policy.get('reserve_output_tokens', 8192)
         tried=set(); last='no_eligible_channel'; retries=0; quota_retry_channel=None; engine_retry_channel=None; five_hour_retry_channel=None
+        # A request that receives a real RPM/TPM response must remain pinned to
+        # the Channel that produced it while it backs off.  Other *new*
+        # requests may still use the cooled Channel's siblings, but this
+        # request must not silently change provider/model semantics.
+        limit_retry_channel=None
         policy_fallback_active=False; policy_fallback_tried=set(); policy_fallback_channels=[]
         def configured_policy_fallbacks(exclude_id=None):
             """Prefer marked Channels in this Runner, then global ordered fallbacks."""
@@ -1394,8 +1399,9 @@ def create_app(config_path:str|Path):
             # 每次选路只保留本轮拒绝原因；不能把上一轮的 busy 重复拼进调用轨迹。
             available=[]; rejected=[]
             for c in request_channels:
-                # 配额异常的原请求必须回到发生异常的同一 Channel 做验证；不能被调度器静默换走。
-                validation_channel=quota_retry_channel or engine_retry_channel or five_hour_retry_channel
+                # 配额、引擎异常和 RPM/TPM 限流的原请求必须回到发生异常
+                # 的同一 Channel 做验证；不能被调度器静默换走。
+                validation_channel=quota_retry_channel or engine_retry_channel or five_hour_retry_channel or limit_retry_channel
                 if validation_channel is not None and c.id!=validation_channel:continue
                 if not state.is_enabled(key,c.id) or c.id in tried:continue
                 ok,reason,total=compatibility(reserve,c,body,stream)
@@ -1712,6 +1718,11 @@ def create_app(config_path:str|Path):
             except Exception as e:
                 stop_first_activity_watch()
                 typ=error_type(e); detail=error_detail(e); last=typ
+                # The limit pin only applies to consecutive RPM/TPM retries.
+                # If the retry returns a different class of error, let that
+                # class apply its own fallback/validation policy.
+                if typ not in ('tpm_limit','rate_limit'):
+                    limit_retry_channel=None
                 protocol_rule=protocol_error_rule_for(ch,e,config.protocol_error_rules)
                 if affinity.get('enabled') and (protocol_rule is None or protocol_rule.clear_session_affinity):
                     state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
@@ -1776,11 +1787,13 @@ def create_app(config_path:str|Path):
                     cap = QUEUE_TPM_SECONDS if typ=='tpm_limit' else QUEUE_RPM_SECONDS
                     base = TPM_BACKOFF_BASE if typ=='tpm_limit' else RPM_BACKOFF_BASE
                     step = retry_steps.setdefault(typ,0)
+                    limit_retry_channel=ch.id
                     waited=time.monotonic()-req_started
                     remaining=cap-waited
                     if remaining > 2:
                         wait=min(base*(2**step),remaining); retry_steps[typ]=step+1
-                        # 将本轮指数等待写成通道冷却，其他请求可立即退让到备用通道。
+                        # 将本轮指数等待写成通道冷却；仅其他请求可退让到
+                        # 备用 Channel，本请求由 limit_retry_channel 固定原通道。
                         state.cooldown(key,ch.id,wait,'busy')
                         state.trace_event(rid,'retry_wait',ch.id,detail=f'{typ}; 指数退避第 {step+1} 次，等待 {wait:.0f}s（累计上限 {cap}s）')
                         continue
@@ -1810,7 +1823,7 @@ def create_app(config_path:str|Path):
             logger.info('req=%s channel=%s model=%s',name,ch.id,ch.litellm_model)
             if not stream:
                 stop_first_activity_watch()
-                if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
                 payload=data(response,name)
                 policy_reason=policy_block_reason(payload)
                 if policy_reason:
@@ -2104,7 +2117,7 @@ def create_app(config_path:str|Path):
                         yield f'data: {json.dumps({"error":{"type":"content_policy_blocked","detail":"All configured CHN Content Policy fallback Channels were exhausted"}},ensure_ascii=False)}\n\n'
                         return
                     state.finish(active_attempt,'success',latency=int((time.monotonic()-active_started)*1000),ttft_ms=ttft); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
-                    if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                    if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
                     state.trace_finish(rid,'success',ch.id,200,output_preview=''.join(output_parts)[:512],ttft_ms=ttft,latency_ms=int((time.monotonic()-req_started)*1000)); yield 'data: [DONE]\n\n'
                 except asyncio.CancelledError:
                     for task in pending:

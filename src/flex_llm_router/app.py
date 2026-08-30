@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-28.stream-idle-hedge-v1'
+ROUTER_BUILD='2026-08-31.priority-handoff-rate-limit-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -218,6 +218,21 @@ def error_type(e):
     if 'timeout' in n:return 'timeout'
     if 'connection' in n or 'apierror' in n:return 'connection_error'
     return 'request_error'
+
+def rate_limit_exhausted_action(selection):
+    """Resolve the second-stage RPM/TPM action without model-specific rules.
+
+    The optional ``selection.rate_limit.on_exhausted`` setting supports
+    ``failover``, ``wait`` and ``fail``.  Older Runner configs retain their
+    behavior: cost-aware fails over after the Channel retry budget, while
+    other strategies wait until their configured queue cap.
+    """
+    strategy=selection.get('strategy') if isinstance(selection,dict) else None
+    config=selection.get('rate_limit',{}) if isinstance(selection,dict) else {}
+    action=config.get('on_exhausted') if isinstance(config,dict) else None
+    if action in ('failover','wait','fail'):
+        return action
+    return 'failover' if strategy=='cost_aware' else 'wait'
 def error_code(e):
     """Return the provider's HTTP status code if present (e.g. 429, 500, 408), else None."""
     return getattr(e, 'status_code', None)
@@ -1119,7 +1134,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rate_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1405,6 +1420,7 @@ def create_app(config_path:str|Path):
             ids=config.global_fallback.get('chn_content_policy',[]) if isinstance(config.global_fallback,dict) else []
             return [config.channels[cid] for cid in ids if cid in config.channels and config.channels[cid].chn_content_policy_fallback and config.channels[cid].enabled and config.channels[cid].id!=exclude_id]
         retry_steps={}  # 分级退避计数: {'tpm_limit':n,'rate_limit':m} 两类独立
+        limit_escalated=set()  # (error kind, channel) 已进入第二阶段的标记
         while True:
             request_channels = policy_fallback_channels if policy_fallback_active else channels
             if policy_fallback_active and not request_channels:
@@ -1489,7 +1505,11 @@ def create_app(config_path:str|Path):
             # deadline signals through this queue, so a hung provider request
             # cannot depend on this coroutine's own timeout calculation.
             watchdog_signals=asyncio.Queue()
-            app.state.first_activity_watch[rid]={'started':req_started,'signals':watchdog_signals,'sent':set(),'hedge_plan':hedge_plan,'deadline_seconds':first_activity_deadline}
+            app.state.first_activity_watch[rid]={'started':req_started,'signals':watchdog_signals,'sent':set(),'hedge_plan':hedge_plan,'deadline_seconds':first_activity_deadline,
+                                                 # A response object can be handed to ASGI before the streaming
+                                                 # generator is actually entered.  Keep Hedge tasks created in
+                                                 # that gap here so the generator can adopt them later.
+                                                 'handoff_hedges':{},'handoff_hedge_stages':set(),'stream_consumer_started':False}
             def stop_first_activity_watch():
                 app.state.first_activity_watch.pop(rid,None)
             async def call_upstream(target):
@@ -1670,20 +1690,41 @@ def create_app(config_path:str|Path):
                                 state.trace_event(rid,'pre_response_hedge_cancelled',other_target.id,detail=f'{other_label} cancelled because {label} returned first')
                             if active: cancel_detached(active)
                             if label!='original': state.trace_event(rid,'pre_response_hedge_won',target.id,detail=f'{label} returned the first upstream response object')
-                            # Response-object arbitration is over.  Streaming
-                            # owns the same watchdog record from this point;
-                            # leaving these callbacks installed would let the
-                            # pre-response callback launch a duplicate Hedge
-                            # at 6/9 minutes even though a response object has
-                            # already been handed to the SSE consumer.
-                            watch_record['on_hedge']=None
+                            # Response-object arbitration is over.  There is a
+                            # small but real gap before ASGI enters the
+                            # StreamingResponse generator.  Keep Hedge alive
+                            # during that gap instead of assuming that the
+                            # response object has already reached the SSE
+                            # consumer.  Any tasks launched here are adopted
+                            # by ``events()`` when it starts.
                             selected_response=value
+                            def handoff_watchdog_start_hedge(hedge_no):
+                                nonlocal initial_hedges_started
+                                if watch_record.get('stream_consumer_started') or hedge_no<=initial_hedges_started or hedge_no>len(hedge_plan):
+                                    return
+                                initial_hedges_started=hedge_no
+                                due,target_ids=hedge_plan[hedge_no-1]
+                                for target_id in target_ids:
+                                    if hedge_no in watch_record['handoff_hedge_stages']:
+                                        continue
+                                    target=channel_by_id[target_id]
+                                    hedge_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
+                                    hedge_started=time.monotonic(); state.trace_attempt(rid,target.id)
+                                    task=asyncio.create_task(call_upstream(target))
+                                    watch_record['handoff_hedges'][task]={'attempt_id':hedge_attempt,'started':hedge_started,'target':target,'number':hedge_no}
+                                    state.trace_event(rid,'pre_response_hedge_started',target.id,detail=f'无上游活动已达 {due}s；第 {hedge_no} 个 Hedge 阶段（{len(target_ids)} 个 Channel），发往 {target.id}（流式消费者尚未进入，先行启动）')
+                                watch_record['handoff_hedge_stages'].add(hedge_no)
+                            watch_record['on_hedge']=handoff_watchdog_start_hedge
                             def stream_deadline_hard_stop():
                                 if watch_record.get('deadline_forced'): return
                                 watch_record['deadline_forced']=True
                                 detail=f'No upstream SSE activity before Router {first_activity_deadline//60}-minute safety deadline; watchdog closed the trace before the streaming consumer entered.'
                                 state.trace_event(rid,'upstream_cancel_requested',target.id,504,detail='Watchdog hard-stop for a response object whose streaming consumer did not start')
                                 state.trace_event(rid,'upstream_total_timeout',target.id,504,detail)
+                                state.finish(attempt_id,'failure','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail=detail,error_code=504)
+                                for handoff_task,info in list(watch_record.get('handoff_hedges',{}).items()):
+                                    if not handoff_task.done(): handoff_task.cancel()
+                                    state.finish(info['attempt_id'],'cancelled','upstream_total_timeout',int((time.monotonic()-info['started'])*1000),error_detail='Watchdog deadline before streaming consumer entered',error_code=504)
                                 state.trace_finish(rid,'failed',target.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                                 close=getattr(selected_response,'aclose',None) or getattr(selected_response,'close',None)
                                 if callable(close):
@@ -1760,6 +1801,8 @@ def create_app(config_path:str|Path):
                     state.observe_429(key,ch.id,detail,kind={'rate_limit':'rpm','tpm_limit':'tpm','quota_exhausted':'quota_exhausted'}[typ],limits=ch.limits)
                     cooling=state.cooldown_state(key,ch.id)
                     if typ!='quota_exhausted':state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received from upstream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet; retry/fallback policy continues'))
+                    if typ in ('rate_limit','tpm_limit'):
+                        state.trace_event(rid,'limit_retry_started',ch.id,error_code(e),f'{typ} entered first-stage retry; this request remains pinned to the triggering Channel until retry escalation')
                 if typ=='content_policy_blocked':
                     detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
                     state.trace_event(rid,'content_policy_blocked',ch.id,error_code(e) or 400,detail=detail_policy)
@@ -1810,11 +1853,19 @@ def create_app(config_path:str|Path):
                     # 固定原 Channel，直到各自的累计等待上限。
                     cost_aware = isinstance(sel,dict) and sel.get('strategy')=='cost_aware'
                     limit_retry_count = max(0,int(rp.max_retries or 0))
-                    if cost_aware and step >= limit_retry_count:
+                    exhausted_action=rate_limit_exhausted_action(sel)
+                    if step >= limit_retry_count and (typ,ch.id) not in limit_escalated:
+                        limit_escalated.add((typ,ch.id))
+                        state.trace_event(rid,'limit_escalated',ch.id,detail=f'{typ} retry budget exhausted ({limit_retry_count}); second-stage action={exhausted_action}')
+                    if step >= limit_retry_count and exhausted_action in ('failover','fail'):
+                        if exhausted_action=='fail':
+                            code=error_code(e) or 429
+                            state.trace_finish(rid,'failed',ch.id,code,typ,detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                            raise HTTPException(code,{'channel':ch.id,'error_type':typ,'error_detail':detail,'retry_attempts':step}) from e
                         tried.add(ch.id)
                         limit_retry_channel=None
                         retry_steps[typ]=0
-                        state.trace_fallback(rid,f'{ch.id} reached {limit_retry_count} {typ} retries; cost_aware selecting next eligible Channel')
+                        state.trace_fallback(rid,f'{ch.id} reached {limit_retry_count} {typ} retries; Channel cooldown now yields to fallback ({exhausted_action})')
                         continue
                     limit_retry_channel=ch.id
                     waited=time.monotonic()-req_started
@@ -1852,7 +1903,9 @@ def create_app(config_path:str|Path):
             logger.info('req=%s channel=%s model=%s',name,ch.id,ch.litellm_model)
             if not stream:
                 stop_first_activity_watch()
-                if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):
+                    state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rate_limit',ch.id))
                 payload=data(response,name)
                 policy_reason=policy_block_reason(payload)
                 if policy_reason:
@@ -1938,6 +1991,22 @@ def create_app(config_path:str|Path):
                         return
                     task=asyncio.create_task(hedge_event(number,target))
                     pending.add(task); pending_channels[task]=target.id
+                async def adopt_handoff_hedge(upstream_task,info):
+                    """Adopt a Hedge started while ASGI had not entered events()."""
+                    target=info['target']; number=info['number']
+                    try:
+                        hedge_response=await upstream_task
+                        return await first_event(hedge_response,info['attempt_id'],info['started'],f'hedge {number}',target)
+                    except asyncio.CancelledError:
+                        state.finish(info['attempt_id'],'cancelled','hedge_cancelled',latency=int((time.monotonic()-info['started'])*1000))
+                        state.trace_event(rid,'hedge_cancelled',target.id,detail=f'第 {number} 个流式 Hedge 阶段已取消')
+                        raise
+                    except Exception as exc:
+                        if affinity.get('enabled'):
+                            state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
+                        state.finish(info['attempt_id'],'failure',error_type(exc),latency=int((time.monotonic()-info['started'])*1000),error_code=error_code(exc))
+                        state.trace_event(rid,'hedge_error',target.id,error_code(exc),f'第 {number} 个流式 Hedge 阶段异常：{error_type(exc)}')
+                        raise
                 try:
                     watch_record=app.state.first_activity_watch.get(rid)
                     if watch_record and watch_record.get('deadline_forced'):
@@ -1946,9 +2015,18 @@ def create_app(config_path:str|Path):
                         state.trace_event(rid,'stream_deadline_observed',ch.id,504,detail=detail)
                         yield f'data: {json.dumps({"error":{"type":"upstream_total_timeout","detail":detail}})}\n\n'
                         return
+                    if watch_record:
+                        watch_record['stream_consumer_started']=True
+                        # From this point the stream loop owns Hedge signals;
+                        # the handoff callback must not create duplicates.
+                        watch_record['on_hedge']=None
                     state.trace_event(rid,'stream_consumer_started',ch.id,detail='Streaming response body consumer entered')
                     original_task=asyncio.create_task(original_first_event(response))
                     pending={original_task}; pending_channels[original_task]=ch.id
+                    if watch_record:
+                        for upstream_task,info in list(watch_record.get('handoff_hedges',{}).items()):
+                            adopted=asyncio.create_task(adopt_handoff_hedge(upstream_task,info))
+                            pending.add(adopted); pending_channels[adopted]=info['target'].id
                     watchdog_task=asyncio.create_task(watchdog_signals.get())
                     hedge_index=initial_hedges_started; winner=None
                     while winner is None:
@@ -2148,7 +2226,9 @@ def create_app(config_path:str|Path):
                         yield f'data: {json.dumps({"error":{"type":"content_policy_blocked","detail":"All configured CHN Content Policy fallback Channels were exhausted"}},ensure_ascii=False)}\n\n'
                         return
                     state.finish(active_attempt,'success',latency=int((time.monotonic()-active_started)*1000),ttft_ms=ttft); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
-                    if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                    if ch.id in (quota_retry_channel,engine_retry_channel,five_hour_retry_channel,limit_retry_channel):
+                        state.clear_cooldown(key,ch.id); state.trace_event(rid,'channel_recovered',ch.id,detail='原请求验证成功；清除临时异常状态')
+                    limit_escalated.discard(('tpm_limit',ch.id)); limit_escalated.discard(('rate_limit',ch.id))
                     state.trace_finish(rid,'success',ch.id,200,output_preview=''.join(output_parts)[:512],ttft_ms=ttft,latency_ms=int((time.monotonic()-req_started)*1000)); yield 'data: [DONE]\n\n'
                 except asyncio.CancelledError:
                     for task in pending:

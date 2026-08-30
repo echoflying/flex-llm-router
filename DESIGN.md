@@ -31,6 +31,11 @@ Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、�
 
 RPM/TPM 触发后，TPM 基数为 4 秒、RPM 基数为 8 秒并按 2 倍递增。`cost_aware` 先在原 Channel 按其 `retry_policy.max_retries` 重试，达到次数后才按 tier 成本顺序回退；其它策略固定原 Channel 直到 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 累计上限。其它新请求仍可改走同一 Runner 的其它 Channel。
 
+限流分为“短退避重试”和“冷却升级”两个阶段。Runner 可在
+`selection.rate_limit.on_exhausted` 指定重试预算耗尽后的 `failover`、`wait` 或
+`fail`；未配置时 `cost_aware` 默认回退，其它策略默认等待。Trace 分别记录
+`limit_retry_started` 和 `limit_escalated`，避免把已确认冷却误显示为普通重试。
+
 ### CHN Content Policy fallback
 
 `global_fallback.chn_content_policy` 是按顺序排列的 Channel ID（建议

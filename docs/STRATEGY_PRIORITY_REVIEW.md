@@ -83,13 +83,13 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 | Affinity 只在可用候选中优先 | 先筛候选，再命中 `affinity_channel()` | 已实现 |
 | 失败时清除 Affinity | 多数异常路径调用 `forget_affinity()` | 基本实现，需补齐所有流式结束路径 |
 | RPM/TPM 第一阶段退避 | 独立 `retry_steps`、TPM 4 秒/RPM 8 秒指数序列 | 已实现 |
-| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；`cost_aware` 达到次数后可切换 | 部分实现，缺少统一的显式升级状态和 `on_exhausted` 配置 |
+| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rate_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现，待真实流量回归 |
 | 内容政策 fallback | Runner 标记优先、全局顺序其次 | 已实现 |
 | 协议兼容错误 | `protocol_error_rules` 窄匹配并清除 Affinity | 已实现 |
 | 6/9/12 分钟 Hedge | 按 Channel 数量或显式 stages 生成 | 已实现，但生命周期边界有缺陷 |
 | 单 Channel 6 分钟重试/9 分钟截止 | 自动 Hedge 计划 | 已实现 |
 | 首 SSE 后空闲 Hedge | 流式消费者内实现 | 已实现，需继续验证异常和取消竞态 |
-| 响应对象已返回但消费者未进入 | `watchdog_handoff` 后关闭 `on_hedge` | **已发现 BUG** |
+| 响应对象已返回但消费者未进入 | Hedge 任务先挂到 watchdog handoff，流式消费者进入后接管 | **已修复，待回归验证** |
 | 下游断开 | 7800 核心监听并取消/脱离上游任务 | 已实现，需增加竞态测试 |
 | 普通 400 | 不在协议表时直接返回 | 已实现 |
 | 配额/引擎验证 | 原 Channel 定时验证，不后台空探测 | 已实现，但应与第二阶段冷却统一展示 |
@@ -97,14 +97,14 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 
 ### 已确认的生命周期缺陷
 
-当 LiteLLM 返回了 response object，但 ASGI 流式消费者尚未真正进入时，代码会执行 `watchdog_handoff` 并清空 `on_hedge` 回调。此后 watchdog 只能记录 `watchdog_hedge_due`，不能启动实际 Hedge，最终直接在硬截止返回 504。该问题不是 Affinity 的业务优先级，而是“响应对象阶段”和“流式消费阶段”之间的状态抢占错误。
+当 LiteLLM 返回了 response object，但 ASGI 流式消费者尚未真正进入时，旧代码会执行 `watchdog_handoff` 并清空 `on_hedge` 回调。此后 watchdog 只能记录 `watchdog_hedge_due`，不能启动实际 Hedge，最终直接在硬截止返回 504。当前实现已改为在 handoff 间隙先启动并暂存 Hedge 任务，流式消费者进入后接管这些任务；仍需通过真实异步回归测试验证取消竞态。
 
 ## 5. 修改计划（先文档，后代码）
 
 ### 阶段 A：明确数据模型和策略配置
 
 1. 增加统一的限流阶段状态：`observed → retrying → cooled → recovered/exhausted`。
-2. 为 Runner 增加限流升级后的明确策略，例如：
+2. 为 Runner 使用限流升级后的明确策略（已支持），例如：
    - `on_exhausted: failover`：优先业务连续性；
    - `on_exhausted: wait`：优先同模型一致性；
    - `on_exhausted: fail`：直接返回限流错误。

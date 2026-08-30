@@ -140,6 +140,16 @@ def test_error_statistics_tracks_recovery_and_final_failure(tmp_path):
     assert rows['tpm_limit']['final_failed']==1 and rows['tpm_limit']['avg_recovery_seconds'] is None
 
 
+def test_quarter_hour_statistics_have_96_local_buckets(tmp_path):
+    s = StateStore(tmp_path / 's.db')
+    calls = s.quarter_hour_call_statistics()
+    requests = s.quarter_hour_request_statistics()
+    assert calls['interval_minutes'] == 15 and len(calls['data']) == 96
+    assert requests['interval_minutes'] == 15 and len(requests['data']) == 96
+    assert calls['data'][0]['time'] == '00:00' and calls['data'][-1]['time'] == '23:45'
+    assert requests['data'][0]['time'] == '00:00' and requests['data'][-1]['time'] == '23:45'
+
+
 def test_success_streak_gradually_raises_safe_rpm(tmp_path):
     c = _make_channel('a')
     s = StateStore(tmp_path / 's.db')

@@ -1284,12 +1284,16 @@ def create_app(config_path:str|Path):
         return state.call_statistics(period,group_by)
     @app.get('/api/statistics/calls/hourly')
     async def hourly_call_statistics():return state.hourly_call_statistics()
+    @app.get('/api/statistics/calls/quarter-hourly')
+    async def quarter_hour_call_statistics():return state.quarter_hour_call_statistics()
     @app.get('/api/statistics/requests')
     async def request_statistics(period:str='day',group_by:str='channel'):
         if period not in ('day','week','month') or group_by not in ('channel','pool'):raise HTTPException(400,'invalid statistics query')
         return state.request_statistics(period,group_by)
     @app.get('/api/statistics/requests/hourly')
     async def hourly_request_statistics():return state.hourly_request_statistics()
+    @app.get('/api/statistics/requests/quarter-hourly')
+    async def quarter_hour_request_statistics():return state.quarter_hour_request_statistics()
     @app.get('/api/statistics/duplicates')
     async def duplicate_statistics(period:str='day'):
         if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')

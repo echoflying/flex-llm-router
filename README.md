@@ -144,7 +144,7 @@ fallback. Saving an empty list is an explicit opt-out.
 | GET | `/api/traces` | Trace list |
 | GET | `/api/traces/{trace_id}` | Trace detail and events |
 | GET | `/api/traces/{trace_id}/full-request` | Full captured request when optional retention is enabled |
-| GET | `/api/statistics/*` | Error, call, request, hourly and duplicate statistics |
+| GET | `/api/statistics/*` | Error, call, request, 15-minute, hourly-compatibility and duplicate statistics |
 | POST | `/api/pools/{name}/channels/{id}/test` | Channel test |
 | POST | `/api/pools/{name}/channels/{id}/enabled` | Enable/disable |
 | POST | `/api/pools/{name}/channels/{id}/reset` | Reset quota/cooldown |

@@ -390,6 +390,16 @@ class StateStore:
         for row in rows:
             item=buckets[time.localtime(row['started']).tm_hour]; item['calls']+=1; item['success']+=int(row['outcome']=='success'); item['failed']+=int(row['outcome']!='success')
         return {'start':start,'data':buckets}
+    def quarter_hour_call_statistics(self):
+        """Return today's call totals in fixed 15-minute local-time buckets."""
+        now=time.time(); local=time.localtime(now); start=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
+        buckets=[{'time':f'{minute//60:02d}:{minute%60:02d}','calls':0,'success':0,'failed':0} for minute in range(0,1440,15)]
+        with self.lock:
+            rows=self.db.execute("SELECT started,outcome FROM attempts WHERE started>=? AND started<? AND outcome!='started'",(start,start+86400)).fetchall()
+        for row in rows:
+            local_row=time.localtime(row['started']); index=(local_row.tm_hour*60+local_row.tm_min)//15
+            item=buckets[index]; item['calls']+=1; item['success']+=int(row['outcome']=='success'); item['failed']+=int(row['outcome']!='success')
+        return {'start':start,'interval_minutes':15,'data':buckets}
     def request_statistics(self,period='day',group_by='channel'):
         now=time.time(); local=time.localtime(now); since=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1)) if period=='day' else now-{'week':604800,'month':2592000}.get(period,86400)
         column="COALESCE(first_channel,'未选择通道')" if group_by=='channel' else "COALESCE(pool,'未分类池')"
@@ -408,6 +418,19 @@ class StateStore:
             elif row['attempt_count']==1:item['first_success']+=1
             else:item['retry_success']+=1
         return {'start':start,'data':buckets}
+    def quarter_hour_request_statistics(self):
+        """Return today's request outcomes in fixed 15-minute local-time buckets."""
+        now=time.time(); local=time.localtime(now); start=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
+        buckets=[{'time':f'{minute//60:02d}:{minute%60:02d}','total':0,'first_success':0,'retry_success':0,'failed':0} for minute in range(0,1440,15)]
+        with self.lock:
+            rows=self.db.execute('SELECT started,status,attempt_count FROM request_outcomes WHERE started>=? AND started<?',(start,start+86400)).fetchall()
+        for row in rows:
+            local_row=time.localtime(row['started']); index=(local_row.tm_hour*60+local_row.tm_min)//15
+            item=buckets[index]; item['total']+=1
+            if row['status']!='success':item['failed']+=1
+            elif row['attempt_count']==1:item['first_success']+=1
+            else:item['retry_success']+=1
+        return {'start':start,'interval_minutes':15,'data':buckets}
     def backfill_error_statistics(self):
         """One-time/idempotent import from still-retained traces so today's pre-release calls appear."""
         with self.lock,self.db:

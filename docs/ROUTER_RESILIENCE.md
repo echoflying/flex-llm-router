@@ -62,7 +62,8 @@
 - **TPM**：`4s → 8s → 16s → 32s → ...`。
 - **RPM**：`8s → 16s → 32s → 64s → ...`。
 - 累计等待分别受 `FLEX_QUEUE_TPM`、`FLEX_QUEUE_RPM` 限制（代码默认 TPM 60 秒、RPM 300 秒，Setup 可覆盖）。
-- 当前请求在整个退避序列中固定触发错误的原 Channel，不切换到其它 Channel。
+- `cost_aware` Runner：先在原 Channel 按其 `retry_policy.max_retries` 进行上述指数退避；达到次数后才按 tier 成本顺序切换到下一个可用 Channel。
+- 其它策略：当前请求在整个退避序列中固定触发错误的原 Channel，不切换到其它 Channel。
 - 其它新请求仍可避开处于冷却的 Channel，使用同一 Runner 的其它通道。
 - 达到累计上限后，向调用方返回原始限流错误（通常为 HTTP 429）。
 

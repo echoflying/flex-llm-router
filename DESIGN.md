@@ -29,7 +29,7 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 Channel 的 `limits` 包含 RPM、TPM、本地冷却、五小时滑动窗口、配额冷却以及忙阈值。真实 429 才会触发限流分类、指数退避和学习样本；本地窗口是保护阈值，不等同于供应商账户余额。状态存储在 SQLite 中，并用于 Dashboard、统计和 `/healthz`。
 
-RPM/TPM 触发后，当前请求固定在触发错误的原 Channel 上按指数退避重试（TPM 基数 4 秒、RPM 基数 8 秒），累计等待分别受 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 限制；其它新请求才可以改走同一 Runner 的其它 Channel。
+RPM/TPM 触发后，TPM 基数为 4 秒、RPM 基数为 8 秒并按 2 倍递增。`cost_aware` 先在原 Channel 按其 `retry_policy.max_retries` 重试，达到次数后才按 tier 成本顺序回退；其它策略固定原 Channel 直到 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 累计上限。其它新请求仍可改走同一 Runner 的其它 Channel。
 
 ### CHN Content Policy fallback
 

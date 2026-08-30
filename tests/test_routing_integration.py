@@ -83,7 +83,6 @@ def test_p0_1_retry_uses_per_request_counter_not_rowid(tmp_path, monkeypatch):
 
 def test_rpm_tpm_retry_stays_on_original_channel(tmp_path, monkeypatch):
     """RPM/TPM retries must pin this request; only other requests may fail over."""
-    import time
     monkeypatch.setenv('FLEX_STATE_DB', str(tmp_path / 'flex.db'))
     # Keep the test fast while still exercising the cumulative-cap branch.
     monkeypatch.setattr(app_mod, 'QUEUE_TPM_SECONDS', 3)
@@ -108,6 +107,35 @@ def test_rpm_tpm_retry_stays_on_original_channel(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     assert len(seen) == 2
     assert seen[0] == seen[1], 'TPM retry silently switched Channel'
+
+
+def test_cost_aware_switches_after_channel_retry_budget(tmp_path, monkeypatch):
+    """cost_aware keeps the Channel for its retry budget, then falls back."""
+    monkeypatch.setenv('FLEX_STATE_DB', str(tmp_path / 'flex.db'))
+    monkeypatch.setattr(app_mod, 'QUEUE_TPM_SECONDS', 100)
+    monkeypatch.setattr(app_mod, 'TPM_BACKOFF_BASE', 0)
+    seen = []
+
+    class _TpmErr(_Err):
+        def __init__(self):
+            super().__init__('HTTP 429: inference tpm exhausted')
+
+    async def fake_acompletion(**kwargs):
+        seen.append((kwargs.get('model'), kwargs.get('api_base')))
+        if len(seen) <= 4:  # initial attempt + 3 configured retries
+            raise _TpmErr()
+        return _ok_response(kwargs.get('model', 'x'))
+
+    monkeypatch.setattr(app_mod.litellm, 'acompletion', fake_acompletion)
+    client = TestClient(app_mod.create_app(str(_copy_config(tmp_path))))
+    response = client.post('/v1/chat/completions', json={
+        'model': 'sensenova-flash-plus',
+        'messages': [{'role': 'user', 'content': 'cost aware fallback'}],
+    })
+    assert response.status_code == 200, response.text
+    assert len(seen) == 5
+    assert len(set(seen[:4])) == 1, 'cost_aware switched before retry budget was exhausted'
+    assert seen[4] != seen[0], 'cost_aware did not switch after retry budget'
 
 
 def test_p0_3_quota_exhausted_triggers_cooldown(tmp_path, monkeypatch):

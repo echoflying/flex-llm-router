@@ -48,7 +48,7 @@ limits:
 - `rpm`/`tpm` 是本地保护闸门；未撞到真实上游限流前，不主动制造探测流量。
 - `max_requests_per_window` 是本地五小时滑动窗口保护，不等同于上游账户余额。
 - 真实 429 会区分 RPM、TPM、配额或其它错误，写入 Trace、统计和学习数据；退避按错误类别执行指数策略。
-- RPM/TPM 只影响当前请求所在的原 Channel：当前请求在该 Channel 上退避重试，不切换到同一 Runner 的其它 Channel。其它新请求仍可避开冷却通道，使用备用 Channel。
+- `cost_aware` Runner 会先在原 Channel 按其 `retry_policy.max_retries` 退避重试，达到次数后才按 tier 成本顺序切换到下一个可用 Channel；其它策略固定原 Channel 直到累计等待上限。其它新请求仍可避开冷却通道，使用备用 Channel。
 - TPM 退避基数为 4 秒，RPM 退避基数为 8 秒，均按 2 倍递增；累计等待分别受 `FLEX_QUEUE_TPM` / `FLEX_QUEUE_RPM` 上限约束。
 - `allocated quota exceeded` 由原请求固定回到原 Channel 做 1/2/4 分钟验证，之后每 10 分钟复验；不使用后台空探测。
 - `engine is not available temporarily` 仅按专门策略验证；其它 HTTP 400 立即返回，不自动重试。

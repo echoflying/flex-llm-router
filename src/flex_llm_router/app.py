@@ -1790,11 +1790,23 @@ def create_app(config_path:str|Path):
                     await asyncio.sleep(delay)
                     continue
                 rp = ch.retry_policy
-                # RPM / TPM 都采用无限指数退避；总等待由 setup.conf 中对应上限截断。
+                # RPM / TPM 使用指数退避；cost_aware 达到 Channel 重试次数
+                # 后回退，其它策略继续到 setup.conf 的累计等待上限。
                 if typ in ('tpm_limit','rate_limit'):
                     cap = QUEUE_TPM_SECONDS if typ=='tpm_limit' else QUEUE_RPM_SECONDS
                     base = TPM_BACKOFF_BASE if typ=='tpm_limit' else RPM_BACKOFF_BASE
                     step = retry_steps.setdefault(typ,0)
+                    # cost_aware 先尊重当前 Channel 的 retry_policy，达到
+                    # 配置的重试次数后才向下一个 tier 回退；其它策略继续
+                    # 固定原 Channel，直到各自的累计等待上限。
+                    cost_aware = isinstance(sel,dict) and sel.get('strategy')=='cost_aware'
+                    limit_retry_count = max(0,int(rp.max_retries or 0))
+                    if cost_aware and step >= limit_retry_count:
+                        tried.add(ch.id)
+                        limit_retry_channel=None
+                        retry_steps[typ]=0
+                        state.trace_fallback(rid,f'{ch.id} reached {limit_retry_count} {typ} retries; cost_aware selecting next eligible Channel')
+                        continue
                     limit_retry_channel=ch.id
                     waited=time.monotonic()-req_started
                     remaining=cap-waited

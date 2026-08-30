@@ -19,6 +19,18 @@ def test_public_error_names_keep_tpm_distinct_and_normalize_legacy_rpm():
     assert canonical_error_type('tpm_limit') == 'tpm_limit'
 
 
+def test_protocol_affinity_has_independent_idle_window(tmp_path):
+    s = StateStore(tmp_path / 's.db')
+    messages = [{'role': 'user', 'content': 'hello'}, {'role': 'assistant', 'content': 'ok'}]
+    s.remember_affinity('p', messages, 'normal', 60, kind='normal')
+    s.remember_affinity('p', messages, 'protocol', 60, kind='protocol')
+    assert s.affinity_channel('p', messages, 60, protocol_idle_seconds=60) == 'protocol'
+    # Once the stronger protocol record expires, the ordinary mapping remains
+    # available and is selected with its own idle window.
+    s.db.execute('UPDATE protocol_session_affinity SET updated=?', (time.time() - 10,))
+    assert s.affinity_channel('p', messages, 60, protocol_idle_seconds=1) == 'normal'
+
+
 def test_rpm_is_observed_but_not_proactively_blocked(tmp_path):
     c = _make_channel('a', limits={'rpm': 1})
     s = StateStore(tmp_path / 's.db')

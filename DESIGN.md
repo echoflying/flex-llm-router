@@ -16,7 +16,7 @@ Flex 是运行在本地的 LLM 逻辑路由层。它向 Hermes 等标准 OpenAI 
 
 ## 3. 选路与会话
 
-`selection.strategy` 支持 `round_robin`、`cost_aware` 和 `quota_paced_priority`。`tiers` 属于 Runner，用于表达池内相对优先级，不绑定具体模型名称。启用 `session_affinity` 后，同一对话优先保持原 Channel，减少上下文缓存失效；只有异常、冷却或不可用时才向后回退。异常会清除该对话粘性；切换 Channel 收到首个 SSE 后先写入临时粘性，完整流结束后再确认最终成功，避免重发再次命中失败通道。
+`selection.strategy` 支持 `round_robin`、`cost_aware` 和 `quota_paced_priority`。`tiers` 属于 Runner，用于表达池内相对优先级，不绑定具体模型名称。启用 `session_affinity` 后，同一对话优先保持原 Channel，减少上下文缓存失效；只有异常、冷却或不可用时才向后回退。普通会话粘性和协议兼容回退粘性分别使用 Setup 中的 `FLEX_SESSION_AFFINITY_IDLE_SECONDS` 与 `FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS` 闲置时间。异常会清除该对话粘性；切换 Channel 收到首个 SSE 后先写入临时粘性，完整流结束后再确认最终成功，避免重发再次命中失败通道。协议兼容回退使用独立的更强粘性记录，避免后续普通成功把它降级。
 
 ### 协议兼容错误回退
 

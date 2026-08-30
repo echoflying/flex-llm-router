@@ -60,6 +60,12 @@ The **Override** toggle controls whether `.env` values override system ENV
 `load_dotenv(override=…)` and persists to `config/setup.conf` for the next
 server start.
 
+Setup also exposes two independent session-affinity idle windows:
+`FLEX_SESSION_AFFINITY_IDLE_SECONDS` for ordinary conversations and
+`FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS` for conversations moved after a protocol
+compatibility error. Both are idle windows refreshed after successful requests,
+not absolute conversation limits.
+
 ## Templates
 
 HTML pages live in `templates/` as standalone `.html` files. Modify them
@@ -75,7 +81,7 @@ Request → Flex (FastAPI) → LiteLLM → upstream provider
               └→ StateStore (SQLite)
                   ├ quota windows (5h sliding)
                   ├ RPM/TPM learning (60s sliding)
-                  ├ session affinity (HMACed message prefixes)
+                  ├ session affinity (ordinary/protocol windows)
                   └ channel tests & cooldowns
 ```
 

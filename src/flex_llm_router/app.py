@@ -349,6 +349,12 @@ UPSTREAM_FIRST_ACTIVITY_TIMEOUT=int(os.getenv('FLEX_UPSTREAM_FIRST_ACTIVITY_TIME
 # on expiry because some HTTP clients do not promptly acknowledge cancellation.
 UPSTREAM_RESPONSE_TIMEOUT=int(os.getenv('FLEX_UPSTREAM_RESPONSE_TIMEOUT','180'))
 UPSTREAM_FIRST_CHUNK_TIMEOUT=int(os.getenv('FLEX_UPSTREAM_FIRST_CHUNK_TIMEOUT','180'))
+# Session affinity has two independent idle windows.  The ordinary window
+# preserves a healthy conversation; the protocol window preserves a
+# conversation after it had to leave a Channel because of a compatibility
+# error such as reasoning_content/tool-call formatting.
+SESSION_AFFINITY_IDLE_SECONDS=int(os.getenv('FLEX_SESSION_AFFINITY_IDLE_SECONDS','3600'))
+PROTOCOL_AFFINITY_IDLE_SECONDS=int(os.getenv('FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS','3600'))
 
 async def await_bounded(awaitable, timeout_seconds):
     """Await one provider operation without waiting for cancellation cleanup."""
@@ -447,7 +453,7 @@ def create_app(config_path:str|Path):
     # 重复在途请求观察：默认关；开启后仅记录完全相同请求的重叠，不影响任何路由或上游调用。
     state.duplicate_observer_enabled = read_setup().get('FLEX_DUPLICATE_OBSERVER','0')=='1'
     # 排队上限: setup.conf 的 FLEX_QUEUE_TPM / FLEX_QUEUE_RPM 覆盖默认(60/300)
-    global QUEUE_TPM_SECONDS, QUEUE_RPM_SECONDS, UPSTREAM_RESPONSE_TIMEOUT, UPSTREAM_FIRST_CHUNK_TIMEOUT
+    global QUEUE_TPM_SECONDS, QUEUE_RPM_SECONDS, UPSTREAM_RESPONSE_TIMEOUT, UPSTREAM_FIRST_CHUNK_TIMEOUT, SESSION_AFFINITY_IDLE_SECONDS, PROTOCOL_AFFINITY_IDLE_SECONDS
     try: QUEUE_TPM_SECONDS=int(read_setup().get('FLEX_QUEUE_TPM', os.getenv('FLEX_QUEUE_TPM','60')))
     except ValueError: pass
     try: QUEUE_RPM_SECONDS=int(read_setup().get('FLEX_QUEUE_RPM', os.getenv('FLEX_QUEUE_RPM','300')))
@@ -456,6 +462,16 @@ def create_app(config_path:str|Path):
     except ValueError: pass
     try: UPSTREAM_FIRST_CHUNK_TIMEOUT=max(1,int(read_setup().get('FLEX_UPSTREAM_FIRST_CHUNK_TIMEOUT', os.getenv('FLEX_UPSTREAM_FIRST_CHUNK_TIMEOUT','180'))))
     except ValueError: pass
+    try: SESSION_AFFINITY_IDLE_SECONDS=max(60,int(read_setup().get('FLEX_SESSION_AFFINITY_IDLE_SECONDS', os.getenv('FLEX_SESSION_AFFINITY_IDLE_SECONDS','3600'))))
+    except ValueError: pass
+    try: PROTOCOL_AFFINITY_IDLE_SECONDS=max(60,int(read_setup().get('FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS', os.getenv('FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS','3600'))))
+    except ValueError: pass
+    def effective_affinity(pool):
+        """Apply Setup's global idle windows without mutating Runner config."""
+        cfg=dict(pool.session_affinity or {})
+        cfg['idle_seconds']=SESSION_AFFINITY_IDLE_SECONDS
+        cfg['protocol_idle_seconds']=PROTOCOL_AFFINITY_IDLE_SECONDS
+        return cfg
     def render(name,title,extra_css='',**vars):
         page=(templates_dir/name).read_text(encoding='utf-8')
         for k,v in vars.items():page=page.replace('{{ '+k+' }}',str(v))
@@ -1053,7 +1069,7 @@ def create_app(config_path:str|Path):
         env_path_str=str(env_path)
         config_path_str=str(config_path_resolved)
         capture_time=lambda value:time.strftime('%m/%d %H:%M:%S',time.localtime(value)) if value else '—'
-        return render('setup.html','Flex LLM Router · Setup','table{width:100%;border-collapse:collapse;background:#fff;margin:16px 0}th,td{padding:9px;border-bottom:1px solid #e7eaf0;text-align:left}th{background:#f7f9fc}code{font-size:13px}.bad{color:#b42318}.ok{color:#067647}button{padding:5px 12px;margin-left:8px}.override-box{background:#fff;border:1px solid #e7eaf0;border-radius:8px;padding:14px 18px;margin:16px 0}',total_vars=str(len(needed)),override_cls=cls_env,override_txt=txt_env,btn_txt=btn_env,override_note=note_env,debug_cls=dbg_cls,debug_txt=dbg_txt,debug_btn_txt=dbg_btn,debug_note=dbg_note,capture_cls=capture_cls,capture_txt=capture_txt,capture_btn_txt=capture_btn,capture_hours=capture['retention_hours'],capture_rows=capture['max_rows'],capture_mib=round(capture['max_bytes']/1024/1024),capture_count=capture['count'],capture_used_mib=f"{capture['bytes']/1024/1024:.1f}",capture_oldest=capture_time(capture['oldest_at']),capture_newest=capture_time(capture['newest_at']),duplicate_cls=duplicate_cls,duplicate_txt=duplicate_txt,duplicate_btn_txt=duplicate_btn,duplicate_note=duplicate_note,rows=''.join(rows),env_path=env_path_str,config_path=config_path_str,queue_tpm=QUEUE_TPM_SECONDS,queue_rpm=QUEUE_RPM_SECONDS)
+        return render('setup.html','Flex LLM Router · Setup','table{width:100%;border-collapse:collapse;background:#fff;margin:16px 0}th,td{padding:9px;border-bottom:1px solid #e7eaf0;text-align:left}th{background:#f7f9fc}code{font-size:13px}.bad{color:#b42318}.ok{color:#067647}button{padding:5px 12px;margin-left:8px}.override-box{background:#fff;border:1px solid #e7eaf0;border-radius:8px;padding:14px 18px;margin:16px 0}',total_vars=str(len(needed)),override_cls=cls_env,override_txt=txt_env,btn_txt=btn_env,override_note=note_env,debug_cls=dbg_cls,debug_txt=dbg_txt,debug_btn_txt=dbg_btn,debug_note=dbg_note,capture_cls=capture_cls,capture_txt=capture_txt,capture_btn_txt=capture_btn,capture_hours=capture['retention_hours'],capture_rows=capture['max_rows'],capture_mib=round(capture['max_bytes']/1024/1024),capture_count=capture['count'],capture_used_mib=f"{capture['bytes']/1024/1024:.1f}",capture_oldest=capture_time(capture['oldest_at']),capture_newest=capture_time(capture['newest_at']),duplicate_cls=duplicate_cls,duplicate_txt=duplicate_txt,duplicate_btn_txt=duplicate_btn,duplicate_note=duplicate_note,rows=''.join(rows),env_path=env_path_str,config_path=config_path_str,queue_tpm=QUEUE_TPM_SECONDS,queue_rpm=QUEUE_RPM_SECONDS,affinity_idle=SESSION_AFFINITY_IDLE_SECONDS,protocol_affinity_idle=PROTOCOL_AFFINITY_IDLE_SECONDS)
     @app.post('/api/setup/override')
     async def set_override():
         from dotenv import load_dotenv
@@ -1127,6 +1143,28 @@ def create_app(config_path:str|Path):
         if 'FLEX_QUEUE_RPM' in out: QUEUE_RPM_SECONDS=out['FLEX_QUEUE_RPM']
         logger.warning('queue caps: tpm=%s rpm=%s',QUEUE_TPM_SECONDS,QUEUE_RPM_SECONDS)
         return {'tpm':QUEUE_TPM_SECONDS,'rpm':QUEUE_RPM_SECONDS}
+    @app.get('/api/setup/affinity')
+    async def affinity_setup_state():
+        return {'session_idle_seconds':SESSION_AFFINITY_IDLE_SECONDS,'protocol_idle_seconds':PROTOCOL_AFFINITY_IDLE_SECONDS}
+    @app.post('/api/setup/affinity')
+    async def set_affinity_setup(request:Request):
+        """Set the ordinary and protocol-fallback affinity idle windows."""
+        global SESSION_AFFINITY_IDLE_SECONDS, PROTOCOL_AFFINITY_IDLE_SECONDS
+        form=await request.json(); conf=read_setup(); out={}
+        for key,field,current in (
+            ('FLEX_SESSION_AFFINITY_IDLE_SECONDS','session_idle_seconds',SESSION_AFFINITY_IDLE_SECONDS),
+            ('FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS','protocol_idle_seconds',PROTOCOL_AFFINITY_IDLE_SECONDS)):
+            if field not in form: continue
+            try:
+                value=max(60,min(86400,int(form[field])))
+            except (ValueError,TypeError):
+                value=current
+            conf[key]=str(value); out[field]=value
+        write_setup(conf)
+        if 'session_idle_seconds' in out: SESSION_AFFINITY_IDLE_SECONDS=out['session_idle_seconds']
+        if 'protocol_idle_seconds' in out: PROTOCOL_AFFINITY_IDLE_SECONDS=out['protocol_idle_seconds']
+        logger.warning('affinity idle windows: session=%ss protocol=%ss',SESSION_AFFINITY_IDLE_SECONDS,PROTOCOL_AFFINITY_IDLE_SECONDS)
+        return {'session_idle_seconds':SESSION_AFFINITY_IDLE_SECONDS,'protocol_idle_seconds':PROTOCOL_AFFINITY_IDLE_SECONDS}
     @app.get('/healthz')
     async def health():
         uptime=int(time.time()-app.state.started_at)
@@ -1154,6 +1192,8 @@ def create_app(config_path:str|Path):
                 'first_activity_deadline_seconds':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),
                 'response_timeout_seconds':UPSTREAM_RESPONSE_TIMEOUT,
                 'first_chunk_timeout_seconds':UPSTREAM_FIRST_CHUNK_TIMEOUT,
+                'session_affinity_idle_seconds':SESSION_AFFINITY_IDLE_SECONDS,
+                'protocol_affinity_idle_seconds':PROTOCOL_AFFINITY_IDLE_SECONDS,
                 'summary':f'Per-attempt {UPSTREAM_RESPONSE_TIMEOUT}s response / {UPSTREAM_FIRST_CHUNK_TIMEOUT}s first SSE; 1 Channel: 6m same-Channel retry/9m hard deadline; 2 Channels: 6m/9m; 3+ Channels: 6m/9m/12m',
             },
             'watchdog':{'active_trace_count':len(app.state.first_activity_watch),'interrupted_traces_closed_on_start':app.state.recovered_traces},
@@ -1403,7 +1443,7 @@ def create_app(config_path:str|Path):
             key = internal
             channels = [c for _, c in config.get_pool_channels(internal)]
             sel = pool.selection
-            affinity = pool.session_affinity
+            affinity = effective_affinity(pool)
             reserve = pool.context_policy.get('reserve_output_tokens', 8192)
         tried=set(); last='no_eligible_channel'; retries=0; quota_retry_channel=None; engine_retry_channel=None; five_hour_retry_channel=None
         # A request that receives a real RPM/TPM response must remain pinned to
@@ -1412,6 +1452,9 @@ def create_app(config_path:str|Path):
         # request must not silently change provider/model semantics.
         limit_retry_channel=None
         policy_fallback_active=False; policy_fallback_tried=set(); policy_fallback_channels=[]
+        # Becomes ``protocol`` only when this request leaves its original
+        # Channel because a configured protocol-compatibility rule matched.
+        affinity_kind='normal'
         def configured_policy_fallbacks(exclude_id=None):
             """Prefer marked Channels in this Runner, then global ordered fallbacks."""
             local=[c for c in channels if c.chn_content_policy_fallback and c.enabled and c.id!=exclude_id]
@@ -1493,7 +1536,7 @@ def create_app(config_path:str|Path):
                 detail={'error':f'no eligible channel for {name}','last_error':last,'rejected':rejected}
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
-            sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None
+            sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages'],affinity.get('protocol_idle_seconds')) if affinity.get('enabled') else None
             ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None)); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=input_tokens(body,ch.litellm_model),trace_id=rid); started=time.monotonic()
             state.trace_event(rid,'channel_selected',ch.id,detail='session affinity hit' if sticky==ch.id else 'scheduler selected channel')
             state.trace_attempt(rid,ch.id)
@@ -1795,6 +1838,7 @@ def create_app(config_path:str|Path):
                     # request on the next eligible Channel.
                     if protocol_rule.retry_other_channel:
                         tried.add(ch.id)
+                        affinity_kind='protocol'
                         state.trace_fallback(rid,f'{ch.id} matched protocol rule {protocol_rule.id}; retrying on next eligible Channel before first SSE')
                         continue
                 if typ in ('rpm_limit','tpm_limit','quota_exhausted'):
@@ -1927,7 +1971,7 @@ def create_app(config_path:str|Path):
                             continue
                     state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                     return JSONResponse(status_code=502,content={'error_type':'content_policy_blocked','error_detail':detail,'channel':ch.id})
-                output,total=usage_tokens(response); state.finish(attempt,'success',latency=int((time.monotonic()-started)*1000),output_tokens=output,total_tokens=total); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages']) if affinity.get('enabled') else None; state.observe_success(key,ch.id)
+                output,total=usage_tokens(response); state.finish(attempt,'success',latency=int((time.monotonic()-started)*1000),output_tokens=output,total_tokens=total); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages'],kind=affinity_kind) if affinity.get('enabled') else None; state.observe_success(key,ch.id)
                 if replay_allowed and is_replayable_response(payload):
                     state.replay_store(caller,name,fingerprint,ch.id,payload)
                 state.trace_finish(rid,'success',ch.id,200,output_preview=response_preview(payload),latency_ms=int((time.monotonic()-req_started)*1000))
@@ -2216,7 +2260,7 @@ def create_app(config_path:str|Path):
                             await close_upstream(response)
                             response=new_response; iterator=new_iterator; first_item=new_first; ch=target; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
                             if affinity.get('enabled'):
-                                state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                                state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2),kind='protocol')
                                 state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Protocol fallback Channel produced first SSE; provisional affinity updated')
                             state.trace_fallback(rid,f'protocol rule {rule.id}: stream switched from failed Channel to {target.id}')
                             continue

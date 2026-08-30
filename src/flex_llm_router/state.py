@@ -18,7 +18,7 @@ class StateStore:
         p=Path(path); p.parent.mkdir(parents=True, exist_ok=True)
         self.db=sqlite3.connect(p, check_same_thread=False); self.db.row_factory=sqlite3.Row; self.lock=RLock(); self.session_key=self._load_session_key(p.parent/'session-hmac.key')
         with self.db:
-            self.db.executescript('''CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY,started REAL,pool TEXT,channel TEXT,model TEXT,outcome TEXT,error_type TEXT,latency_ms INTEGER,input_tokens INTEGER,output_tokens INTEGER,total_tokens INTEGER); CREATE INDEX IF NOT EXISTS attempts_channel_time ON attempts(pool,channel,started); CREATE TABLE IF NOT EXISTS states(pool TEXT,channel TEXT,until REAL,reason TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS busy_counts(pool TEXT,channel TEXT,count INTEGER,window_start REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS probe_log(pool TEXT,channel TEXT,last_probe_at REAL,probe_fail_streak INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS quota_resets(pool TEXT,channel TEXT,reset_at REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_overrides(pool TEXT,channel TEXT,enabled INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_tests(pool TEXT,channel TEXT,tested_at REAL,outcome TEXT,error_type TEXT,latency_ms INTEGER,error_detail TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS learned_limits(pool TEXT,channel TEXT,safe_rpm INTEGER,safe_tpm INTEGER,last_429_at REAL,last_429_kind TEXT,last_429_evidence TEXT,confidence INTEGER NOT NULL DEFAULT 0,success_since_429 INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS session_affinity_updated ON session_affinity(updated); CREATE TABLE IF NOT EXISTS request_traces(trace_id TEXT PRIMARY KEY,started REAL,updated REAL,status TEXT,requested_model TEXT,pool TEXT,client_label TEXT,input_preview TEXT,context_summary TEXT,stream INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,fallback_count INTEGER NOT NULL DEFAULT 0,final_channel TEXT,http_status INTEGER,error_type TEXT,error_detail TEXT,output_preview TEXT,ttft_ms INTEGER,latency_ms INTEGER); CREATE INDEX IF NOT EXISTS request_traces_status_updated ON request_traces(status,updated); CREATE TABLE IF NOT EXISTS trace_events(id INTEGER PRIMARY KEY,trace_id TEXT NOT NULL,ts REAL,event TEXT NOT NULL,channel TEXT,http_status INTEGER,detail TEXT); CREATE INDEX IF NOT EXISTS trace_events_trace_id_id ON trace_events(trace_id,id);''')
+            self.db.executescript('''CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY,started REAL,pool TEXT,channel TEXT,model TEXT,outcome TEXT,error_type TEXT,latency_ms INTEGER,input_tokens INTEGER,output_tokens INTEGER,total_tokens INTEGER); CREATE INDEX IF NOT EXISTS attempts_channel_time ON attempts(pool,channel,started); CREATE TABLE IF NOT EXISTS states(pool TEXT,channel TEXT,until REAL,reason TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS busy_counts(pool TEXT,channel TEXT,count INTEGER,window_start REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS probe_log(pool TEXT,channel TEXT,last_probe_at REAL,probe_fail_streak INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS quota_resets(pool TEXT,channel TEXT,reset_at REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_overrides(pool TEXT,channel TEXT,enabled INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_tests(pool TEXT,channel TEXT,tested_at REAL,outcome TEXT,error_type TEXT,latency_ms INTEGER,error_detail TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS learned_limits(pool TEXT,channel TEXT,safe_rpm INTEGER,safe_tpm INTEGER,last_429_at REAL,last_429_kind TEXT,last_429_evidence TEXT,confidence INTEGER NOT NULL DEFAULT 0,success_since_429 INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS session_affinity_updated ON session_affinity(updated); CREATE TABLE IF NOT EXISTS protocol_session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS protocol_session_affinity_updated ON protocol_session_affinity(updated); CREATE TABLE IF NOT EXISTS request_traces(trace_id TEXT PRIMARY KEY,started REAL,updated REAL,status TEXT,requested_model TEXT,pool TEXT,client_label TEXT,input_preview TEXT,context_summary TEXT,stream INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,fallback_count INTEGER NOT NULL DEFAULT 0,final_channel TEXT,http_status INTEGER,error_type TEXT,error_detail TEXT,output_preview TEXT,ttft_ms INTEGER,latency_ms INTEGER); CREATE INDEX IF NOT EXISTS request_traces_status_updated ON request_traces(status,updated); CREATE TABLE IF NOT EXISTS trace_events(id INTEGER PRIMARY KEY,trace_id TEXT NOT NULL,ts REAL,event TEXT NOT NULL,channel TEXT,http_status INTEGER,detail TEXT); CREATE INDEX IF NOT EXISTS trace_events_trace_id_id ON trace_events(trace_id,id);''')
             # Trace list rendering joins attempts by trace_id.  Without this
             # index the correlated channel-count subquery scans the entire
             # attempts table once per retained trace and can starve the
@@ -512,24 +512,36 @@ class StateStore:
             encoded=json.dumps(message,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
             chain=hmac.new(self.session_key,chain+b'\0'+encoded,hashlib.sha256).digest(); result.append(chain.hex())
         return result
-    def affinity_channel(self,pool,messages,idle_seconds,minimum_messages=2):
+    def affinity_channel(self,pool,messages,idle_seconds,minimum_messages=2,protocol_idle_seconds=None):
         prefixes=self._prefixes(messages)
         if len(prefixes)<minimum_messages:return None
-        now=time.time(); cutoff=now-idle_seconds
+        now=time.time(); cutoff=now-idle_seconds; protocol_cutoff=now-(protocol_idle_seconds if protocol_idle_seconds is not None else idle_seconds)
         with self.lock,self.db:
             self.db.execute('DELETE FROM session_affinity WHERE updated<?',(cutoff,))
+            self.db.execute('DELETE FROM protocol_session_affinity WHERE updated<?',(protocol_cutoff,))
             for prefix in reversed(prefixes[minimum_messages-1:]):
+                row=self.db.execute('SELECT channel FROM protocol_session_affinity WHERE pool=? AND prefix_hmac=?',(pool,prefix)).fetchone()
+                if row:return row['channel']
                 row=self.db.execute('SELECT channel FROM session_affinity WHERE pool=? AND prefix_hmac=?',(pool,prefix)).fetchone()
                 if row:return row['channel']
         return None
-    def remember_affinity(self,pool,messages,channel,idle_seconds,minimum_messages=2):
+    def remember_affinity(self,pool,messages,channel,idle_seconds,minimum_messages=2,kind='normal'):
         prefixes=self._prefixes(messages)
         if len(prefixes)<minimum_messages:return
         now=time.time(); cutoff=now-idle_seconds
         with self.lock,self.db:
             self.db.execute('DELETE FROM session_affinity WHERE updated<?',(cutoff,))
+            # Once a conversation has been moved because of a protocol
+            # incompatibility, keep refreshing that stronger mapping on later
+            # successful requests instead of silently downgrading it to the
+            # ordinary affinity timeout.
+            table='protocol_session_affinity' if kind=='protocol' else 'session_affinity'
             for prefix in prefixes[minimum_messages-1:]:
-                self.db.execute('INSERT INTO session_affinity(pool,prefix_hmac,channel,updated) VALUES(?,?,?,?) ON CONFLICT(pool,prefix_hmac) DO UPDATE SET updated=excluded.updated',(pool,prefix,channel,now))
+                if kind!='protocol':
+                    existing=self.db.execute('SELECT channel FROM protocol_session_affinity WHERE pool=? AND prefix_hmac=?',(pool,prefix)).fetchone()
+                    if existing:
+                        self.db.execute('UPDATE protocol_session_affinity SET channel=?,updated=? WHERE pool=? AND prefix_hmac=?',(channel,now,pool,prefix)); continue
+                self.db.execute(f'INSERT INTO {table}(pool,prefix_hmac,channel,updated) VALUES(?,?,?,?) ON CONFLICT(pool,prefix_hmac) DO UPDATE SET channel=excluded.channel,updated=excluded.updated',(pool,prefix,channel,now))
     def forget_affinity(self,pool,messages,channel=None,minimum_messages=2):
         """Invalidate the conversation's sticky Channel after an upstream fault.
 
@@ -543,6 +555,7 @@ class StateStore:
         if len(prefixes)<minimum_messages:return
         with self.lock,self.db:
             self.db.executemany('DELETE FROM session_affinity WHERE pool=? AND prefix_hmac=?',[(pool,prefix) for prefix in prefixes[minimum_messages-1:]])
+            self.db.executemany('DELETE FROM protocol_session_affinity WHERE pool=? AND prefix_hmac=?',[(pool,prefix) for prefix in prefixes[minimum_messages-1:]])
     def is_enabled(self,pool,ch_id):
         with self.lock:
             row=self.db.execute('SELECT enabled FROM channel_overrides WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()

@@ -206,6 +206,21 @@ def test_setup_page_shows_env_vars_and_nav(tmp_config):
     assert 'Config' in r.text
     assert 'Setup' in r.text
     assert 'Help' in r.text
+    assert '普通会话粘性' in r.text
+    assert '协议兼容' in r.text
+
+
+def test_affinity_windows_are_separate_and_hot_configurable(tmp_config):
+    client = TestClient(create_app(tmp_config))
+    before = client.get('/api/setup/affinity').json()
+    assert before['session_idle_seconds'] == 3600
+    assert before['protocol_idle_seconds'] == 3600
+    updated = client.post('/api/setup/affinity', json={
+        'session_idle_seconds': 1800,
+        'protocol_idle_seconds': 7200,
+    })
+    assert updated.status_code == 200
+    assert updated.json() == {'session_idle_seconds': 1800, 'protocol_idle_seconds': 7200}
 
 
 def test_setup_override_toggle_on_then_off_and_back(tmp_config):

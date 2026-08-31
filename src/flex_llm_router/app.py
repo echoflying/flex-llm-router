@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.downstream-timeout-signal-v1'
+ROUTER_BUILD='2026-08-31.stream-idle-deadline-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1258,7 +1258,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','downstream_timeout_signal','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -2257,15 +2257,19 @@ def create_app(config_path:str|Path):
                         nonlocal iterator,first_item,active_attempt,active_started,ch,base,key_,response,stream_policy_failed
                         current_iterator=iterator; current_item=first_item; current_response=response
                         fallback_candidates=configured_policy_fallbacks(ch.id); fallback_index=0; emitted=False; buffered=[]; buffered_chars=0
+                        # Keep the post-first-SSE Hedge clock independent from
+                        # the pre-response watchdog.  Each stage is measured
+                        # from the last meaningful upstream activity: 6m ->
+                        # first Hedge, 9m -> next Hedge, then +3m hard stop.
                         idle_started=time.monotonic(); idle_stage=0
-                        idle_deadline=(hedge_plan[-1][0]+180) if hedge_plan else 720
+                        idle_final_deadline=(hedge_plan[-1][0]+180) if hedge_plan else 720
                         while True:
                             chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
                             # A role/metadata/heartbeat SSE is not model
                             # progress. Do not let endless empty frames keep
                             # a stalled stream alive indefinitely.
                             if has_stream_activity(chunk):
-                                idle_started=time.monotonic()
+                                idle_started=time.monotonic(); idle_stage=0
                             if policy_reason and not emitted:
                                 detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
                                 state.finish(active_attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=200)
@@ -2304,13 +2308,31 @@ def create_app(config_path:str|Path):
                             elif emitted:
                                 yield current_item
                             try:
-                                wait_for=max(0.1,idle_deadline-(time.monotonic()-idle_started))
+                                elapsed_idle=time.monotonic()-idle_started
+                                next_idle_deadline=(hedge_plan[idle_stage][0]
+                                                     if idle_stage < len(hedge_plan)
+                                                     else idle_final_deadline)
+                                wait_for=max(0.1,next_idle_deadline-elapsed_idle)
                                 current_item=await await_stream_next(current_iterator,wait_for)
                             except asyncio.TimeoutError:
                                 if idle_stage>=len(hedge_plan):
-                                    detail=f'上游 SSE 已有活动，但连续 {idle_deadline//60} 分钟没有后续事件；按流式空闲截止终止'
+                                    detail=f'上游 SSE 已有活动，但连续 {idle_final_deadline//60} 分钟没有后续事件；按流式空闲截止终止'
                                     state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
-                                    raise UpstreamTotalTimeout()
+                                    # The body generator may be suspended in a
+                                    # downstream send (for example after a
+                                    # client presses ESC but leaves its socket
+                                    # open). Let the response wrapper own the
+                                    # terminal HTTP 504/SSE frame instead of
+                                    # waiting for this generator to yield.
+                                    state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail='Stream idle hard-stop; closing upstream and downstream response')
+                                    cancel_detached(pending)
+                                    await close_upstream(current_response)
+                                    detail=f'No upstream SSE activity for {idle_final_deadline//60} minutes; Router closed the stalled stream.'
+                                    state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
+                                    state.trace_event(rid,'upstream_total_timeout',ch.id,504,detail=detail)
+                                    state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                                    downstream_timeout_event.set()
+                                    await asyncio.Future()
                                 idle_stage += 1; due,target_ids=hedge_plan[idle_stage-1]
                                 same_channel_retry=(len(channel_by_id)==1 and ch.id in target_ids)
                                 target=next((channel_by_id[target_id] for target_id in target_ids
@@ -2320,10 +2342,14 @@ def create_app(config_path:str|Path):
                                     idle_started=time.monotonic(); continue
                                 state.trace_event(rid,'stream_idle_hedge_started',target.id,detail=f'上游连续 {due}s 没有后续 SSE；第 {idle_stage} 个流式空闲 Hedge 阶段')
                                 try:
-                                    result=await asyncio.wait_for(hedge_event(idle_stage,target),max(1,idle_deadline-(time.monotonic()-idle_started)))
+                                    remaining=max(1,idle_final_deadline-(time.monotonic()-idle_started))
+                                    result=await asyncio.wait_for(hedge_event(idle_stage,target),remaining)
                                 except Exception as exc:
                                     state.trace_event(rid,'stream_idle_hedge_error',target.id,error_code(exc),detail=f'{error_type(exc)}: {error_detail(exc)}')
-                                    idle_started=time.monotonic(); continue
+                                    # Keep the original idle baseline after a
+                                    # failed Hedge so the next stage remains at
+                                    # its configured absolute 9m/12m deadline.
+                                    continue
                                 new_iterator,new_first,new_attempt,new_started,new_label,new_channel=result
                                 # The old stream has already produced activity but
                                 # is now superseded by the idle Hedge winner. Mark

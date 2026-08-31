@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.stream-idle-detached-read-v1'
+ROUTER_BUILD='2026-08-31.pre-response-error-preservation-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1191,7 +1191,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','pre_response_error_preservation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1596,7 +1596,12 @@ def create_app(config_path:str|Path):
             deadline_forced={'value':False}
             async def await_initial_response():
                 """Hedge while the provider has not even returned a response object yet."""
-                nonlocal initial_hedges_started
+                nonlocal initial_hedges_started, ch, attempt, started
+                # Keep the last concrete failure so an exhausted Hedge plan
+                # cannot fall through and return ``None`` to the outer unpack.
+                # The caller must see the provider's real error (for example
+                # rpm_limit/429), not ``cannot unpack ... NoneType``.
+                last_error=None; last_attempt_id=attempt; last_attempt_started=started; last_target=ch
                 active={asyncio.create_task(call_upstream(ch)):(attempt,started,'original',ch)}
                 def launch_hedge_targets(hedge_no):
                     due,target_ids=hedge_plan[hedge_no-1]
@@ -1723,6 +1728,7 @@ def create_app(config_path:str|Path):
                                 # advance the configured Hedge plan while any
                                 # other attempts continue in parallel.
                                 elapsed_ms=int((time.monotonic()-attempt_started)*1000)
+                                last_error=hedge_error; last_attempt_id=attempt_id; last_attempt_started=attempt_started; last_target=target
                                 state.finish(attempt_id,'failure','upstream_response_timeout',elapsed_ms,error_detail='Provider response-object timeout; detached LiteLLM task',error_code=504)
                                 if affinity.get('enabled'):
                                     state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
@@ -1735,6 +1741,7 @@ def create_app(config_path:str|Path):
                                     continue
                                 raise hedge_error
                             except Exception as hedge_error:
+                                last_error=hedge_error; last_attempt_id=attempt_id; last_attempt_started=attempt_started; last_target=target
                                 if affinity.get('enabled'):
                                     state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                                 if label=='original':
@@ -1800,6 +1807,15 @@ def create_app(config_path:str|Path):
                             watch_record['on_deadline']=stream_deadline_hard_stop
                             state.trace_event(rid,'watchdog_handoff',target.id,detail='Response object selected; first-SSE watchdog queue now owned by streaming phase')
                             return value,attempt_id,attempt_started,target
+                    # Every pre-response attempt ended in an error.  Preserve
+                    # the final attempt's identity for trace/error handling and
+                    # raise the actual exception instead of implicitly returning
+                    # None (which used to mask the root cause as a 502 unpack
+                    # error and leave the original Channel as final_channel).
+                    if last_error is not None:
+                        ch=last_target; attempt=last_attempt_id; started=last_attempt_started
+                        raise last_error
+                    raise RuntimeError('all pre-response upstream attempts ended without a response')
                 finally:
                     if not disconnect_task.done(): disconnect_task.cancel()
                     if not watchdog_task.done(): watchdog_task.cancel()

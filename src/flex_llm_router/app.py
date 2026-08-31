@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.visible-sse-idle-guard-v1'
+ROUTER_BUILD='2026-08-31.pre-response-limit-harvest-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1205,7 +1205,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1718,10 +1718,21 @@ def create_app(config_path:str|Path):
                             cancel_detached(active)
                             raise ClientDisconnectedBeforeResponse()
                         if not done:
-                            if time.monotonic()-req_started>=UPSTREAM_FIRST_ACTIVITY_TIMEOUT-0.1:
+                            # A provider task can finish between the selector
+                            # wake-up and this branch (notably when LiteLLM
+                            # raises a fast RPM/TPM error).  Harvest completed
+                            # tasks before launching a time-based Hedge, so
+                            # the normal limit retry state machine sees the
+                            # concrete error instead of leaving the Attempt
+                            # marked ``started`` until the next Hedge tick.
+                            completed={task for task in active if task.done()}
+                            if completed:
+                                done=completed
+                            else:
+                                if time.monotonic()-req_started>=UPSTREAM_FIRST_ACTIVITY_TIMEOUT-0.1:
+                                    continue
+                                watchdog_start_hedge(initial_hedges_started+1)
                                 continue
-                            watchdog_start_hedge(initial_hedges_started+1)
-                            continue
                         for task in list(done):
                             if task is disconnect_task: continue
                             attempt_id,attempt_started,label,target=active.pop(task)

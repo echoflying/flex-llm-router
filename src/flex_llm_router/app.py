@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.priority-handoff-rpm-limit-v2'
+ROUTER_BUILD='2026-08-31.stream-idle-detached-read-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -359,6 +359,25 @@ PROTOCOL_AFFINITY_IDLE_SECONDS=int(os.getenv('FLEX_PROTOCOL_AFFINITY_IDLE_SECOND
 async def await_bounded(awaitable, timeout_seconds):
     """Await one provider operation without waiting for cancellation cleanup."""
     task=asyncio.ensure_future(awaitable)
+    done,_=await asyncio.wait({task},timeout=max(0,float(timeout_seconds)),return_when=asyncio.FIRST_COMPLETED)
+    if task not in done:
+        cancel_detached({task})
+        raise asyncio.TimeoutError()
+    return task.result()
+
+async def await_stream_next(iterator, timeout_seconds):
+    """Read one SSE item without letting a cancellation-resistant iterator
+    defeat the stream idle Hedge/deadline timers.
+
+    ``asyncio.wait_for(iterator.__anext__())`` cancels the read coroutine and
+    then waits for cancellation cleanup.  Some HTTP/SSE clients never finish
+    that cleanup while the socket is stalled, leaving the request generator
+    suspended indefinitely.  Race a detached task instead; on timeout the
+    caller immediately regains control and can launch the next Hedge stage or
+    emit the hard-stop response.  ``cancel_detached`` drains a late result so
+    the provider exception is not reported as an unhandled task warning.
+    """
+    task=asyncio.ensure_future(iterator.__anext__())
     done,_=await asyncio.wait({task},timeout=max(0,float(timeout_seconds)),return_when=asyncio.FIRST_COMPLETED)
     if task not in done:
         cancel_detached({task})
@@ -1172,7 +1191,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -2185,7 +2204,7 @@ def create_app(config_path:str|Path):
                                 yield current_item
                             try:
                                 wait_for=max(0.1,idle_deadline-(time.monotonic()-idle_started))
-                                current_item=await asyncio.wait_for(current_iterator.__anext__(),wait_for)
+                                current_item=await await_stream_next(current_iterator,wait_for)
                                 idle_started=time.monotonic()
                             except asyncio.TimeoutError:
                                 if idle_stage>=len(hedge_plan):
@@ -2206,6 +2225,14 @@ def create_app(config_path:str|Path):
                                     state.trace_event(rid,'stream_idle_hedge_error',target.id,error_code(exc),detail=f'{error_type(exc)}: {error_detail(exc)}')
                                     idle_started=time.monotonic(); continue
                                 new_iterator,new_first,new_attempt,new_started,new_label,new_channel=result
+                                # The old stream has already produced activity but
+                                # is now superseded by the idle Hedge winner. Mark
+                                # that attempt closed before moving the active
+                                # pointer, otherwise it remains ``started`` in the
+                                # history forever and falsely appears hung.
+                                if active_attempt is not None:
+                                    state.finish(active_attempt,'failure','stream_idle_hedged',int((time.monotonic()-active_started)*1000),error_detail=f'流式连续 {due}s 无后续 SSE；已切换到 Hedge Channel {new_channel.id}',error_code=504)
+                                state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail=f'流式空闲 Hedge 已获胜；关闭旧 Channel {ch.id} 的上游读取')
                                 await close_upstream(current_response)
                                 current_response=new_iterator; response=new_iterator; iterator=new_iterator; current_iterator=new_iterator; current_item=new_first
                                 ch=new_channel; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)

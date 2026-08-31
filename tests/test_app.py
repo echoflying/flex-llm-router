@@ -1,9 +1,10 @@
 """Tests for Flex LLM Router app endpoints."""
 from pathlib import Path
+import asyncio
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action
+from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action, await_stream_next
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
@@ -16,6 +17,22 @@ def test_single_channel_hedge_retries_same_channel_at_six_minutes():
     channel = Channel()
     assert hedge_plan_for('solo-runner', [channel], channel, None) == ((360, ('solo',)),)
     assert first_activity_deadline_for([channel]) == 540
+
+
+def test_stream_idle_read_is_bounded_without_waiting_for_iterator_cleanup():
+    class StalledIterator:
+        def __init__(self):
+            self.future = asyncio.get_running_loop().create_future()
+
+        def __anext__(self):
+            return self.future
+
+    async def exercise():
+        iterator = StalledIterator()
+        with pytest.raises(asyncio.TimeoutError):
+            await await_stream_next(iterator, 0.01)
+
+    asyncio.run(exercise())
 
 
 def test_data_inspection_failure_is_content_policy_error():

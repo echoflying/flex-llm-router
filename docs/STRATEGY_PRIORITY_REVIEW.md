@@ -86,9 +86,9 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 | RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rpm_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现，待真实流量回归 |
 | 内容政策 fallback | Runner 标记优先、全局顺序其次 | 已实现 |
 | 协议兼容错误 | `protocol_error_rules` 窄匹配并清除 Affinity | 已实现 |
-| 6/9/12 分钟 Hedge | 按 Channel 数量或显式 stages 生成 | 已实现，但生命周期边界有缺陷 |
+| 6/9/12 分钟 Hedge | 按 Channel 数量或显式 stages 生成 | 已实现；流式空闲读取使用分离任务，生命周期不依赖 SDK 取消清理 |
 | 单 Channel 6 分钟重试/9 分钟截止 | 自动 Hedge 计划 | 已实现 |
-| 首 SSE 后空闲 Hedge | 流式消费者内实现 | 已实现，需继续验证异常和取消竞态 |
+| 首 SSE 后空闲 Hedge | 流式消费者内实现 | 已实现；超时立即夺回控制权并分离取消底层读取 |
 | 响应对象已返回但消费者未进入 | Hedge 任务先挂到 watchdog handoff，流式消费者进入后接管 | **已修复，待回归验证** |
 | 下游断开 | 7800 核心监听并取消/脱离上游任务 | 已实现，需增加竞态测试 |
 | 普通 400 | 不在协议表时直接返回 | 已实现 |

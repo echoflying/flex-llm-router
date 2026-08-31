@@ -90,10 +90,11 @@ channels:
     id: agnes-flash
     provider: agnes-official
     externally_exposed: true
+    chn_content_policy_fallback: true
     public_model: agnes-flash
     litellm_model: openai/agnes-2.5-flash
-    context_window_tokens: 200000
-    capabilities: [chat, streaming]
+    context_window_tokens: 524288
+    capabilities: [chat, code, streaming, tools, json, reasoning, responses]
     provider_type: agnes
     supported_params: []
     limits:

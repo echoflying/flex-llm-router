@@ -80,6 +80,7 @@ Minute）；`rate_limit` 仅作为旧数据库记录的兼容读法，展示和�
 - 流式且已开始输出：不重新生成另一条响应，记录错误并结束当前流。
 - 首个响应/SSE 尚未到达时：由无首活动 Hedge 机制决定是否启动其它 Channel。
 - LiteLLM 已返回 response object 但流式消费者尚未进入时，仍属于无首活动阶段；watchdog 会先启动并暂存 Hedge，消费者进入后接管，不能因为 `watchdog_handoff` 而跳过备用 Channel。
+- 若 watchdog 在该交接窗口内达到硬截止，响应层会独立发送终止信号：尚未发出响应头时返回 HTTP 504，已发出流式响应头时发送终止 SSE 错误事件；Trace 内部失败记录不再作为唯一反馈。
 
 ### 8. 流式空闲与首活动截止
 

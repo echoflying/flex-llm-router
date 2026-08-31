@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.pre-response-limit-harvest-v1'
+ROUTER_BUILD='2026-08-31.downstream-timeout-signal-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -95,21 +95,74 @@ async def await_upstream_or_disconnect(request: Request, upstream):
         await asyncio.gather(disconnect_task,return_exceptions=True)
 class DisconnectAwareStreamingResponse(StreamingResponse):
     """Listen for http.disconnect after LiteLLM has returned the stream response."""
-    def __init__(self,*args,on_disconnect=None,**kwargs):
-        super().__init__(*args,**kwargs); self.on_disconnect=on_disconnect
+    def __init__(self,*args,on_disconnect=None,timeout_event=None,timeout_detail=None,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.on_disconnect=on_disconnect
+        self.timeout_event=timeout_event
+        self.timeout_detail=timeout_detail or 'Upstream stream timed out before producing usable activity.'
     async def __call__(self,scope,receive,send):
         if scope['type']=='websocket':
             return await super().__call__(scope,receive,send)
+        # A watchdog can fire after the response object has been selected but
+        # before the StreamingResponse generator is entered.  In that gap the
+        # generator cannot send its usual SSE error.  Race the body consumer
+        # with a dedicated timeout sender so the caller always receives either
+        # an HTTP 504 (headers not sent yet) or a terminal SSE error (stream
+        # headers already sent).
+        if self.timeout_event is None:
+            async with anyio.create_task_group() as group:
+                async def stream():
+                    await self.stream_response(send)
+                    group.cancel_scope.cancel()
+                async def watch_disconnect():
+                    await self.listen_for_disconnect(receive)
+                    if self.on_disconnect:self.on_disconnect()
+                    group.cancel_scope.cancel()
+                group.start_soon(stream)
+                group.start_soon(watch_disconnect)
+            if self.background is not None:await self.background()
+            return
+        response_started=anyio.Event(); stream_done=anyio.Event(); send_lock=anyio.Lock(); holder={}
+        async def guarded_send(message):
+            async with send_lock:
+                if message.get('type')=='http.response.start': response_started.set()
+                await send(message)
         async with anyio.create_task_group() as group:
             async def stream():
-                await self.stream_response(send)
-                group.cancel_scope.cancel()
+                with anyio.CancelScope() as scope:
+                    holder['scope']=scope
+                    try:
+                        await self.stream_response(guarded_send)
+                    finally:
+                        stream_done.set()
+                        # When the timeout watcher cancelled this stream, it
+                        # still has to send the terminal 504/SSE message. Do
+                        # not cancel the whole task group from this finally
+                        # block; the timeout watcher owns that cancellation.
+                        if not holder.get('timeout_in_progress'):
+                            group.cancel_scope.cancel()
             async def watch_disconnect():
                 await self.listen_for_disconnect(receive)
                 if self.on_disconnect:self.on_disconnect()
                 group.cancel_scope.cancel()
+            async def watch_timeout():
+                await self.timeout_event.wait()
+                if stream_done.is_set(): return
+                holder['timeout_in_progress']=True
+                scope=holder.get('scope')
+                if scope is not None: scope.cancel()
+                async with send_lock:
+                    if response_started.is_set():
+                        body=json.dumps({'error':{'type':'upstream_total_timeout','detail':self.timeout_detail}},ensure_ascii=False).encode()
+                        await send({'type':'http.response.body','body':b'data: '+body+b'\n\n','more_body':False})
+                    else:
+                        body=json.dumps({'detail':self.timeout_detail},ensure_ascii=False).encode()
+                        await send({'type':'http.response.start','status':504,'headers':[(b'content-type',b'application/json'),(b'content-length',str(len(body)).encode())]})
+                        await send({'type':'http.response.body','body':body,'more_body':False})
+                group.cancel_scope.cancel()
             group.start_soon(stream)
             group.start_soon(watch_disconnect)
+            group.start_soon(watch_timeout)
         if self.background is not None:await self.background()
 def data(r,model):
     d=r.model_dump(mode='json') if hasattr(r,'model_dump') else dict(r)
@@ -1205,7 +1258,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','downstream_timeout_signal','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1581,6 +1634,7 @@ def create_app(config_path:str|Path):
             # deadline signals through this queue, so a hung provider request
             # cannot depend on this coroutine's own timeout calculation.
             watchdog_signals=asyncio.Queue()
+            downstream_timeout_event=asyncio.Event()
             app.state.first_activity_watch[rid]={'started':req_started,'signals':watchdog_signals,'sent':set(),'hedge_plan':hedge_plan,'deadline_seconds':first_activity_deadline,
                                                  # A response object can be handed to ASGI before the streaming
                                                  # generator is actually entered.  Keep Hedge tasks created in
@@ -1812,6 +1866,7 @@ def create_app(config_path:str|Path):
                             def stream_deadline_hard_stop():
                                 if watch_record.get('deadline_forced'): return
                                 watch_record['deadline_forced']=True
+                                downstream_timeout_event.set()
                                 detail=f'No upstream SSE activity before Router {first_activity_deadline//60}-minute safety deadline; watchdog closed the trace before the streaming consumer entered.'
                                 state.trace_event(rid,'upstream_cancel_requested',target.id,504,detail='Watchdog hard-stop for a response object whose streaming consumer did not start')
                                 state.trace_event(rid,'upstream_total_timeout',target.id,504,detail)
@@ -2352,6 +2407,16 @@ def create_app(config_path:str|Path):
                     if pending:await asyncio.gather(*pending,return_exceptions=True)
                     await close_upstream(iterator)
                     await close_upstream(response)
+                    # A Router watchdog hard-stop already finalized this Trace
+                    # as an upstream timeout.  The response wrapper cancels
+                    # this generator only to make room for the terminal 504/
+                    # SSE error, so do not overwrite the failure as a client
+                    # disconnect or generic stream cancellation.
+                    forced_deadline=downstream_timeout_event.is_set() or bool(
+                        watch_record and watch_record.get('deadline_forced')
+                    )
+                    if forced_deadline:
+                        raise
                     disconnected=disconnect_notice.is_set()
                     reason='client_disconnected' if disconnected else 'stream_cancelled'
                     detail='Downstream client disconnected; cancelled upstream stream and pending hedges' if disconnected else 'Streaming task cancelled; cancelled upstream stream and pending hedges'
@@ -2395,7 +2460,7 @@ def create_app(config_path:str|Path):
                     stop_first_activity_watch()
                     if 'watchdog_task' in locals() and not watchdog_task.done():
                         watchdog_task.cancel()
-            return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
+            return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
     async def _first_activity_watchdog():
         """Core-owned watchdog for requests that have not received upstream activity.
 

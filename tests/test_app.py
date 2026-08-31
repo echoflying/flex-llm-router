@@ -4,7 +4,7 @@ import asyncio
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action, await_stream_next
+from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action, await_stream_next, has_stream_activity
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
@@ -33,6 +33,14 @@ def test_stream_idle_read_is_bounded_without_waiting_for_iterator_cleanup():
             await await_stream_next(iterator, 0.01)
 
     asyncio.run(exercise())
+
+
+def test_empty_sse_does_not_refresh_stream_idle_timer():
+    assert not has_stream_activity({'choices': [{'delta': {'role': 'assistant'}}]})
+    assert not has_stream_activity({'choices': [{'delta': {}}]})
+    assert has_stream_activity({'choices': [{'delta': {'reasoning_content': 'thinking'}}]})
+    assert has_stream_activity({'choices': [{'delta': {'content': 'ok'}}]})
+    assert has_stream_activity({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})
 
 
 def test_data_inspection_failure_is_content_policy_error():

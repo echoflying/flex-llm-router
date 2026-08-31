@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.pre-response-error-preservation-v1'
+ROUTER_BUILD='2026-08-31.visible-sse-idle-guard-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -123,6 +123,20 @@ def data(r,model):
     d['model']=model; return d
 def has_visible_content(chunk):
     return any(isinstance((choice.get('delta') or {}).get('content'),str) and (choice.get('delta') or {})['content'] for choice in chunk.get('choices',[]))
+def has_stream_activity(chunk):
+    """Whether an SSE carries progress that should refresh the idle timer."""
+    if not isinstance(chunk,dict): return False
+    for choice in chunk.get('choices',[]) or []:
+        if not isinstance(choice,dict): continue
+        delta=choice.get('delta') or {}
+        if not isinstance(delta,dict): delta={}
+        for field in ('content','reasoning_content','refusal'):
+            if isinstance(delta.get(field),str) and delta[field]: return True
+        if delta.get('tool_calls') or delta.get('function_call'):
+            return True
+        if choice.get('finish_reason') is not None:
+            return True
+    return bool(chunk.get('usage'))
 def message_text(message):
     content=message.get('content','') if isinstance(message,dict) else ''
     if isinstance(content,str):return content
@@ -1191,7 +1205,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','pre_response_error_preservation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -2181,6 +2195,11 @@ def create_app(config_path:str|Path):
                         idle_deadline=(hedge_plan[-1][0]+180) if hedge_plan else 720
                         while True:
                             chunk=data(current_item,name); policy_reason=policy_block_reason(chunk)
+                            # A role/metadata/heartbeat SSE is not model
+                            # progress. Do not let endless empty frames keep
+                            # a stalled stream alive indefinitely.
+                            if has_stream_activity(chunk):
+                                idle_started=time.monotonic()
                             if policy_reason and not emitted:
                                 detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
                                 state.finish(active_attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=200)
@@ -2221,7 +2240,6 @@ def create_app(config_path:str|Path):
                             try:
                                 wait_for=max(0.1,idle_deadline-(time.monotonic()-idle_started))
                                 current_item=await await_stream_next(current_iterator,wait_for)
-                                idle_started=time.monotonic()
                             except asyncio.TimeoutError:
                                 if idle_stage>=len(hedge_plan):
                                     detail=f'上游 SSE 已有活动，但连续 {idle_deadline//60} 分钟没有后续事件；按流式空闲截止终止'

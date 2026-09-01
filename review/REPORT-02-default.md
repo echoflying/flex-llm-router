@@ -1,5 +1,5 @@
 # REVIEW 报告 02 — DEFAULT 对 COLLECTOR 初审的复核
-> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、DESIGN 和 docs/ROUTER_RESILIENCE.md 为准。
+> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、docs/ARCHITECTURE.md 和 docs/RETRY_POLICIES.md 为准。
 > 复核对象：`review/REPORT-01-collector.md`
 > 复核人：@default（主会话）· 时间：2026-08-21
 > 方法：逐条对照源码 `app.py` / `state.py` / `scheduler.py` / `config.py` / `pools.yaml`，并复跑 `pytest`（29 passed）确认测试基线。未改动任何项目文件。

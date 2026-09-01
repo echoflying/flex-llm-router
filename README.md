@@ -1,161 +1,83 @@
 # Flex LLM Router
 
-Policy-driven LLM routing backed by LiteLLM. Flex picks which channel handles
-a request; LiteLLM makes the actual provider call.
+Flex LLM Router 为 Hermes、OpenCode 及其他标准 OpenAI 客户端提供一个稳定的本地
+LLM 入口。客户端只需要记住一个 Base URL 和模型名，Flex 会在后台管理多个 Provider
+和 Channel，在不暴露密钥的前提下完成能力匹配、选路、重试和故障恢复。
 
-Flex is designed to make LLM access stable and reliable: it keeps provider
-credentials local, applies per-channel quota/RPM/TPM controls, preserves
-conversation affinity, retries transient upstream failures, and records the
-routing outcome for diagnosis. A single external Runner can therefore use
-multiple providers without exposing that switching detail to the client.
+## 用户能得到什么
 
-## Quick start
+- **更高的可用性**：一个 Runner 可以包含多个上游通道；单个 Provider 超时、限流、
+  暂时不可用或协议不兼容时，按策略继续尝试合适的备用通道。
+- **更少的配置变更**：客户端始终使用稳定的 Runner 名称，不需要知道真实 Provider、
+  LiteLLM 模型名或当前使用的是哪条通道。
+- **业务连续性优先**：会话粘性减少不必要的模型切换；遇到无响应、流式停滞或错误，
+  watchdog、Hedge 和明确的退让策略避免请求无限挂起。
+- **成本与配额可控**：每个 Channel 独立管理 RPM、TPM、五小时窗口和冷却状态；可按
+  Runner 的 tier 与 `cost_aware` 策略优先使用低成本通道。
+- **可诊断、可追溯**：每次尝试、等待、切换、首字时间、最终结果和错误类型都能在
+  Trace 与统计页面中查看，便于区分上游故障、限流和客户端断开。
+- **本地隐私**：API Key 只存在本机环境变量；普通 Trace 默认限时限量，完整上行内容
+  需要单独开启并受条数/空间上限保护。
+- **平滑扩展**：Provider、Channel、Runner 解耦；可以先用一个通道，之后按顺序增加
+  备用通道，而不改变对外模型名。
+
+## 工作方式
+
+```text
+标准 OpenAI 请求 → Flex（选路/状态/重试）→ LiteLLM → Provider
+                         └→ SQLite Trace 与统计
+```
+
+LiteLLM 负责具体 Provider 协议适配，Flex 负责策略和运行状态。对外只展示 Runner；
+Channel 是否作为独立模型出现在 `/v1/models` 由其 `externally_exposed` 字段控制，
+未独立暴露的 Channel 仍可以作为 Runner 内部候选。
+
+## 快速开始
 
 ```bash
-cp .env.example .env          # set real API keys
+cp .env.example .env          # 填写本机 API keys
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-flex-router                    # starts on http://127.0.0.1:7800
+flex-router                   # 核心默认监听 http://127.0.0.1:7800
 ```
 
-## Local/Mac synchronization
+将客户端指向 `http://<router-host>:7800/v1`，模型名填写 Config 页面中 Runner 的
+对外模型名即可。`/help` 页面提供可直接复制的 Hermes 配置字段。
 
-The local checkout is the canonical editing source. Commit and push local
-changes first, then run `scripts/sync_to_mac.ps1` with your Mac connection
-parameters to synchronize committed code to Mac. The script intentionally excludes
-`.env`, the entire Mac runtime `config/` directory, databases, logs, virtual
-environments, and caches, so Channels/Runners and runtime switches changed
-from the Mac UI are not silently overwritten. Mac is a runtime target, not a
-second editing source; restart its services manually when a code change
-should take effect.
+## 管理页面
 
-## Pages
-
-| Path | Description |
+| 页面 | 用途 |
 |---|---|
-| `/` | **Dashboard** — Runner/Channel 状态、调用指标与快速操作 |
-| `/config` | **Config** — Runner、Channel、Model 三标签页，结构化编辑并校验 `config/pools.yaml` |
-| `/setup` | **Environment vars** — .env vs system ENV, Override toggle |
-| `/help` | **Hermes connection** — copy-paste provider URL into Hermes config |
+| `/` | Runner/Channel 状态、调用指标和最近错误 |
+| `/config` | Runner、Channel、Model 三标签页；结构化校验后立即保存并热应用 |
+| `/setup` | `.env` 与系统环境变量来源、Override 及会话粘性窗口 |
+| `/traces` | 调用轨迹、每次尝试和错误详情 |
+| `/statistics` | 调用成功率、跨 Channel 结果、限流/错误统计 |
+| `/help` | Hermes Base URL、Provider 和模型名的接入提示 |
 
-### Config editor
+配置保存会在 `config/pools.yaml` 旁保留带时间戳的最近 10 份备份，不自动重启核心。
+配置变更会热应用；Python 代码、模板或进程环境变更需要手动重启核心。7800 是核心
+API 与 watchdog，7801 是独立 UI，UI 重启不会替代核心 watchdog。
 
-`/config` 固定按 Runner → Channel → Model 显示三个标签页。Runner 编辑
-成员和顺序；Runner 名称仅允许字母、数字、点、下划线和连字符（最多 64 个字符，
-不支持空格和斜杠），并在 Runner 区域提供 Base URL 选择和增加入口；Channel 编辑 Provider、LiteLLM model、启用状态和对外暴露开关，Provider 单元格按组纵向合并；Model 编辑 Provider 的 `.env` 变量名引用，不显示
-密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；首个 Channel 可直接作为 Runner 名称，增加第二个 Channel 时若名称与任一 Channel 重复会提示先修改名称；这些操作确认后会立即保存。Channel 是否作为独立模型出现在 `/v1/models` 由 `externally_exposed` 控制；未对外暴露的 Channel 仍可作为 Runner 内部候选。页面可直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建
-`config/pools.yaml.backup.YYYYMMDDHHMMSS`，并自动只保留最近 10 份；随后热更新进程内配置，
-不自动重启核心。旧的 `/api/config` 原文校验保存接口
-仍兼容保留。
+## 现行策略与架构文档
 
-### Setup / Override
+- [架构与运行说明](docs/ARCHITECTURE.md)：Runner/Channel/Provider、API、数据留存、
+  隐私、进程边界和同步规则。
+- [重试、退让与超时策略](docs/RETRY_POLICIES.md)：RPM/TPM、配额、协议/内容政策回退、
+  6/9/12 分钟 Hedge、流式空闲和下游断开处理。
+- [历史策略审计](docs/STRATEGY_PRIORITY_REVIEW.md)：仅供追溯，不代表当前待办或规范。
 
-Shows all Provider-referenced environment variables from `pools.yaml`, their
-presence in `.env` and system ENV, and which source is active. The list is
-derived from the current Provider definitions; it is not a fixed channel count.
+## 本地与 Mac 同步
 
-The **Override** toggle controls whether `.env` values override system ENV
-(ON = dotenv wins, OFF = system ENV wins). Click toggles immediately via
-`load_dotenv(override=…)` and persists to `config/setup.conf` for the next
-server start.
+本地 checkout 是唯一编辑源。提交后使用 `scripts/sync_to_mac.ps1`，通过参数或本地
+环境变量提供 Mac 用户、主机和目标目录；脚本不会同步 Mac 的 `config/`、`.env`、数据库、
+日志、虚拟环境、缓存或备份，也不会自动重启服务。
 
-Setup also exposes two independent session-affinity idle windows:
-`FLEX_SESSION_AFFINITY_IDLE_SECONDS` for ordinary conversations and
-`FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS` for conversations moved after a protocol
-compatibility error. Both are idle windows refreshed after successful requests,
-not absolute conversation limits.
+## 主要接口
 
-## Templates
-
-HTML pages live in `templates/` as standalone `.html` files. Modify them
-with any text editor and refresh the browser — no server restart needed.
-`base.html` provides the shared frame (navigation + page shell); each page
-extends it via `{{ content }}` placeholder.
-
-## Architecture
-
-```
-Request → Flex (FastAPI) → LiteLLM → upstream provider
-              │
-              └→ StateStore (SQLite)
-                  ├ quota windows (5h sliding)
-                  ├ RPM/TPM learning (60s sliding)
-                  ├ session affinity (ordinary/protocol windows)
-                  └ channel tests & cooldowns
-```
-
-- **Scheduler**: `round_robin`, `cost_aware`, or `quota_paced_priority`, using Runner tiers and Channel state
-- **Limits**: learned safe RPM/TPM, 429 classification, quota windows, exponential backoff
-- **Config**: `config/pools.yaml` — Runners, internal Channels, limits, and routing policy. Mac runtime config is local-only and preserved by code sync; each Router save creates a timestamped backup (latest 10 retained)
-
-### CHN Content Policy fallback
-
-Each Channel may set `chn_content_policy_fallback: true` when it is safe to use
-as a Chinese content-policy fallback.  If a Chat Completions response carries an
-explicit `finish_reason: content_filter` (or an equivalent normalized policy
-signal), Flex records the blocked attempt and tries the ordered global list:
-
-```yaml
-global_fallback:
-  chn_content_policy:
-    - agnes-flash       # recommended first: Agnes Official
-    - another-channel
-```
-
-Fallbacks are Channel IDs, not public model names.  When the current Runner
-contains other enabled Channels marked `chn_content_policy_fallback`, those
-Channels are tried first in Runner order; only a Runner without such a Channel uses the
-global list.  The global list is configured from the Model tab (or
-`POST /api/config/global-fallback`) and is attempted in its listed order,
-without introducing a new scheduling policy.  If every fallback
-also reports a policy block, the request ends with `content_policy_blocked`.
-Normal refusal text without an explicit provider policy signal is not
-rewritten. A Channel that is not marked `chn_content_policy_fallback` is never
-sent through this fallback path. The marker describes fallback eligibility, not
-whether that Channel itself will block content.
-
-When the configuration contains the standard `agnes-flash` Channel and no
-explicit list has been saved yet, it is automatically offered as the first
-fallback. Saving an empty list is an explicit opt-out.
-- **State file**: `data/flex.db` (SQLite, `.gitignore`d)
-
-## Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/healthz` | Health check |
-| GET | `/v1/models` | OpenAI-compatible model list |
-| POST | `/v1/chat/completions` | Chat completion (non-stream + stream) |
-| GET | `/` | Dashboard HTML |
-| GET | `/config` | Config viewer/editor HTML |
-| GET/POST | `/setup`, `/api/setup/override` | Env management |
-| GET | `/help` | Hermes connection details |
-| GET | `/api/runners` | Canonical Runner list |
-| GET | `/api/runners/{name}/channels` | Runner Channel metrics |
-| GET | `/api/providers` | Provider list and configured model counts |
-| GET | `/api/providers/{provider}/models` | Configured candidates; `?refresh=1` explicitly queries that Provider's `/models` endpoint (no periodic probe) |
-| GET | `/api/config/editor` | Config editor data (Runner/Channel/Provider env names; no secrets) |
-| POST | `/api/config/runners` | Create a Runner from a name and initial Channel |
-| POST | `/api/config/runners/{name}` | Edit Runner membership/order and public model |
-| POST | `/api/config/channels/{id}` | Edit Channel alias and enabled state |
-| POST | `/api/config/channels` | Add a new Provider + Model Channel |
-| POST | `/api/config/channels-bulk` | Add checked models from one Provider as Channels |
-| POST | `/api/config/channels/{id}/test` | Explicit self-test for one Channel |
-| POST | `/api/config/channels/{id}/responses-test` | Explicit Responses API probe; persists the last result on the Channel |
-| POST | `/api/config/global-fallback` | Set ordered CHN Content Policy fallback Channel IDs |
-| POST/DELETE | `/api/config/providers[/{name}]` | Add/update or remove an unreferenced Provider |
-| GET | `/api/pools/{name}/channels` | Legacy-compatible Channel metrics path |
-| GET | `/api/requests` | Recent attempt log |
-| GET | `/api/traces` | Trace list |
-| GET | `/api/traces/{trace_id}` | Trace detail and events |
-| GET | `/api/traces/{trace_id}/full-request` | Full captured request when optional retention is enabled |
-| GET | `/api/statistics/*` | Error, call, request, 15-minute, hourly-compatibility and duplicate statistics |
-| POST | `/api/pools/{name}/channels/{id}/test` | Channel test |
-| POST | `/api/pools/{name}/channels/{id}/enabled` | Enable/disable |
-| POST | `/api/pools/{name}/channels/{id}/reset` | Reset quota/cooldown |
-| POST | `/api/config` | Validate & save config |
-| POST | `/api/admin/restart` | Launchd restart (macOS) |
-
-The Runner action endpoints under `/api/runners/{name}/channels/{id}/...` are
-also available; the `/api/pools/...` action paths remain for compatibility.
+- `GET /v1/models`、`POST /v1/chat/completions`：OpenAI 兼容入口；
+- `GET /healthz`：版本、构建特性、Hedge 截止和 watchdog 状态；
+- `GET /api/runners`、`GET /api/providers`、`GET /api/config/editor`：管理数据；
+- `GET /api/traces`、`GET /api/statistics/*`：诊断与统计；
+- `POST /api/admin/restart`：macOS launchd 核心重启入口。

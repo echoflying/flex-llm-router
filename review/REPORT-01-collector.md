@@ -1,8 +1,8 @@
 # REVIEW 报告 01 — COLLECTOR 初审
-> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、DESIGN 和 docs/ROUTER_RESILIENCE.md 为准。
+> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、docs/ARCHITECTURE.md 和 docs/RETRY_POLICIES.md 为准。
 > 审阅对象：本项目 checkout
 > 审阅人：@collector · 时间：2026-08-21
-> 范围：源码(`src/flex_llm_router`)、配置(`config/pools.yaml`)、设计文档(`DESIGN.md`/`docs/routing-and-throttling.md`)、测试(`tests/`)、模板(`templates/`)
+> 范围：源码(`src/flex_llm_router`)、配置(`config/pools.yaml`)、设计文档(`docs/ARCHITECTURE.md`/`docs/RETRY_POLICIES.md`)、测试(`tests/`)、模板(`templates/`)
 
 ---
 

@@ -1,8 +1,8 @@
 # Router 策略优先级审计（历史快照）
 
 > 本文记录一次策略优先级审计及其当时的实施计划，现已归档。它不是当前实现规范，
-> 不应据此判断功能是否仍待开发；请以 `README.md`、`DESIGN.md`、
-> `docs/ROUTER_RESILIENCE.md` 和 `docs/HEDGED_RETRY.md` 为准。
+> 不应据此判断功能是否仍待开发；请以 `README.md`、`docs/ARCHITECTURE.md` 和
+> `docs/RETRY_POLICIES.md` 为准。
 
 ## 1. 总原则
 

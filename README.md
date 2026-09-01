@@ -66,7 +66,6 @@ API 与 watchdog，7801 是独立 UI，UI 重启不会替代核心 watchdog。
   隐私、进程边界和同步规则。
 - [重试、退让与超时策略](docs/RETRY_POLICIES.md)：RPM/TPM、配额、协议/内容政策回退、
   6/9/12 分钟 Hedge、流式空闲和下游断开处理。
-- [历史策略审计](docs/STRATEGY_PRIORITY_REVIEW.md)：仅供追溯，不代表当前待办或规范。
 
 ## 本地与 Mac 同步
 

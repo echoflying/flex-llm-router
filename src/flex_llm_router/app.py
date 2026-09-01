@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-09-01.rpm-task-harvest-v1'
+ROUTER_BUILD='2026-09-02.stream-idle-guard-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1259,7 +1259,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),

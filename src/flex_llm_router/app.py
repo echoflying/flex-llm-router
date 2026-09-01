@@ -2260,6 +2260,29 @@ def create_app(config_path:str|Path):
                             state.trace_event(rid,'upstream_cancel_requested',pending_channels.get(task),detail='Cancelled losing Hedge task after first SSE winner')
                             task.cancel()
                     if pending:await asyncio.gather(*pending,return_exceptions=True)
+                    # Keep a hard stream-idle guard outside the body generator.
+                    # If ASGI send() is blocked by downstream backpressure or
+                    # a half-open client, selected_items() cannot advance its
+                    # own timer.  This independent task still closes the
+                    # response and lets DisconnectAwareStreamingResponse emit
+                    # the terminal 504/SSE signal.
+                    stream_idle_guard_stop=asyncio.Event()
+                    stream_guard_last=[time.monotonic()]
+                    stream_idle_guard_task=None
+                    stream_idle_hard_seconds=(hedge_plan[-1][0]+180) if hedge_plan else 720
+                    async def stream_idle_guard():
+                        while not stream_idle_guard_stop.is_set():
+                            try:
+                                await asyncio.wait_for(stream_idle_guard_stop.wait(), timeout=1.0)
+                                return
+                            except asyncio.TimeoutError:
+                                if time.monotonic()-stream_guard_last[0] >= stream_idle_hard_seconds:
+                                    detail=f'No upstream SSE activity for {stream_idle_hard_seconds//60} minutes; Router closed the stalled stream.'
+                                    state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
+                                    state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail='Independent stream-idle guard closed a backpressured downstream stream')
+                                    downstream_timeout_event.set()
+                                    return
+                    stream_idle_guard_task=asyncio.create_task(stream_idle_guard())
                     async def selected_items():
                         """Yield SSE items, switching before the first visible
                         refusal when a CHN-policy Channel emits content_filter."""
@@ -2279,6 +2302,7 @@ def create_app(config_path:str|Path):
                             # a stalled stream alive indefinitely.
                             if has_stream_activity(chunk):
                                 idle_started=time.monotonic(); idle_stage=0
+                                stream_guard_last[0]=time.monotonic()
                             if policy_reason and not emitted:
                                 detail=f'上游返回内容政策限制（finish_reason={policy_reason}）；按全局 CHN Content Policy Fallback 顺序处理'
                                 state.finish(active_attempt,'failure','content_policy_blocked',latency=int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=200)
@@ -2297,6 +2321,7 @@ def create_app(config_path:str|Path):
                                         await close_upstream(current_response)
                                         current_response=fallback_response; response=fallback_response; current_iterator=new_iterator; current_item=new_first
                                         ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; idle_started=time.monotonic(); idle_stage=0
+                                        stream_guard_last[0]=time.monotonic()
                                         if affinity.get('enabled'):
                                             state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
                                             state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Fallback Channel produced first SSE; provisional affinity updated')
@@ -2374,7 +2399,7 @@ def create_app(config_path:str|Path):
                                 if affinity.get('enabled'):
                                     state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
                                     state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Idle Hedge Channel produced first SSE; provisional affinity updated')
-                                idle_started=time.monotonic(); idle_stage=0; emitted=False; buffered=[]; buffered_chars=0; continue
+                                idle_started=time.monotonic(); idle_stage=0; stream_guard_last[0]=time.monotonic(); emitted=False; buffered=[]; buffered_chars=0; continue
                             except StopAsyncIteration:
                                 if not emitted:
                                     for buffered_item in buffered: yield buffered_item
@@ -2493,6 +2518,10 @@ def create_app(config_path:str|Path):
                     return
                 finally:
                     stop_first_activity_watch()
+                    if 'stream_idle_guard_stop' in locals():
+                        stream_idle_guard_stop.set()
+                    if 'stream_idle_guard_task' in locals() and stream_idle_guard_task is not None and not stream_idle_guard_task.done():
+                        stream_idle_guard_task.cancel()
                     if 'watchdog_task' in locals() and not watchdog_task.done():
                         watchdog_task.cancel()
             return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})

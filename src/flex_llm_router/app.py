@@ -2541,7 +2541,13 @@ def create_app(config_path:str|Path):
                 now = time.time()
                 for pool_name, pool in config.runners.items():
                     sel = pool.selection if isinstance(pool.selection, dict) else {}
-                    reattach = sel.get('reattach', {}) if isinstance(sel, dict) else {}
+                    # Accept the documented nested fallback location and the
+                    # earlier top-level spelling while configs migrate.
+                    reattach = {}
+                    if isinstance(sel, dict):
+                        reattach = sel.get('reattach', {}) or {}
+                        if not reattach and isinstance(sel.get('fallback'), dict):
+                            reattach = sel['fallback'].get('reattach', {}) or {}
                     if not reattach.get('probe_before_switch_back', True):
                         continue  # 配置关闭探测则跳过
                     for ch_id in pool.channels:

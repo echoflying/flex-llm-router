@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-08-31.stream-idle-deadline-v1'
+ROUTER_BUILD='2026-09-01.rpm-task-harvest-v1'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1258,7 +1258,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1742,13 +1742,19 @@ def create_app(config_path:str|Path):
                         hedge_wait=max(0,next_delay-elapsed) if next_delay is not None else remaining
                         timeout=min(hedge_wait,remaining)
                         done,_=await asyncio.wait(set(active)|{disconnect_task,watchdog_task,deadline_task},timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
-                        if deadline_task in done or deadline_due['value']:
+                        # A provider task can complete in the same event-loop
+                        # turn as a watchdog/control task. Keep that concrete
+                        # result so an RPM/TPM exception is harvested before a
+                        # time-based Hedge is advanced (or silently skipped).
+                        control_done=done
+                        completed={task for task in active if task.done()}
+                        if deadline_task in control_done or deadline_due['value']:
                             for task,(attempt_id,attempt_started,label,target) in active.items():
                                 if attempt_id!=attempt:
                                     state.finish(attempt_id,'cancelled','upstream_total_timeout',int((time.monotonic()-attempt_started)*1000),error_detail='Core watchdog cancelled pending hedge at Runner deadline')
                             cancel_detached(active)
                             raise UpstreamTotalTimeout()
-                        if watchdog_task in done:
+                        if watchdog_task in control_done and not completed:
                             signal=watchdog_task.result()
                             watchdog_task=asyncio.create_task(watchdog_signals.get())
                             if signal=='deadline':
@@ -1763,7 +1769,7 @@ def create_app(config_path:str|Path):
                             initial_hedges_started=hedge_no
                             launch_hedge_targets(hedge_no)
                             continue
-                        if disconnect_task in done:
+                        if disconnect_task in control_done:
                             for task,(attempt_id,attempt_started,label,target) in active.items():
                                 task.cancel()
                                 if attempt_id!=attempt:
@@ -1771,7 +1777,9 @@ def create_app(config_path:str|Path):
                             # Detached cleanup must not delay the 504 path.
                             cancel_detached(active)
                             raise ClientDisconnectedBeforeResponse()
-                        if not done:
+                        if completed:
+                            done=completed
+                        elif not done:
                             # A provider task can finish between the selector
                             # wake-up and this branch (notably when LiteLLM
                             # raises a fast RPM/TPM error).  Harvest completed

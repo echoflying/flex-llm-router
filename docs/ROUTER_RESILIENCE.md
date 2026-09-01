@@ -66,6 +66,7 @@ Minute）；`rate_limit` 仅作为旧数据库记录的兼容读法，展示和�
 - **TPM**：`4s → 8s → 16s → 32s → ...`。
 - **RPM**：`8s → 16s → 32s → 64s → ...`。
 - 累计等待分别受 `FLEX_QUEUE_TPM`、`FLEX_QUEUE_RPM` 限制（代码默认 TPM 60 秒、RPM 300 秒，Setup 可覆盖）。
+- 每轮等待前会优先收获同一事件循环中已完成的上游任务；即使 RPM/TPM 错误与 watchdog 信号同时到达，也先进入限流倒计时，不会被误判为“仍无响应”而跳过。
 - `cost_aware` Runner：先在原 Channel 按其 `retry_policy.max_retries` 进行上述指数退避；达到次数后才按 tier 成本顺序切换到下一个可用 Channel。
 - 可在 Runner 的 `selection.rpm_limit.on_exhausted` 指定第二阶段动作：`failover`（切换备用 Channel）、`wait`（继续等待原 Channel）或 `fail`（立即返回 429）。未配置时保持兼容默认：`cost_aware` 等价 `failover`，其它策略等价 `wait`。
 - `wait` 模式下当前请求在整个退避序列中固定触发错误的原 Channel；`failover` 模式达到重试预算后清除固定关系并重新选路。

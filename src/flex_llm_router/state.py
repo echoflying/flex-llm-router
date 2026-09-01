@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, hmac, json, os, secrets, sqlite3, time
+import hashlib, hmac, json, math, os, secrets, sqlite3, statistics, time
 from pathlib import Path
 from threading import RLock
 
@@ -379,10 +379,7 @@ class StateStore:
             item['final_failed']+=row['final_failed']
         return {'start':start,'data':buckets}
     def call_statistics(self,period='day',group_by='channel'):
-        now=time.time()
-        if period=='day':
-            local=time.localtime(now); since=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
-        else: since=now-{'week':7*86400,'month':30*86400}.get(period,86400)
+        now=time.time(); since=now-{'day':86400,'week':7*86400,'month':30*86400}.get(period,86400)
         column='channel' if group_by=='channel' else 'pool'
         with self.lock:
             totals=self.db.execute("SELECT COUNT(*) AS calls,SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS success FROM attempts WHERE started>=? AND outcome!='started'",(since,)).fetchone()
@@ -408,13 +405,92 @@ class StateStore:
             item=buckets[index]; item['calls']+=1; item['success']+=int(row['outcome']=='success'); item['failed']+=int(row['outcome']!='success')
         return {'start':start,'interval_minutes':15,'data':buckets}
     def request_statistics(self,period='day',group_by='channel'):
-        now=time.time(); local=time.localtime(now); since=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1)) if period=='day' else now-{'week':604800,'month':2592000}.get(period,86400)
+        now=time.time(); since=now-{'day':86400,'week':604800,'month':2592000}.get(period,86400)
         column="COALESCE(first_channel,'未选择通道')" if group_by=='channel' else "COALESCE(pool,'未分类池')"
         with self.lock:
             fields="COUNT(*) AS total,SUM(CASE WHEN status='success' AND attempt_count<=1 THEN 1 ELSE 0 END) AS first_success,SUM(CASE WHEN status='success' AND attempt_count>1 THEN 1 ELSE 0 END) AS retry_success,SUM(CASE WHEN status!='success' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN cross_channel=1 THEN 1 ELSE 0 END) AS cross_total,SUM(CASE WHEN cross_channel=1 AND status='success' THEN 1 ELSE 0 END) AS cross_success,SUM(CASE WHEN cross_channel=1 AND status!='success' THEN 1 ELSE 0 END) AS cross_failed"
             rows=self.db.execute(f'''SELECT {column} AS name,{fields} FROM request_outcomes WHERE started>=? GROUP BY {column} ORDER BY total DESC''',(since,)).fetchall()
             total=self.db.execute(f"SELECT {fields} FROM request_outcomes WHERE started>=?",(since,)).fetchone()
             return {'rows':[dict(r) for r in rows],**{key:(total[key] or 0) for key in ('total','first_success','retry_success','failed','cross_total','cross_success','cross_failed')}}
+
+    def response_time_statistics(self,period='day',group_by='channel'):
+        """Summarize end-to-end response times for completed requests.
+
+        A request is attributed to its final Channel when grouping by Channel;
+        this keeps a cross-Channel hedge visible under the Channel that
+        actually returned the result.  Percentiles are calculated in Python
+        because SQLite has no portable percentile aggregate.
+        """
+        now=time.time(); since=now-{'day':86400,'week':604800,'month':2592000}.get(period,86400)
+        column="COALESCE(final_channel,first_channel,'未选择通道')" if group_by=='channel' else "COALESCE(pool,'未分类池')"
+        with self.lock:
+            rows=self.db.execute(f'''SELECT {column} AS name,status,latency_ms,ttft_ms
+                FROM request_outcomes WHERE started>=? AND latency_ms IS NOT NULL''',(since,)).fetchall()
+        grouped={}
+        for row in rows:
+            item=grouped.setdefault(row['name'],{'latencies':[],'ttft':[],'success':0,'failed':0,'cancelled':0})
+            latency=float(row['latency_ms']); item['latencies'].append(latency)
+            if row['ttft_ms'] is not None:item['ttft'].append(float(row['ttft_ms']))
+            if row['status']=='success':item['success']+=1
+            elif row['status']=='cancelled':item['cancelled']+=1
+            else:item['failed']+=1
+        def percentile(values,quantile):
+            ordered=sorted(values)
+            return ordered[min(len(ordered)-1,max(0,math.ceil(quantile*len(ordered))-1))]
+        result=[]
+        for name,item in grouped.items():
+            values=item['latencies']; ttft=item['ttft']
+            result.append({'name':name,'n':len(values),'success':item['success'],'failed':item['failed'],
+                'cancelled':item['cancelled'],'avg_latency_ms':round(statistics.mean(values)),
+                'median_latency_ms':round(statistics.median(values)),'p95_latency_ms':round(percentile(values,.95)),
+                'min_latency_ms':round(min(values)),'max_latency_ms':round(max(values)),
+                'ttft_n':len(ttft),'ttft_avg_ms':round(statistics.mean(ttft)) if ttft else None,
+                'ttft_median_ms':round(statistics.median(ttft)) if ttft else None})
+        result.sort(key=lambda item:(-item['n'],item['name']))
+        return {'period':period,'group_by':group_by,'since':since,'rows':result,'completed':len(rows)}
+
+    @staticmethod
+    def _trend_buckets(period,now):
+        """Return (since, bucket_seconds, labels) for statistics trends."""
+        if period=='week':
+            since=now-7*86400; step=86400
+            labels=[time.strftime('%m-%d',time.localtime(since+i*step)) for i in range(7)]
+        elif period=='month':
+            since=now-30*86400; step=7*86400
+            labels=[time.strftime('%m-%d',time.localtime(since+i*step)) for i in range(5)]
+        else:
+            # Keep the 15-minute trend aligned to local quarter-hour marks;
+            # the current partial bucket is intentionally left out.
+            local=time.localtime(now)
+            end=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,local.tm_hour,(local.tm_min//15)*15,0,0,0,-1))
+            since=end-96*900; step=900
+            labels=[time.strftime('%H:%M',time.localtime(since+i*step)) for i in range(96)]
+        return since,step,labels
+
+    def call_trend_statistics(self,period='day'):
+        now=time.time(); since,step,labels=self._trend_buckets(period,now)
+        buckets=[{'time':label,'calls':0,'success':0,'failed':0} for label in labels]
+        with self.lock:
+            rows=self.db.execute("SELECT started,outcome FROM attempts WHERE started>=? AND outcome!='started'",(since,)).fetchall()
+        for row in rows:
+            index=int((row['started']-since)//step)
+            if 0<=index<len(buckets):
+                item=buckets[index]; item['calls']+=1; item['success']+=int(row['outcome']=='success'); item['failed']+=int(row['outcome']!='success')
+        return {'period':period,'start':since,'interval_seconds':step,'data':buckets}
+
+    def request_trend_statistics(self,period='day'):
+        now=time.time(); since,step,labels=self._trend_buckets(period,now)
+        buckets=[{'time':label,'total':0,'first_success':0,'retry_success':0,'failed':0} for label in labels]
+        with self.lock:
+            rows=self.db.execute('SELECT started,status,attempt_count FROM request_outcomes WHERE started>=?',(since,)).fetchall()
+        for row in rows:
+            index=int((row['started']-since)//step)
+            if 0<=index<len(buckets):
+                item=buckets[index]; item['total']+=1
+                if row['status']!='success':item['failed']+=1
+                elif row['attempt_count']==1:item['first_success']+=1
+                else:item['retry_success']+=1
+        return {'period':period,'start':since,'interval_seconds':step,'data':buckets}
     def hourly_request_statistics(self):
         now=time.time(); local=time.localtime(now); start=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
         buckets=[{'hour':f'{hour:02d}:00','total':0,'first_success':0,'retry_success':0,'failed':0} for hour in range(24)]

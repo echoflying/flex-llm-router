@@ -1428,6 +1428,10 @@ def create_app(config_path:str|Path):
     async def hourly_call_statistics():return state.hourly_call_statistics()
     @app.get('/api/statistics/calls/quarter-hourly')
     async def quarter_hour_call_statistics():return state.quarter_hour_call_statistics()
+    @app.get('/api/statistics/calls/trend')
+    async def call_trend_statistics(period:str='day'):
+        if period not in ('day','week','month'):raise HTTPException(400,'period must be day, week, or month')
+        return state.call_trend_statistics(period)
     @app.get('/api/statistics/requests')
     async def request_statistics(period:str='day',group_by:str='channel'):
         if period not in ('day','week','month') or group_by not in ('channel','pool'):raise HTTPException(400,'invalid statistics query')
@@ -1436,6 +1440,15 @@ def create_app(config_path:str|Path):
     async def hourly_request_statistics():return state.hourly_request_statistics()
     @app.get('/api/statistics/requests/quarter-hourly')
     async def quarter_hour_request_statistics():return state.quarter_hour_request_statistics()
+    @app.get('/api/statistics/requests/trend')
+    async def request_trend_statistics(period:str='day'):
+        if period not in ('day','week','month'):raise HTTPException(400,'period must be day, week, or month')
+        return state.request_trend_statistics(period)
+    @app.get('/api/statistics/response-times')
+    async def response_time_statistics(period:str='day',group_by:str='channel'):
+        if period not in ('day','week','month') or group_by not in ('channel','pool'):
+            raise HTTPException(400,'invalid statistics query')
+        return state.response_time_statistics(period,group_by)
     @app.get('/api/statistics/duplicates')
     async def duplicate_statistics(period:str='day'):
         if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')

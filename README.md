@@ -53,7 +53,7 @@ flex-router                   # 核心默认监听 http://127.0.0.1:7800
 | `/config` | Runner、Channel、Model 三标签页；结构化校验后立即保存并热应用 |
 | `/setup` | `.env` 与系统环境变量来源、Override 及会话粘性窗口 |
 | `/traces` | 调用轨迹、每次尝试和错误详情 |
-| `/statistics` | 调用成功率、跨 Channel 结果、限流/错误统计 |
+| `/statistics` | 调用成功率、跨 Channel 结果、按 Channel/Pool 的响应时间（平均值/中位数/P95/TTFT）及趋势统计 |
 | `/help` | Hermes Base URL、Provider 和模型名的接入提示 |
 
 配置保存会在 `config/pools.yaml` 旁保留带时间戳的最近 10 份备份，不自动重启核心。

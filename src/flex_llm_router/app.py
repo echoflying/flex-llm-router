@@ -701,8 +701,9 @@ def create_app(config_path:str|Path):
                           # only the strategy does not discard hedge/fallback
                           # settings that are not exposed as form fields.
                           'selection':selection})
-        # CHANNEL 与 POOL 平等: 所有定义的 channel 都列出(外部可直接引用), 不论是否挂 pool.
-        # mounted_in 标它属于哪些 pool (仅参考, 不降级).
+        # The editor lists every defined Channel, regardless of Runner
+        # membership. ``externally_exposed`` controls standalone exposure;
+        # ``mounted_in`` is informational only.
         channels_all=[]
         for ch_id,ch in config.channels.items():
             try:

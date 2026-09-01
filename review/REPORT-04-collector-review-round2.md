@@ -1,5 +1,7 @@
 # REPORT-04 — Collector 复核：第 2 轮修复确认
 
+> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、DESIGN 和 docs/ROUTER_RESILIENCE.md 为准。
+
 **审阅对象**：`src/flex_llm_router/app.py`、`tests/test_routing_integration.py`
 **前置报告**：`review/REPORT-01-collector.md`、`review/REPORT-02-default.md`、`review/REPORT-FINAL.md`、`review/REPORT-03-collector-review-fix.md`
 **审阅人**：@collector

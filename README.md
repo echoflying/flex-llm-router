@@ -21,9 +21,9 @@ flex-router                    # starts on http://127.0.0.1:7800
 
 ## Local/Mac synchronization
 
-`D:\\home.it\\flex-llm-router` is the canonical editing checkout. Commit and
-push local changes first, then run `powershell -File scripts/sync_to_mac.ps1`
-to synchronize the committed code to Mac. The script intentionally excludes
+The local checkout is the canonical editing source. Commit and push local
+changes first, then run `scripts/sync_to_mac.ps1` with your Mac connection
+parameters to synchronize committed code to Mac. The script intentionally excludes
 `.env`, the entire Mac runtime `config/` directory, databases, logs, virtual
 environments, and caches, so Channels/Runners and runtime switches changed
 from the Mac UI are not silently overwritten. Mac is a runtime target, not a
@@ -43,8 +43,8 @@ should take effect.
 
 `/config` 固定按 Runner → Channel → Model 显示三个标签页。Runner 编辑
 成员和顺序；Runner 名称仅允许字母、数字、点、下划线和连字符（最多 64 个字符，
-不支持空格和斜杠），并在 Runner 区域提供 Base URL 选择和增加入口；Channel 编辑 Provider、LiteLLM model 和启用状态，Provider 单元格按组纵向合并；Model 编辑 Provider 的 `.env` 变量名引用，不显示
-密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；首个 Channel 可直接作为 Runner 名称，增加第二个 Channel 时若名称与任一 Channel 重复会提示先修改名称；这些操作确认后会立即保存。Channel 不单独对外展示，只通过 Runner 成员关系参与路由。页面可直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建
+不支持空格和斜杠），并在 Runner 区域提供 Base URL 选择和增加入口；Channel 编辑 Provider、LiteLLM model、启用状态和对外暴露开关，Provider 单元格按组纵向合并；Model 编辑 Provider 的 `.env` 变量名引用，不显示
+密钥值。Runner 页面按配置顺序列出 Channel，可创建 Runner、上移、下移、移除或在独立弹窗中增加成员；首个 Channel 可直接作为 Runner 名称，增加第二个 Channel 时若名称与任一 Channel 重复会提示先修改名称；这些操作确认后会立即保存。Channel 是否作为独立模型出现在 `/v1/models` 由 `externally_exposed` 控制；未对外暴露的 Channel 仍可作为 Runner 内部候选。页面可直接复制 Base URL 和对外模型名。结构化保存先运行 `FlexConfig.model_validate`，成功后创建
 `config/pools.yaml.backup.YYYYMMDDHHMMSS`，并自动只保留最近 10 份；随后热更新进程内配置，
 不自动重启核心。旧的 `/api/config` 原文校验保存接口
 仍兼容保留。

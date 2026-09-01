@@ -77,4 +77,4 @@ RPM/TPM 触发后，TPM 基数为 4 秒、RPM 基数为 8 秒并按 2 倍递增�
 
 ## 8. 运行边界
 
-7800 是核心 API、调度器和 watchdog；7801 是独立 UI。UI 重启不会替代核心 watchdog；代码或配置修改后需重启核心才加载新版本。项目的本地正式副本是 `D:\\home.it\\flex-llm-router`，提交并推送后通过 `scripts/sync_to_mac.ps1` 同步 Mac；Mac 端运行时 `.env`、整个 `config/`、数据库和日志不参与同步，避免覆盖 UI 保存的运行配置。
+7800 是核心 API、调度器和 watchdog；7801 是独立 UI。UI 重启不会替代核心 watchdog。通过 Config 页面保存的配置会在校验、备份后热应用到当前核心进程；代码版本或进程环境变化仍需手动重启核心才会加载。本地 checkout 是唯一编辑源，提交并推送后通过 `scripts/sync_to_mac.ps1`（由调用者提供 Mac 用户、主机和目标目录）同步 Mac；Mac 端运行时 `.env`、整个 `config/`、数据库和日志不参与同步，避免覆盖 UI 保存的运行配置。

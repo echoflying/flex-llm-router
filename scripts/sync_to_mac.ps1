@@ -1,10 +1,16 @@
 param(
-    [string]$MacUser = 'weifeng',
-    [string]$MacHost = '192.168.3.246',
-    [string]$MacProject = '~/projects/flex-llm-router'
+    [string]$MacUser,
+    [string]$MacHost,
+    [string]$MacProject
 )
 
 $ErrorActionPreference = 'Stop'
+$MacUser = if ($MacUser) { $MacUser } else { $env:FLEX_MAC_USER }
+$MacHost = if ($MacHost) { $MacHost } else { $env:FLEX_MAC_HOST }
+$MacProject = if ($MacProject) { $MacProject } else { $env:FLEX_MAC_PROJECT }
+if (-not $MacUser -or -not $MacHost -or -not $MacProject) {
+    throw 'Specify -MacUser, -MacHost and -MacProject (or set FLEX_MAC_USER, FLEX_MAC_HOST and FLEX_MAC_PROJECT locally).'
+}
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $required = @('docs', 'frontend', 'review', 'scripts', 'src', 'templates', 'tests')
 $rootFiles = @('.env.example', '.gitignore', 'DESIGN.md', 'README.md', 'pyproject.toml')

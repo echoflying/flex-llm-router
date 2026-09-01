@@ -80,10 +80,10 @@ limits:
 
 ## 6. 生效与同步
 
-修改 YAML 或 Python 后，先在 `D:\home.it\flex-llm-router` 提交并推送 Git，再运行：
+修改 YAML 或 Python 后，在本地 checkout 提交并推送 Git，再运行（主机和用户只在本地参数中提供）：
 
 ```powershell
-powershell -File scripts/sync_to_mac.ps1
+powershell -File scripts/sync_to_mac.ps1 -MacUser <user> -MacHost <host> -MacProject '~/projects/flex-llm-router'
 ```
 
-脚本只同步已提交的代码、文档和测试；明确排除 Mac 端整个 `config/`（包括 `pools.yaml`、`setup.conf` 及备份）、`.env`、数据库、日志、虚拟环境和缓存，避免覆盖 Mac UI 新增的 Channel/Runner 或运行开关。同步后需手动重启 Mac 核心服务，代码修改才会加载；UI 进程是否刷新不影响核心 watchdog。
+配置页面的保存会在当前核心进程内校验、备份并热应用；Python/模板代码变更仍需同步后手动重启 Mac 核心服务才会加载。脚本只同步已提交的代码、文档和测试；明确排除 Mac 端整个 `config/`（包括 `pools.yaml`、`setup.conf` 及备份）、`.env`、数据库、日志、虚拟环境和缓存，避免覆盖 Mac UI 新增的 Channel/Runner 或运行开关。UI 进程是否刷新不影响核心 watchdog。

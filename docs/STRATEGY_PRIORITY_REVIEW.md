@@ -1,6 +1,8 @@
-# Router 策略优先级审计与修改计划
+# Router 策略优先级审计（历史快照）
 
-> 本文是对当前实现的审计和后续修改计划。写入本文时不修改请求调度代码、不重启服务。
+> 本文记录一次策略优先级审计及其当时的实施计划，现已归档。它不是当前实现规范，
+> 不应据此判断功能是否仍待开发；请以 `README.md`、`DESIGN.md`、
+> `docs/ROUTER_RESILIENCE.md` 和 `docs/HEDGED_RETRY.md` 为准。
 
 ## 1. 总原则
 
@@ -83,23 +85,23 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 | Affinity 只在可用候选中优先 | 先筛候选，再命中 `affinity_channel()` | 已实现 |
 | 失败时清除 Affinity | 多数异常路径调用 `forget_affinity()` | 基本实现，需补齐所有流式结束路径 |
 | RPM/TPM 第一阶段退避 | 独立 `retry_steps`、TPM 4 秒/RPM 8 秒指数序列 | 已实现 |
-| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rpm_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现，待真实流量回归 |
+| RPM/TPM 第二阶段冷却 | 写入 Channel 冷却；支持 `selection.rpm_limit.on_exhausted=failover/wait/fail`，并记录升级事件 | 已实现；运行时以 Trace 与 `/healthz` 验证 |
 | 内容政策 fallback | Runner 标记优先、全局顺序其次 | 已实现 |
 | 协议兼容错误 | `protocol_error_rules` 窄匹配并清除 Affinity | 已实现 |
 | 6/9/12 分钟 Hedge | 按 Channel 数量或显式 stages 生成 | 已实现；流式空闲读取使用分离任务，生命周期不依赖 SDK 取消清理 |
 | 单 Channel 6 分钟重试/9 分钟截止 | 自动 Hedge 计划 | 已实现 |
 | 首 SSE 后空闲 Hedge | 流式消费者内实现 | 已实现；超时立即夺回控制权并分离取消底层读取 |
-| 响应对象已返回但消费者未进入 | Hedge 任务先挂到 watchdog handoff，流式消费者进入后接管 | **已修复，待回归验证** |
+| 响应对象已返回但消费者未进入 | Hedge 任务先挂到 watchdog handoff，流式消费者进入后接管 | 已修复；运行时以 Trace 验证 |
 | 下游断开 | 7800 核心监听并取消/脱离上游任务 | 已实现，需增加竞态测试 |
 | 普通 400 | 不在协议表时直接返回 | 已实现 |
 | 配额/引擎验证 | 原 Channel 定时验证，不后台空探测 | 已实现，但应与第二阶段冷却统一展示 |
-| 配置变更生效 | 保存后需重启核心 | 现行约束，文档需保持明确 |
+| 配置变更生效 | 保存后校验、备份并热应用；代码版本变更需重启核心 | 当前实现；以 README/DESIGN 为准 |
 
 ### 已确认的生命周期缺陷
 
 当 LiteLLM 返回了 response object，但 ASGI 流式消费者尚未真正进入时，旧代码会执行 `watchdog_handoff` 并清空 `on_hedge` 回调。此后 watchdog 只能记录 `watchdog_hedge_due`，不能启动实际 Hedge，最终直接在硬截止返回 504。当前实现已改为在 handoff 间隙先启动并暂存 Hedge 任务，流式消费者进入后接管这些任务；仍需通过真实异步回归测试验证取消竞态。
 
-## 5. 修改计划（先文档，后代码）
+## 5. 历史修改计划（已归档）
 
 ### 阶段 A：明确数据模型和策略配置
 
@@ -134,6 +136,7 @@ RPM 和 TPM 使用独立计数、独立退避和独立冷却原因：
 - 内容政策和协议错误会清除 Affinity；普通 400 不重试。
 - 单 Channel、双 Channel、三 Channel Runner 的截止时间和 Hedge 计划分别正确。
 
-## 6. 本文后的执行顺序
+## 6. 归档说明
 
-本文完成后，下一步才进入代码修改。代码修改应先实现阶段 A/B，再实现阶段 C，最后补充阶段 D 测试；每个阶段单独提交、静态检查、运行时测试和同步，默认不自动重启核心服务。
+本文中的阶段 A–D 是当时用于拆解工作的计划。相关改动已陆续进入当前代码；后续
+变更应先更新现行设计文档和测试，再按项目同步流程发布，默认不自动重启核心服务。

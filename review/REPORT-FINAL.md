@@ -1,4 +1,5 @@
 # 最终 REVIEW 报告 — flex-llm-router
+> 历史审计快照：结论对应报告日期的代码版本，不是当前实现规范；请以根目录 README、DESIGN 和 docs/ROUTER_RESILIENCE.md 为准。
 > 审阅流程：@collector 初审（REPORT-01）→ @default 复核（REPORT-02）→ @collector 确认 → @default 汇总
 > 日期：2026-08-21
 > 范围：源码 `src/flex_llm_router/{app,state,scheduler,config}.py`、配置 `config/pools.yaml`、文档、测试（29/29 复跑通过）

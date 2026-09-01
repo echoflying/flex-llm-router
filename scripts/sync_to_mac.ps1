@@ -13,7 +13,7 @@ if (-not $MacUser -or -not $MacHost -or -not $MacProject) {
 }
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $required = @('docs', 'frontend', 'review', 'scripts', 'src', 'templates', 'tests')
-$rootFiles = @('.env.example', '.gitignore', 'DESIGN.md', 'README.md', 'pyproject.toml')
+$rootFiles = @('.env.example', '.gitignore', 'README.md', 'pyproject.toml')
 
 if (-not (Test-Path (Join-Path $ProjectRoot '.git') -PathType Container)) {
     throw "Not a Git project: $ProjectRoot"

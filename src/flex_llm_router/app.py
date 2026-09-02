@@ -2136,7 +2136,12 @@ def create_app(config_path:str|Path):
                             raise UpstreamTotalTimeout()
                         next_delay=hedge_plan[initial_hedges_started][0] if initial_hedges_started<len(hedge_plan) else None
                         hedge_wait=max(0,next_delay-elapsed) if next_delay is not None else remaining
-                        timeout=min(hedge_wait,remaining)
+                        # Poll completed provider tasks at a short fixed
+                        # cadence.  Some HTTP/SDK tasks can report an error
+                        # between selector wake-ups; waiting all the way to
+                        # the next 3/6-minute Hedge must never delay a 429
+                        # state transition.
+                        timeout=min(hedge_wait,remaining,1.0)
                         done,_=await asyncio.wait(set(active)|{disconnect_task,watchdog_task,deadline_task,completion_task},timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
                         # A provider task can complete in the same event-loop
                         # turn as a watchdog/control task. Keep that concrete
@@ -2200,7 +2205,11 @@ def create_app(config_path:str|Path):
                                     # client and must not be required for
                                     # correctness.
                                     raise UpstreamTotalTimeout()
-                                watchdog_start_hedge(initial_hedges_started+1)
+                                # A short poll timeout is not itself a Hedge
+                                # deadline.  Launch only when the configured
+                                # stage is actually due.
+                                if next_delay is not None and elapsed>=next_delay:
+                                    watchdog_start_hedge(initial_hedges_started+1)
                                 continue
                         for task in list(done):
                             if task is disconnect_task: continue

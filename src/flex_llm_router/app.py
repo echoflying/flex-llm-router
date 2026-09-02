@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-09-02.stream-idle-guard-v1'
+ROUTER_BUILD='2026-09-02.stream-idle-absolute-v2'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1525,7 +1525,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','absolute_post_sse_deadline','trace_finalize_on_stream_watchdog','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -2554,6 +2554,8 @@ def create_app(config_path:str|Path):
                     # the terminal 504/SSE signal.
                     stream_idle_guard_stop=asyncio.Event()
                     stream_guard_last=[time.monotonic()]
+                    stream_absolute_started=[time.monotonic()]
+                    stream_idle_timeout_recorded=[False]
                     stream_idle_guard_task=None
                     stream_idle_hard_seconds=(hedge_plan[-1][0]+180) if hedge_plan else 720
                     async def stream_idle_guard():
@@ -2562,9 +2564,17 @@ def create_app(config_path:str|Path):
                                 await asyncio.wait_for(stream_idle_guard_stop.wait(), timeout=1.0)
                                 return
                             except asyncio.TimeoutError:
-                                if time.monotonic()-stream_guard_last[0] >= stream_idle_hard_seconds:
-                                    detail=f'No upstream SSE activity for {stream_idle_hard_seconds//60} minutes; Router closed the stalled stream.'
-                                    state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
+                                # This is an absolute post-first-SSE deadline.
+                                # Hidden reasoning/heartbeat frames must not
+                                # keep a request with no visible completion
+                                # alive forever.
+                                if time.monotonic()-stream_absolute_started[0] >= stream_idle_hard_seconds:
+                                    detail=f'No completed upstream response within {stream_idle_hard_seconds//60} minutes after first SSE; Router closed the stream.'
+                                    if not stream_idle_timeout_recorded[0]:
+                                        stream_idle_timeout_recorded[0]=True
+                                        state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
+                                        state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
+                                        state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                                     state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail='Independent stream-idle guard closed a backpressured downstream stream')
                                     downstream_timeout_event.set()
                                     return
@@ -2637,6 +2647,7 @@ def create_app(config_path:str|Path):
                             except asyncio.TimeoutError:
                                 if idle_stage>=len(hedge_plan):
                                     detail=f'上游 SSE 已有活动，但连续 {idle_final_deadline//60} 分钟没有后续事件；按流式空闲截止终止'
+                                    stream_idle_timeout_recorded[0]=True
                                     state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
                                     # The body generator may be suspended in a
                                     # downstream send (for example after a
@@ -2762,6 +2773,11 @@ def create_app(config_path:str|Path):
                         watch_record and watch_record.get('deadline_forced')
                     )
                     if forced_deadline:
+                        if not stream_idle_timeout_recorded[0] and downstream_timeout_event.is_set():
+                            stream_idle_timeout_recorded[0]=True
+                            detail='Stream watchdog forced termination before the generator could finalize the Trace.'
+                            state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
+                            state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                         raise
                     disconnected=disconnect_notice.is_set()
                     reason='client_disconnected' if disconnected else 'stream_cancelled'

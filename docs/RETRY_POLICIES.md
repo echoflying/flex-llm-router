@@ -94,8 +94,9 @@ SDK 取消清理不能阻塞 watchdog；必要时底层读取任务会被分离�
 
 HTTP disconnect 是标准 OpenAI 协议下可靠的取消信号：首活动前记录
 `client_disconnected_before_first_token`，流式期间记录 `client_disconnected`/
-`cancelled`，并取消全部 Hedge。核心硬截止在未发响应头时返回 HTTP 504，已进入 SSE
-时发送终止 SSE 错误事件，不能只把内部 Trace 留在 `running`。
+`cancelled`，并取消全部 Hedge。核心会在首个有效 SSE 到达前暂存流式响应头，硬截止
+时返回真正的 HTTP 504；首个 SSE 已经发出后才发送终止 SSE 错误事件，不能只把内部
+Trace 留在 `running`。
 
 ## 8. 追踪与验证
 

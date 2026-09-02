@@ -122,10 +122,25 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                 group.start_soon(watch_disconnect)
             if self.background is not None:await self.background()
             return
-        response_started=anyio.Event(); stream_done=anyio.Event(); send_lock=anyio.Lock(); holder={}
+        # Keep response headers buffered until the first body event is ready.
+        # This lets a pre-first-SSE watchdog return a real HTTP 504 instead of
+        # committing the stream to HTTP 200 before the upstream has produced
+        # anything usable.
+        response_started=anyio.Event(); stream_done=anyio.Event(); send_lock=anyio.Lock(); holder={'start_message':None}
+        async def flush_start():
+            if response_started.is_set(): return
+            message=holder.get('start_message')
+            if message is None: return
+            await send(message)
+            response_started.set()
         async def guarded_send(message):
             async with send_lock:
-                if message.get('type')=='http.response.start': response_started.set()
+                kind=message.get('type')
+                if kind=='http.response.start':
+                    holder['start_message']=message
+                    return
+                if kind=='http.response.body' and (message.get('body') or not message.get('more_body',False)):
+                    await flush_start()
                 await send(message)
         async with anyio.create_task_group() as group:
             async def stream():
@@ -135,6 +150,13 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                         await self.stream_response(guarded_send)
                     finally:
                         stream_done.set()
+                        # A well-behaved stream normally flushes the start with
+                        # its first body chunk.  Still release it on an empty
+                        # but normally completed stream so the client receives
+                        # a valid response rather than an unclosed task.
+                        if not holder.get('timeout_in_progress') and not self.timeout_event.is_set():
+                            async with send_lock:
+                                await flush_start()
                         # When the timeout watcher cancelled this stream, it
                         # still has to send the terminal 504/SSE message. Do
                         # not cancel the whole task group from this finally
@@ -158,6 +180,7 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                     else:
                         body=json.dumps({'detail':self.timeout_detail},ensure_ascii=False).encode()
                         await send({'type':'http.response.start','status':504,'headers':[(b'content-type',b'application/json'),(b'content-length',str(len(body)).encode())]})
+                        response_started.set()
                         await send({'type':'http.response.body','body':body,'more_body':False})
                 group.cancel_scope.cancel()
             group.start_soon(stream)
@@ -2194,8 +2217,11 @@ def create_app(config_path:str|Path):
                         detail='Watchdog had already closed this Trace at the first-activity deadline before the streaming consumer entered.'
                         await close_upstream(response)
                         state.trace_event(rid,'stream_deadline_observed',ch.id,504,detail=detail)
-                        yield f'data: {json.dumps({"error":{"type":"upstream_total_timeout","detail":detail}})}\n\n'
-                        return
+                        # Keep the generator open while the response wrapper
+                        # emits a real HTTP 504.  Yielding an SSE error here
+                        # would flush the delayed 200 headers first.
+                        downstream_timeout_event.set()
+                        await asyncio.Future()
                     if watch_record:
                         watch_record['stream_consumer_started']=True
                         # From this point the stream loop owns Hedge signals;
@@ -2510,8 +2536,10 @@ def create_app(config_path:str|Path):
                     state.trace_event(rid,'upstream_total_timeout',ch.id,504,detail)
                     state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
                     state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
-                    yield f'data: {json.dumps({"error":{"type":"upstream_total_timeout","detail":detail}})}\n\n'
-                    return
+                    # The wrapper owns the terminal response so it can still
+                    # send HTTP 504 when no SSE/headers reached the client.
+                    downstream_timeout_event.set()
+                    await asyncio.Future()
                 except Exception as e:
                     typ=error_type(e); detail=error_detail(e)
                     protocol_rule=protocol_error_rule_for(ch,e,config.protocol_error_rules)

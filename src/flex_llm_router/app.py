@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse,JSONResponse,StreamingResponse
 from flex_llm_router.config import FlexConfig,ProtocolErrorRule,channel_credentials,load_config,validate_runner_name
 from flex_llm_router.scheduler import RoundRobinScheduler
 from flex_llm_router.state import StateStore
+from flex_llm_router import settings as settings_registry
 logger=logging.getLogger('uvicorn.error')
 
 def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
@@ -183,10 +184,10 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                 if scope is not None: scope.cancel()
                 async with send_lock:
                     if response_started.is_set():
-                        body=json.dumps({'error':{'type':'upstream_total_timeout','detail':self.timeout_detail}},ensure_ascii=False).encode()
+                        body=json.dumps({'error':{'message':self.timeout_detail,'type':'server_error','param':None,'code':'upstream_total_timeout'}},ensure_ascii=False).encode()
                         await send({'type':'http.response.body','body':b'data: '+body+b'\n\n','more_body':False})
                     else:
-                        body=json.dumps({'detail':self.timeout_detail},ensure_ascii=False).encode()
+                        body=json.dumps({'error':{'message':self.timeout_detail,'type':'server_error','param':None,'code':'upstream_total_timeout'}},ensure_ascii=False).encode()
                         await send({'type':'http.response.start','status':504,'headers':[(b'content-type',b'application/json'),(b'content-length',str(len(body)).encode())]})
                         response_started.set()
                         await send({'type':'http.response.body','body':body,'more_body':False})
@@ -876,6 +877,126 @@ def create_app(config_path:str|Path):
         cfg['idle_seconds']=SESSION_AFFINITY_IDLE_SECONDS
         cfg['protocol_idle_seconds']=PROTOCOL_AFFINITY_IDLE_SECONDS
         return cfg
+    # ------------------------------------------------------------------
+    # SETUP 配置中心：统一读取“当前值”与“写入 + 热生效”。
+    # 当前值优先级：setup.conf → 系统环境变量 → 代码默认值。写入时总是
+    # 持久化到 setup.conf 并同时写 os.environ；支持热生效的项再原地更新
+    # 内存变量/StateStore，无需重启即可立刻生效。
+    # ------------------------------------------------------------------
+    _RUNTIME={}
+    for _it in settings_registry.ITEMS:
+        _opt=read_setup().get(_it['key'])
+        if _opt is not None: _val=_opt
+        else:
+            _env=os.getenv(_it['key'])
+            _val=_env if _env is not None else _it['default']
+        _RUNTIME[_it['key']]=_val
+    def _apply_hot(key,val):
+        global QUEUE_TPM_SECONDS,QUEUE_RPM_SECONDS,SESSION_AFFINITY_IDLE_SECONDS,PROTOCOL_AFFINITY_IDLE_SECONDS
+        global UPSTREAM_RESPONSE_TIMEOUT,UPSTREAM_FIRST_CHUNK_TIMEOUT,UPSTREAM_FIRST_ACTIVITY_TIMEOUT
+        global HEDGE_DELAYS,LARGE_CONTEXT_THRESHOLD_TOKENS,LARGE_CONTEXT_HEDGE_DELAYS,LARGE_CONTEXT_DEADLINES
+        it=settings_registry.item_for(key)
+        if not (it and it.get('hot',False)): return
+        i=int(val); b=(val=='1')
+        if key=='FLEX_DEBUG': state.debug_enabled=b
+        elif key=='FLEX_DEBUG_MAX_ROWS': state.debug_max_rows=i
+        elif key=='FLEX_DEBUG_RETENTION_DAYS': state.debug_retention_days=i
+        elif key=='FLEX_DUPLICATE_OBSERVER': state.duplicate_observer_enabled=b
+        elif key=='FLEX_FULL_REQUEST_CAPTURE' or key.startswith('FLEX_FULL_REQUEST_CAPTURE_'):
+            state.configure_full_request_capture(
+                enabled=_RUNTIME['FLEX_FULL_REQUEST_CAPTURE']=='1',
+                hours=int(_RUNTIME.get('FLEX_FULL_REQUEST_CAPTURE_HOURS') or 3),
+                max_rows=int(_RUNTIME.get('FLEX_FULL_REQUEST_CAPTURE_MAX_ROWS') or 300),
+                max_bytes=int(_RUNTIME.get('FLEX_FULL_REQUEST_CAPTURE_MAX_MIB') or 256)*1024*1024)
+        elif key=='FLEX_QUEUE_TPM': QUEUE_TPM_SECONDS=i
+        elif key=='FLEX_QUEUE_RPM': QUEUE_RPM_SECONDS=i
+        elif key=='FLEX_SESSION_AFFINITY_IDLE_SECONDS': SESSION_AFFINITY_IDLE_SECONDS=i
+        elif key=='FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS': PROTOCOL_AFFINITY_IDLE_SECONDS=i
+        elif key=='FLEX_UPSTREAM_RESPONSE_TIMEOUT': UPSTREAM_RESPONSE_TIMEOUT=i
+        elif key=='FLEX_UPSTREAM_FIRST_CHUNK_TIMEOUT': UPSTREAM_FIRST_CHUNK_TIMEOUT=i
+        elif key=='FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT': UPSTREAM_FIRST_ACTIVITY_TIMEOUT=i
+        elif key=='FLEX_HEDGE_FIRST_SECONDS': HEDGE_DELAYS=(i,HEDGE_DELAYS[1])
+        elif key=='FLEX_HEDGE_SECOND_SECONDS': HEDGE_DELAYS=(HEDGE_DELAYS[0],i)
+        elif key=='FLEX_LARGE_CONTEXT_THRESHOLD_TOKENS': LARGE_CONTEXT_THRESHOLD_TOKENS=i
+        elif key=='FLEX_LARGE_CONTEXT_HEDGE_FIRST_SECONDS': LARGE_CONTEXT_HEDGE_DELAYS=(i,LARGE_CONTEXT_HEDGE_DELAYS[1])
+        elif key=='FLEX_LARGE_CONTEXT_HEDGE_SECOND_SECONDS': LARGE_CONTEXT_HEDGE_DELAYS=(LARGE_CONTEXT_HEDGE_DELAYS[0],i)
+        elif key=='FLEX_LARGE_CONTEXT_DEADLINE_ONE_SECONDS': LARGE_CONTEXT_DEADLINES['one_channel']=i
+        elif key=='FLEX_LARGE_CONTEXT_DEADLINE_TWO_SECONDS': LARGE_CONTEXT_DEADLINES['two_channels']=i
+        elif key=='FLEX_LARGE_CONTEXT_DEADLINE_THREE_SECONDS': LARGE_CONTEXT_DEADLINES['three_or_more_channels']=i
+        elif key in ('FLEX_PROBE_INTERVAL','FLEX_PROBE_COOLDOWN'):
+            pass  # 调用处即时读 os.environ，上面已写入环境变量即热生效
+        elif key=='FLEX_OVERRIDE':
+            from dotenv import load_dotenv
+            env_file=config_path_resolved.parent.parent/'.env'
+            load_dotenv(env_file,override=b)
+    def set_config_value(key,raw):
+        it=settings_registry.item_for(key)
+        if it is None: return None,'未知配置项'
+        try:
+            if it['type']=='bool':
+                val='1' if str(raw).lower() in ('1','true','yes','on','t') else '0'
+            else:
+                v=int(str(raw))
+                if it.get('min') is not None: v=max(v,it['min'])
+                if it.get('max') is not None: v=min(v,it['max'])
+                val=str(v)
+        except (ValueError,TypeError):
+            return None,'值必须是数字'
+        conf=read_setup(); conf[key]=val; write_setup(conf)
+        os.environ[key]=val
+        _RUNTIME[key]=val
+        _apply_hot(key,val)
+        return val,None
+    def _config_source(key):
+        if key in read_setup(): return 'setup.conf'
+        if os.getenv(key) is not None: return '环境变量'
+        return '默认值'
+    @app.get('/api/config')
+    async def config_tree():
+        cats=[]
+        for cat in settings_registry.CATEGORIES:
+            items=[]
+            for item in settings_registry.ITEMS:
+                if item['cat']!=cat['id']: continue
+                val=_RUNTIME.get(item['key'],item['default'])
+                items.append({'key':item['key'],'label':item['label'],'desc':item['desc'],
+                              'type':item['type'],'min':item.get('min'),'max':item.get('max'),
+                              'unit':item.get('unit',''),'hot':bool(item.get('hot',False)),
+                              'value':val,'source':_config_source(item['key'])})
+            if items: cats.append({'id':cat['id'],'label':cat['label'],'desc':cat['desc'],'items':items})
+        # 只读：各 Channel 的 API Base / API Key 来源（存于 .env，不在 setup.conf）。
+        env_path=config_path_resolved.parent.parent/'.env'
+        env_vars=set()
+        if env_path.exists():
+            for line in env_path.read_text(encoding='utf-8').splitlines():
+                line=line.strip()
+                if not line or line.startswith('#') or '=' not in line: continue
+                env_vars.add(line.split('=',1)[0].strip())
+        override_state=os.getenv('FLEX_OVERRIDE','1')=='1'
+        seen=set(); channels=[]
+        for prov in config.providers.values():
+            for key in (prov.base_url_env,prov.api_key_env):
+                if key in seen: continue
+                seen.add(key)
+                in_sys=key in os.environ; in_env=key in env_vars
+                if in_sys and in_env: src='.env (override)' if override_state else '系统环境变量 (.env 被忽略)'
+                elif in_sys: src='系统环境变量'
+                elif in_env: src='.env'
+                else: src='缺失'
+                channels.append({'key':key,'in_env':in_env,'in_sys':in_sys,'source':src})
+        return {'categories':cats,'channels':channels}
+    @app.post('/api/config/item/{key}')
+    async def config_item_set(key:str, request:Request):
+        try: payload=await request.json()
+        except Exception: payload={}
+        raw=payload.get('value')
+        val,err=set_config_value(key,raw)
+        if err: raise HTTPException(status_code=400,detail=err)
+        it=settings_registry.item_for(key)
+        return {'ok':True,'key':key,'value':val,'hot':bool(it.get('hot',False)),
+                'source':_config_source(key),
+                'note':'已保存并热生效' if it.get('hot') else '已保存，需重启核心 Router(:7800) 后生效'}
+
     def render(name,title,extra_css='',**vars):
         page=(templates_dir/name).read_text(encoding='utf-8')
         for k,v in vars.items():page=page.replace('{{ '+k+' }}',str(v))
@@ -1843,6 +1964,10 @@ def create_app(config_path:str|Path):
     async def protocol_error_statistics(period:str='day'):
         if period not in ('day','week','month'):raise HTTPException(400,'invalid statistics query')
         return state.protocol_error_statistics(period)
+    @app.get('/api/statistics/anomalies')
+    async def anomaly_statistics(hours:int=24, hang_seconds:int=120):
+        """最近 hours 小时的异常事件数量（失败/取消 + 疑似挂住）。"""
+        return state.anomaly_summary(max(1,min(hours,168)),max(30,hang_seconds))
     @app.post('/api/runners/{name}/channels/{channel_id}/reset')
     @app.post('/api/pools/{name}/channels/{channel_id}/reset')
     async def reset_channel(name:str,channel_id:str,scope:str='all'):
@@ -2095,6 +2220,7 @@ def create_app(config_path:str|Path):
                 meant upstream output was not observed during that gap.
                 """
                 iterator=BufferedUpstreamStream(resp)
+                state.debug_log(rid,'router_hedge',pool=key,model=name,body=f'PREFETCH_FIRST_SSE start ch={target.id} att={str(attempt_id)[-8:]} waiting<={UPSTREAM_FIRST_CHUNK_TIMEOUT}s')
                 state.trace_event(rid,'upstream_first_sse_wait_started',target.id,detail=f'Router buffering raw SSE events before downstream streaming; waiting up to {UPSTREAM_FIRST_CHUNK_TIMEOUT}s for first event')
                 first=await await_bounded(anext(iterator),UPSTREAM_FIRST_CHUNK_TIMEOUT)
                 state.trace_event(rid,'upstream_first_sse',target.id,detail=f'First SSE event received within {UPSTREAM_FIRST_CHUNK_TIMEOUT}s (buffered before downstream dispatch)')
@@ -2166,7 +2292,13 @@ def create_app(config_path:str|Path):
                     if attempt not in seen:
                         state.finish(attempt,'failure','upstream_total_timeout',now_ms,error_detail=detail,error_code=504)
                     state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=now_ms)
+                    state.debug_log(rid,'router_deadline',pool=key,model=name,body=f'PRE-RESPONSE HARD STOP at {now_ms/1000:.1f}s active={len(active)}: {detail}')
                     cancel_detached(active)
+                    # 硬停即终局：立即从核心看门狗注销，避免已结束请求继续触发
+                    # 后续 Hedge 阶段（如 agnes 在硬停后仍被拉起）、重复产生事件。
+                    watch_record['on_hedge']=None
+                    watch_record['on_deadline']=None
+                    app.state.first_activity_watch.pop(rid,None)
                 watch_record['on_hedge']=watchdog_start_hedge
                 watch_record['on_deadline']=watchdog_cancel_deadline
                 async def watch_disconnect():
@@ -2196,6 +2328,9 @@ def create_app(config_path:str|Path):
                         # state transition.
                         timeout=min(hedge_wait,remaining,1.0)
                         done,_=await asyncio.wait(set(active)|{disconnect_task,watchdog_task,deadline_task,completion_task},timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
+                        # 问题1诊断：记录本轮 pre-response 循环的等待/完成状态，
+                        # 用于定位“已完成 task 未被消费”的卡点。
+                        state.debug_log(rid,'router_wait',pool=key,model=name,body=f'L el={elapsed:.1f}s tmo={timeout:.2f} act={len(active)} wDone={len(done)} aDone={len([t for t in active if t.done()])} ch=[{",".join(tgt.id for _,_,_,tgt in active.values())}]')
                         # A provider task can complete in the same event-loop
                         # turn as a watchdog/control task. Keep that concrete
                         # result so an RPM/TPM exception is harvested before a
@@ -2216,6 +2351,7 @@ def create_app(config_path:str|Path):
                         if watchdog_task in control_done and not completed:
                             signal=watchdog_task.result()
                             watchdog_task=asyncio.create_task(watchdog_signals.get())
+                            state.debug_log(rid,'router_hedge',pool=key,model=name,body=f'SIG {signal} inH={initial_hedges_started} plan={len(hedge_plan)} aDone={len(completed)}')
                             if signal=='deadline':
                                 for task,(attempt_id,attempt_started,label,target) in active.items():
                                     if attempt_id!=attempt:
@@ -2267,6 +2403,7 @@ def create_app(config_path:str|Path):
                         for task in list(done):
                             if task is disconnect_task: continue
                             attempt_id,attempt_started,label,target=active.pop(task)
+                            state.debug_log(rid,'router_task',pool=key,model=name,body=f'POP {label} ch={target.id} att={str(attempt_id)[-8:]} at={elapsed:.1f}s done_tasks={len(list(done))}')
                             try:
                                 value=task.result()
                             except asyncio.CancelledError:
@@ -2285,7 +2422,7 @@ def create_app(config_path:str|Path):
                                 # other attempts continue in parallel.
                                 elapsed_ms=int((time.monotonic()-attempt_started)*1000)
                                 last_error=hedge_error; last_attempt_id=attempt_id; last_attempt_started=attempt_started; last_target=target
-                                state.finish(attempt_id,'failure','upstream_response_timeout',elapsed_ms,error_detail='Provider response-object timeout; detached LiteLLM task',error_code=504)
+                                state.debug_log(rid,'router_task',pool=key,model=name,body=f'TIMEOUT {label} ch={target.id} {elapsed_ms}ms')
                                 if affinity.get('enabled'):
                                     state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                                 state.trace_event(rid,'pre_response_timeout',target.id,504,detail=f'{label} exceeded the {UPSTREAM_RESPONSE_TIMEOUT}s response-object bound')
@@ -2298,6 +2435,7 @@ def create_app(config_path:str|Path):
                                 raise hedge_error
                             except Exception as hedge_error:
                                 last_error=hedge_error; last_attempt_id=attempt_id; last_attempt_started=attempt_started; last_target=target
+                                state.debug_log(rid,'router_task',pool=key,model=name,body=f'ERR {label} ch={target.id} type={type(hedge_error).__name__}')
                                 if affinity.get('enabled'):
                                     state.forget_affinity(key,body['messages'],target.id,affinity.get('minimum_messages',2))
                                 if label=='original':
@@ -2314,6 +2452,7 @@ def create_app(config_path:str|Path):
                                 state.finish(other_id,'cancelled','hedge_cancelled',int((time.monotonic()-other_started)*1000),error_detail=f'{label} returned first')
                                 state.trace_event(rid,'pre_response_hedge_cancelled',other_target.id,detail=f'{other_label} cancelled because {label} returned first')
                             if active: cancel_detached(active)
+                            state.debug_log(rid,'router_hedge',pool=key,model=name,body=f'WON {label} ch={target.id} -> handoff at {elapsed:.1f}s att={str(attempt_id)[-8:]}')
                             if label!='original': state.trace_event(rid,'pre_response_hedge_won',target.id,detail=f'{label} returned the first upstream response object')
                             # Response-object arbitration is over.  There is a
                             # small but real gap before ASGI enters the
@@ -2358,6 +2497,7 @@ def create_app(config_path:str|Path):
                                 if prefetched is not None:
                                     cancel_detached({prefetched})
                                 state.trace_finish(rid,'failed',target.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                                state.debug_log(rid,'router_deadline',pool=key,model=name,body=f'STREAM HARD STOP ch={target.id} at {int((time.monotonic()-req_started))}s: {detail}')
                                 close=getattr(selected_response,'aclose',None) or getattr(selected_response,'close',None)
                                 if callable(close):
                                     try:
@@ -2366,11 +2506,16 @@ def create_app(config_path:str|Path):
                                             cleanup=asyncio.create_task(result)
                                             cleanup.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
                                     except Exception: pass
+                                # 硬停即终局：注销看门狗，避免已结束请求继续触发后续 Hedge。
+                                watch_record['on_hedge']=None
+                                watch_record['on_deadline']=None
+                                app.state.first_activity_watch.pop(rid,None)
                             watch_record['deadline_forced']=False
                             watch_record['on_deadline']=stream_deadline_hard_stop
-                            first_sse_task=asyncio.create_task(prefetch_first_sse(value,attempt_id,attempt_started,label,target))
-                            watch_record['prefetched_first_sse']=first_sse_task
-                            state.trace_event(rid,'watchdog_handoff',target.id,detail='Response object selected; Router began raw SSE buffering before downstream streaming phase')
+                            if stream:
+                                first_sse_task=asyncio.create_task(prefetch_first_sse(value,attempt_id,attempt_started,label,target))
+                                watch_record['prefetched_first_sse']=first_sse_task
+                                state.trace_event(rid,'watchdog_handoff',target.id,detail='Response object selected; Router began raw SSE buffering before downstream streaming phase')
                             return value,attempt_id,attempt_started,target
                     # Every pre-response attempt ended in an error.  Preserve
                     # the final attempt's identity for trace/error handling and
@@ -2402,10 +2547,11 @@ def create_app(config_path:str|Path):
                 state.finish(attempt,'cancelled','client_disconnected',elapsed,error_detail=detail)
                 state.trace_finish(rid,'cancelled',ch.id,499,'client_disconnected',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                 logger.info('req=%s channel=%s client disconnected before upstream response',name,ch.id)
-                return JSONResponse(status_code=499,content={'detail':'client disconnected'})
+                return JSONResponse(status_code=499,content={'error':{'message':'client disconnected before upstream response','type':'client_disconnected','param':None,'code':None}})
             except UpstreamTotalTimeout:
                 stop_first_activity_watch()
                 elapsed=int((time.monotonic()-started)*1000)
+                state.debug_log(rid,'router_deadline',pool=key,model=name,body=f'HANDLER UpstreamTotalTimeout at {elapsed/1000:.1f}s forced={deadline_forced["value"]}')
                 detail=f'No upstream response before Router {first_activity_deadline//60}-minute safety deadline; cancelled all pending attempts.'
                 if affinity.get('enabled'):
                     state.forget_affinity(key,body['messages'],ch.id,affinity.get('minimum_messages',2))
@@ -2416,7 +2562,7 @@ def create_app(config_path:str|Path):
                     state.trace_event(rid,'upstream_total_timeout',ch.id,504,detail)
                     state.finish(attempt,'failure','upstream_total_timeout',elapsed,error_detail=detail,error_code=504)
                     state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
-                return JSONResponse(status_code=504,content={'detail':detail})
+                return JSONResponse(status_code=504,content={'error':{'message':detail,'type':'server_error','param':None,'code':'upstream_total_timeout'}})
             except Exception as e:
                 stop_first_activity_watch()
                 typ=error_type(e); detail=error_detail(e); last=typ

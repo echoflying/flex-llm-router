@@ -413,6 +413,15 @@ class StateStore:
             total=self.db.execute(f"SELECT {fields} FROM request_outcomes WHERE started>=?",(since,)).fetchone()
             return {'rows':[dict(r) for r in rows],**{key:(total[key] or 0) for key in ('total','first_success','retry_success','failed','cross_total','cross_success','cross_failed')}}
 
+    def anomaly_summary(self, hours=24, hang_seconds=120):
+        """最近 hours 小时发现的异常事件：失败/取消调用数 + 疑似挂住（running 超时）数。
+        供调用统计页面的异常卡片与监控脚本使用。"""
+        now=time.time()
+        with self.lock:
+            failed=self.db.execute("SELECT COUNT(*) FROM request_traces WHERE status IN ('failed','cancelled') AND updated>=?",(now-hours*3600,)).fetchone()[0]
+            hangs=self.db.execute("SELECT COUNT(*) FROM request_traces WHERE status='running' AND started<?",(now-hang_seconds,)).fetchone()[0]
+            return {'hours':int(hours),'hang_seconds':int(hang_seconds),'failed':int(failed),'hangs':int(hangs),'total':int(failed+hangs)}
+
     def response_time_statistics(self,period='day',group_by='channel'):
         """Summarize end-to-end response times for completed requests.
 

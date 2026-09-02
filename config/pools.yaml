@@ -15,6 +15,9 @@ providers:
   AntDigital:
     base_url_env: ANTDIGITAL_API_BASE
     api_key_env: ANTDIGITAL_API_KEY
+  VOLCENGIN:
+    base_url_env: VOLCENGINE_API_BASE
+    api_key_env: VOLCENGINE_API_KEY
 channels:
   sensenova-deepseek-v4-flash:
     id: sensenova-deepseek-v4-flash
@@ -505,6 +508,36 @@ channels:
     chn_content_policy_fallback: false
     externally_exposed: true
     enabled: true
+  volcengine-doubao-seed-2.0-lite:
+    id: volcengine-doubao-seed-2.0-lite
+    provider: VOLCENGIN
+    externally_exposed: true
+    public_model: doubao-seed-2.0-lite
+    litellm_model: openai/doubao-seed-2.0-lite
+    context_window_tokens: 262144
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - reasoning
+    provider_type: openai_compatible
+    limits:
+      rpm: null
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 2
+      backoff:
+        base_seconds: 5
+        max_seconds: 60
+        exponential: true
 protocol_error_rules:
 - id: reasoning_content_required
   http_status: 400
@@ -633,6 +666,22 @@ runners:
     - AntDigital-qwen3-7-plus
     tiers:
       AntDigital-qwen3-7-plus: 0
+    selection:
+      strategy: round_robin
+  sensenova-flash-lite:
+    public_model: sensenova-flash-lite
+    channels:
+    - sensenova-flash-lite
+    tiers:
+      sensenova-flash-lite: 0
+    selection:
+      strategy: round_robin
+  doubao-seed-2.0-lite:
+    public_model: doubao-seed-2.0-lite
+    channels:
+    - volcengine-doubao-seed-2.0-lite
+    tiers:
+      volcengine-doubao-seed-2.0-lite: 0
     selection:
       strategy: round_robin
 links:

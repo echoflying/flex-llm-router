@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-09-02.stream-handoff-buffer-v4'
+ROUTER_BUILD='2026-09-02.graceful-restart-drain-v5'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -95,11 +95,14 @@ async def await_upstream_or_disconnect(request: Request, upstream):
         await asyncio.gather(disconnect_task,return_exceptions=True)
 class DisconnectAwareStreamingResponse(StreamingResponse):
     """Listen for http.disconnect after LiteLLM has returned the stream response."""
-    def __init__(self,*args,on_disconnect=None,timeout_event=None,timeout_detail=None,**kwargs):
+    def __init__(self,*args,on_disconnect=None,timeout_event=None,timeout_detail=None,
+                 restart_event=None,on_finished=None,**kwargs):
         super().__init__(*args,**kwargs)
         self.on_disconnect=on_disconnect
         self.timeout_event=timeout_event
         self.timeout_detail=timeout_detail or 'Upstream stream timed out before producing usable activity.'
+        self.restart_event=restart_event
+        self.on_finished=on_finished
     async def __call__(self,scope,receive,send):
         if scope['type']=='websocket':
             return await super().__call__(scope,receive,send)
@@ -109,7 +112,7 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
         # with a dedicated timeout sender so the caller always receives either
         # an HTTP 504 (headers not sent yet) or a terminal SSE error (stream
         # headers already sent).
-        if self.timeout_event is None:
+        if self.timeout_event is None and self.restart_event is None:
             async with anyio.create_task_group() as group:
                 async def stream():
                     await self.stream_response(send)
@@ -121,6 +124,7 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                 group.start_soon(stream)
                 group.start_soon(watch_disconnect)
             if self.background is not None:await self.background()
+            if self.on_finished:self.on_finished()
             return
         # Keep response headers buffered until the first body event is ready.
         # This lets a pre-first-SSE watchdog return a real HTTP 504 instead of
@@ -154,7 +158,9 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                         # its first body chunk.  Still release it on an empty
                         # but normally completed stream so the client receives
                         # a valid response rather than an unclosed task.
-                        if not holder.get('timeout_in_progress') and not self.timeout_event.is_set():
+                        if (not holder.get('timeout_in_progress')
+                                and not (self.timeout_event and self.timeout_event.is_set())
+                                and not (self.restart_event and self.restart_event.is_set())):
                             async with send_lock:
                                 await flush_start()
                         # When the timeout watcher cancelled this stream, it
@@ -168,6 +174,8 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                 if self.on_disconnect:self.on_disconnect()
                 group.cancel_scope.cancel()
             async def watch_timeout():
+                if self.timeout_event is None:
+                    return
                 await self.timeout_event.wait()
                 if stream_done.is_set(): return
                 holder['timeout_in_progress']=True
@@ -183,10 +191,31 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                         response_started.set()
                         await send({'type':'http.response.body','body':body,'more_body':False})
                 group.cancel_scope.cancel()
+            async def watch_restart():
+                if self.restart_event is None:
+                    return
+                await self.restart_event.wait()
+                if stream_done.is_set(): return
+                holder['timeout_in_progress']=True
+                scope=holder.get('scope')
+                if scope is not None: scope.cancel()
+                detail='Router is restarting; this in-flight request was closed. Please retry.'
+                async with send_lock:
+                    if response_started.is_set():
+                        body=json.dumps({'error':{'type':'router_restarting','detail':detail}},ensure_ascii=False).encode()
+                        await send({'type':'http.response.body','body':b'data: '+body+b'\n\n','more_body':False})
+                    else:
+                        body=json.dumps({'detail':detail},ensure_ascii=False).encode()
+                        await send({'type':'http.response.start','status':503,'headers':[(b'content-type',b'application/json'),(b'content-length',str(len(body)).encode())]})
+                        response_started.set()
+                        await send({'type':'http.response.body','body':body,'more_body':False})
+                group.cancel_scope.cancel()
             group.start_soon(stream)
             group.start_soon(watch_disconnect)
             group.start_soon(watch_timeout)
+            group.start_soon(watch_restart)
         if self.background is not None:await self.background()
+        if self.on_finished:self.on_finished()
 def data(r,model):
     d=r.model_dump(mode='json') if hasattr(r,'model_dump') else dict(r)
     # 推理模型(reasoning_content)原样透传: 不把思考内容塞进 content,
@@ -816,7 +845,7 @@ def create_app(config_path:str|Path):
     if override_path.exists():
         try: override_on=bool(int(read_setup().get('FLEX_OVERRIDE','1')))
         except: override_on=True
-    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.capability_probe_tasks=set(); app.state.capability_probe_channels=set(); app.state.config_write_lock=asyncio.Lock(); app.state.first_activity_watch={}; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD
+    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.capability_probe_tasks=set(); app.state.capability_probe_channels=set(); app.state.config_write_lock=asyncio.Lock(); app.state.first_activity_watch={}; app.state.active_restart_signals={}; app.state.restart_draining=False; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD
     # DEBUG 日志开关: setup.conf 的 FLEX_DEBUG 优先, 缺省看环境变量, 默认关
     state.debug_enabled = read_setup().get('FLEX_DEBUG', os.getenv('FLEX_DEBUG','0'))=='1'
     capture_setup=read_setup()
@@ -1850,16 +1879,27 @@ def create_app(config_path:str|Path):
         return {'channel':ch.id,'outcome':'success','latency_ms':latency}
     @app.post('/api/admin/restart')
     async def restart():
+        if app.state.restart_draining:
+            return {'status':'restarting','drain_seconds':3,'active_requests':len(app.state.active_restart_signals)}
+        app.state.restart_draining=True
+        active=list(app.state.active_restart_signals.items())
+        for trace_id,signal in active:
+            state.trace_event(trace_id,'router_restart_requested',http_status=503,detail='Core restart requested; sending terminal router_restarting error before restart.')
+            signal.set()
         target=f"gui/{os.getuid()}/{os.getenv('FLEX_LAUNCHD_LABEL','com.weifeng.flex-llm-router')}"
         async def later():
-            await asyncio.sleep(.25)
+            # Give active SSE connections a bounded chance to receive their
+            # terminal error.  New requests are rejected while draining.
+            await asyncio.sleep(3)
             result=subprocess.run(['/bin/launchctl','kickstart','-k',target],capture_output=True,text=True)
             if result.returncode:logger.error('launchd restart failed: %s',result.stderr.strip())
             else:logger.warning('launchd restart requested: %s',target)
         asyncio.create_task(later())
-        return {'status':'restarting'}
+        return {'status':'restarting','drain_seconds':3,'active_requests':len(active)}
     @app.post('/v1/chat/completions')
     async def chat(request:Request):
+        if app.state.restart_draining:
+            raise HTTPException(503,{'error':{'type':'router_restarting','detail':'Router is restarting; retry this request shortly.'}})
         body=await request.json(); name=body.pop('model',None); stream=bool(body.pop('stream',False)); internal,pool,direct=pool_for(name)
         rid='r-'+uuid.uuid4().hex
         req_started=time.monotonic()  # 请求起点(排队等待计时用, 早于通道选择)
@@ -1869,6 +1909,15 @@ def create_app(config_path:str|Path):
         caller=client_label(request.headers)
         fingerprint=state.request_fingerprint(name,body)
         state.trace_begin(rid,name,internal or name,preview,context_summary,stream,caller,request_fingerprint=fingerprint)
+        restart_event=asyncio.Event()
+        # Streaming calls remain open after the handler returns.  They are
+        # the in-flight responses that need an explicit terminal SSE error
+        # during a drain; ordinary JSON calls have not committed a response
+        # and launchd will close them within the same bounded restart window.
+        if stream:
+            app.state.active_restart_signals[rid]=restart_event
+        def unregister_restart_signal():
+            app.state.active_restart_signals.pop(rid,None)
         state.capture_full_request(rid,caller,name,internal or name,{'model':name,'stream':stream,**body})
         runner_scope=internal or name
         # Replay keys carry the Runner identity as well as the public model,
@@ -3012,7 +3061,7 @@ def create_app(config_path:str|Path):
                         stream_idle_guard_task.cancel()
                     if 'watchdog_task' in locals() and not watchdog_task.done():
                         watchdog_task.cancel()
-            return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
+            return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,restart_event=restart_event,on_finished=unregister_restart_signal,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
     async def _first_activity_watchdog():
         """Core-owned watchdog for requests that have not received upstream activity.
 

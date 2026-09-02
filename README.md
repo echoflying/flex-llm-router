@@ -79,4 +79,5 @@ API 与 watchdog，7801 是独立 UI，UI 重启不会替代核心 watchdog。
 - `GET /healthz`：版本、构建特性、Hedge 截止和 watchdog 状态；
 - `GET /api/runners`、`GET /api/providers`、`GET /api/config/editor`：管理数据；
 - `GET /api/traces`、`GET /api/statistics/*`：诊断与统计；
-- `POST /api/admin/restart`：macOS launchd 核心重启入口。
+- `POST /api/admin/restart`：macOS launchd 核心重启入口。重启先进入排空状态：新请求立即收到
+  `503 router_restarting`；已建立的流式请求收到终止 SSE 错误，再等待 3 秒重启核心。

@@ -110,6 +110,14 @@ reasoning 帧、工具调用帧都会原样保留；满队列只会反压上游�
 把两个模型的半段回答拼接；Trace 会记录 `content_policy_blocked` 与回退原因。常规
 Debug 日志只保留抽样帧，不能作为“全部上游正文永久留存”的证据。
 
+## 8. 核心受控重启
+
+核心重启不是立即杀进程。`POST /api/admin/restart` 先进入 **排空**：新到的请求立即
+返回 `503 router_restarting`；已建立的流式连接会收到终止 SSE，错误类型同为
+`router_restarting`。Router 随后等待 3 秒，让已发送的终止消息越过本机 socket，才交给
+launchd 重启核心。此机制只保证 Router 已尝试写入明确的终止结果；若客户端本身已经
+断开，不能保证它实际收到。
+
 HTTP disconnect 是标准 OpenAI 协议下可靠的取消信号：首活动前记录
 `client_disconnected_before_first_token`，流式期间记录 `client_disconnected`/
 `cancelled`，并取消全部 Hedge。核心会在首个有效 SSE 到达前暂存流式响应头，硬截止

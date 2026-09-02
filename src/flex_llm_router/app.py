@@ -497,7 +497,18 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
             # Streaming probes only need the first SSE event.  Non-streaming
             # responses are bounded to avoid retaining an unexpectedly large
             # provider error or completion.
-            raw = response.read(8192 if kind == 'streaming' else 65536).decode('utf-8', 'replace')
+            if kind == 'streaming':
+                chunks = []
+                for _ in range(8):
+                    line = response.readline(8192)
+                    if not line:
+                        break
+                    chunks.append(line)
+                    if b'data:' in line or b'[DONE]' in line.upper():
+                        break
+                raw = b''.join(chunks).decode('utf-8', 'replace')
+            else:
+                raw = response.read(65536).decode('utf-8', 'replace')
     except urllib.error.HTTPError as exc:
         status_code = exc.code
         raw = exc.read(4096).decode('utf-8', 'replace')

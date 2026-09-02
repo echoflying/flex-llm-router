@@ -118,6 +118,10 @@ Trace 留在 `running`。
 
 ## 8. 追踪与验证
 
+重复在途请求的观察和短时非流式结果回放均以 **Runner** 为边界：只有同一客户端、
+同一 Runner、同一外部模型名和完全相同的请求指纹才可匹配。不同 Runner 即使请求
+内容相同也绝不互相观察或复用结果。
+
 每次尝试都会记录 `upstream_task_started`、`upstream_response_received`、
 `upstream_first_sse`、`upstream_error_received`、等待、冷却、切换、取消和最终结果。
 RPM/TPM、协议、政策、Hedge 和下游断开都必须在 Trace 中可区分。不做与请求无关的

@@ -1488,7 +1488,7 @@ def create_app(config_path:str|Path):
         capture_cls='ok' if capture['enabled'] else 'bad'; capture_txt='ON' if capture['enabled'] else 'OFF'; capture_btn='off' if capture['enabled'] else 'on'
         duplicate=state.duplicate_observer_enabled
         duplicate_cls='ok' if duplicate else 'bad'; duplicate_txt='ON' if duplicate else 'OFF'; duplicate_btn='off' if duplicate else 'on'
-        duplicate_note='只观察并记录同一客户端短时间内的完全相同在途请求；不会取消、合并或延迟调用。' if duplicate else '默认关闭。开启后只记录候选重复请求，绝不改变路由行为。'
+        duplicate_note='只观察并记录同一 Runner、同一客户端短时间内的完全相同在途请求；不会取消、合并或延迟调用。' if duplicate else '默认关闭。开启后只记录同一 Runner 内的候选重复请求，绝不改变路由行为。'
         rows=[]
         for k in sorted(needed):
             in_env=k in env_vars
@@ -1870,8 +1870,12 @@ def create_app(config_path:str|Path):
         fingerprint=state.request_fingerprint(name,body)
         state.trace_begin(rid,name,internal or name,preview,context_summary,stream,caller,request_fingerprint=fingerprint)
         state.capture_full_request(rid,caller,name,internal or name,{'model':name,'stream':stream,**body})
+        runner_scope=internal or name
+        # Replay keys carry the Runner identity as well as the public model,
+        # so identical payloads sent to distinct Runners never share a result.
+        replay_scope=f'{runner_scope}\0{name}'
         if state.duplicate_observer_enabled:
-            duplicates=state.observe_inflight_duplicates(rid,caller,name,internal or name,fingerprint)
+            duplicates=state.observe_inflight_duplicates(rid,caller,name,runner_scope,fingerprint)
             for duplicate in duplicates:
                 detail=(f"与进行中 Trace {duplicate['trace_id']} 的请求内容完全一致；重叠 "
                         f"{duplicate['overlap_ms']/1000:.1f}s；旧请求" + ('已开始输出。' if duplicate['has_output'] else '尚未输出。'))
@@ -1881,7 +1885,7 @@ def create_app(config_path:str|Path):
         # 在上游已成功后因网络重发而再次占用模型。stream/tool 请求绝不进入该路径。
         replay_allowed=not stream and not body.get('tools') and not body.get('tool_choice')
         if replay_allowed:
-            replay=state.replay_lookup(caller,name,fingerprint)
+            replay=state.replay_lookup(caller,replay_scope,fingerprint)
             if replay:
                 state.trace_event(rid,'replay_hit',replay['channel'],detail=f'完全相同的非流式无工具请求命中 {RESPONSE_REPLAY_SECONDS} 秒结果恢复窗口；复用 {replay["age_seconds"]:.1f} 秒前的成功结果，不调用上游。')
                 state.trace_finish(rid,'success',replay['channel'],200,output_preview=response_preview(replay['payload']),latency_ms=int((time.monotonic()-req_started)*1000))
@@ -2521,7 +2525,7 @@ def create_app(config_path:str|Path):
                     return JSONResponse(status_code=502,content={'error_type':'content_policy_blocked','error_detail':detail,'channel':ch.id})
                 output,total=usage_tokens(response); state.finish(attempt,'success',latency=int((time.monotonic()-started)*1000),output_tokens=output,total_tokens=total); state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity['minimum_messages'],kind=affinity_kind) if affinity.get('enabled') else None; state.observe_success(key,ch.id)
                 if replay_allowed and is_replayable_response(payload):
-                    state.replay_store(caller,name,fingerprint,ch.id,payload)
+                    state.replay_store(caller,replay_scope,fingerprint,ch.id,payload)
                 state.trace_finish(rid,'success',ch.id,200,output_preview=response_preview(payload),latency_ms=int((time.monotonic()-req_started)*1000))
                 state.debug_log(rid,'upstream_in',pool=key,channel=ch.id,model=ch.litellm_model,status=200,body=json.dumps(payload,ensure_ascii=False)[:20000])
                 state.debug_log(rid,'client_out',pool=key,channel=ch.id,model=name,status=200,body=json.dumps(payload,ensure_ascii=False)[:20000])

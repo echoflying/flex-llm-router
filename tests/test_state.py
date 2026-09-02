@@ -41,6 +41,16 @@ def test_rpm_is_observed_but_not_proactively_blocked(tmp_path):
     assert s.eligible('p', 'a', c.limits) == (True, None)
 
 
+def test_inflight_duplicate_observation_is_scoped_to_runner(tmp_path):
+    s = StateStore(tmp_path / 's.db')
+    fingerprint = s.request_fingerprint('shared-public-model', {'messages': [{'role': 'user', 'content': 'same'}]})
+    s.trace_begin('existing', 'shared-public-model', 'runner-a', 'same', 'user 1 条', True,
+                  client_label='client', request_fingerprint=fingerprint)
+    assert s.observe_inflight_duplicates('new-b', 'client', 'shared-public-model', 'runner-b', fingerprint) == []
+    hits = s.observe_inflight_duplicates('new-a', 'client', 'shared-public-model', 'runner-a', fingerprint)
+    assert [item['trace_id'] for item in hits] == ['existing']
+
+
 def test_five_hour_quota_and_reset(tmp_path):
     c = _make_channel('a', limits={'max_requests_per_window': 1})
     s = StateStore(tmp_path / 's.db')

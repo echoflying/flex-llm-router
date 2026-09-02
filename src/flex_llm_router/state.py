@@ -35,7 +35,7 @@ class StateStore:
             # trace_id was added to older databases after the initial table
             # creation; create its index only after the compatibility ALTER.
             self.db.execute('CREATE INDEX IF NOT EXISTS attempts_trace_id ON attempts(trace_id)')
-            self.db.execute('CREATE INDEX IF NOT EXISTS request_traces_duplicate_lookup ON request_traces(status,client_label,requested_model,request_fingerprint,started)')
+            self.db.execute('CREATE INDEX IF NOT EXISTS request_traces_duplicate_lookup ON request_traces(status,pool,client_label,requested_model,request_fingerprint,started)')
             # 短时、精确匹配的非流式结果回放。这里保存的是完整响应（不是 prompt），
             # 因此 TTL 很短且有大小上限；分析表和调用轨迹不会保存这份内容。
             self.db.execute('''CREATE TABLE IF NOT EXISTS response_replays(
@@ -210,8 +210,8 @@ class StateStore:
         now=time.time(); cutoff=now-window_seconds
         with self.lock,self.db:
             matches=self.db.execute('''SELECT trace_id,started,attempt_count FROM request_traces
-                WHERE trace_id!=? AND status='running' AND client_label=? AND requested_model=?
-                  AND request_fingerprint=? AND started>=? ORDER BY started''',(trace_id,client_label,model,fingerprint,cutoff)).fetchall()
+                WHERE trace_id!=? AND status='running' AND pool=? AND client_label=? AND requested_model=?
+                  AND request_fingerprint=? AND started>=? ORDER BY started''',(trace_id,pool,client_label,model,fingerprint,cutoff)).fetchall()
             findings=[]
             for old in matches:
                 has_output=bool(self.db.execute("SELECT 1 FROM trace_events WHERE trace_id=? AND event='first_token' LIMIT 1",(old['trace_id'],)).fetchone())

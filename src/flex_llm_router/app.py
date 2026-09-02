@@ -420,6 +420,141 @@ def classify_responses_probe(http_status: int | None, payload: Any, detail: str 
         'does not exist', 'method not allowed', 'no such endpoint')):
         return 'unsupported'
     return 'error'
+
+def _capability_endpoint(base_url: str) -> str:
+    """Build the OpenAI-compatible Chat Completions endpoint for probes."""
+    base = str(base_url or '').strip().rstrip('/')
+    for suffix in ('/chat/completions', '/responses', '/models'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    return base + '/chat/completions'
+
+def fetch_provider_model_metadata(channel, providers: dict) -> dict[str, Any]:
+    """Fetch only the selected model's public limits from Provider /models."""
+    base, key = channel_credentials(channel, providers)
+    url = str(base).rstrip('/')
+    if not url.endswith('/models'):
+        url += '/models'
+    req = urllib.request.Request(url, headers={
+        'Authorization': f'Bearer {key}', 'Accept': 'application/json',
+        'User-Agent': 'flex-router-capability-probe/1.0',
+    })
+    with urllib.request.urlopen(req, timeout=12) as response:
+        payload = json.loads(response.read(262144).decode('utf-8', 'replace'))
+    raw = payload.get('data', payload) if isinstance(payload, dict) else payload
+    target = channel.litellm_model.rsplit('/', 1)[-1]
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and str(item.get('id', '')) == target:
+                return {key: item.get(key) for key in ('max_input_tokens', 'max_tokens', 'display_name') if item.get(key) is not None}
+    return {}
+
+def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -> tuple[str, int | None, str]:
+    """Run one bounded, tiny protocol probe without LiteLLM parameter dropping.
+
+    LiteLLM's global ``drop_params`` setting is useful for production traffic,
+    but would hide whether an upstream really accepts a parameter.  Probes go
+    directly to the OpenAI-compatible endpoint and only retain a safe bounded
+    summary of the response.
+    """
+    body: dict[str, Any] = {
+        'model': model,
+        'messages': [{'role': 'user', 'content': 'Reply with exactly OK.'}],
+        'max_tokens': 16,
+    }
+    if kind == 'streaming':
+        body['stream'] = True
+    elif kind == 'tools':
+        body.update({
+            'messages': [{'role': 'user', 'content': 'Call the tool now.'}],
+            'tools': [{'type': 'function', 'function': {
+                'name': 'flex_probe_noop', 'description': 'No-op capability probe',
+                'parameters': {'type': 'object', 'properties': {}},
+            }}],
+            'tool_choice': 'required', 'max_tokens': 64,
+        })
+    elif kind == 'json':
+        body.update({
+            'messages': [{'role': 'system', 'content': 'Return valid json.'},
+                         {'role': 'user', 'content': 'Return a json object with ok true.'}],
+            'response_format': {'type': 'json_object'},
+        })
+    elif kind == 'reasoning':
+        body['reasoning_effort'] = 'low'
+    request = urllib.request.Request(
+        _capability_endpoint(base_url),
+        data=json.dumps(body, ensure_ascii=False).encode('utf-8'), method='POST',
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json',
+                 'Accept': 'text/event-stream, application/json',
+                 'User-Agent': 'flex-router-capability-probe/1.0'},
+    )
+    status_code: int | None = None
+    raw = ''
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            status_code = response.status
+            # Streaming probes only need the first SSE event.  Non-streaming
+            # responses are bounded to avoid retaining an unexpectedly large
+            # provider error or completion.
+            raw = response.read(8192 if kind == 'streaming' else 65536).decode('utf-8', 'replace')
+    except urllib.error.HTTPError as exc:
+        status_code = exc.code
+        raw = exc.read(4096).decode('utf-8', 'replace')
+    except Exception as exc:
+        return 'error', None, _probe_detail(exc)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = raw
+    detail = _probe_detail(payload)
+    if status_code is None or not 200 <= status_code < 300:
+        haystack = detail.lower()
+        if status_code in (404, 405, 501) or any(x in haystack for x in ('not supported', 'unsupported', 'not found', 'method not allowed')):
+            return 'unsupported', status_code, detail
+        return 'error', status_code, detail
+    if kind == 'streaming':
+        return ('supported' if 'data:' in raw or '[done]' in raw.lower() else 'error'), status_code, detail
+    choice = (payload.get('choices') or [{}])[0] if isinstance(payload, dict) else {}
+    message = choice.get('message') if isinstance(choice, dict) else {}
+    if not isinstance(message, dict):
+        message = {}
+    if kind == 'tools':
+        return ('supported' if message.get('tool_calls') else 'unknown'), status_code, detail
+    if kind == 'reasoning':
+        usage = payload.get('usage') if isinstance(payload, dict) else {}
+        usage = usage if isinstance(usage, dict) else {}
+        supported = bool(message.get('reasoning_content')) or bool((usage.get('completion_tokens_details') or {}).get('reasoning_tokens'))
+        return ('supported' if supported else 'unknown'), status_code, detail
+    if kind == 'json':
+        content = message.get('content')
+        try:
+            json.loads(content or '')
+            return 'supported', status_code, detail
+        except Exception:
+            return 'unknown', status_code, detail
+    return ('supported' if isinstance(payload, dict) and isinstance(payload.get('choices'), list) else 'error'), status_code, detail
+
+async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict]:
+    """Probe one Channel and return safe observations keyed by capability."""
+    checked_at = int(time.time())
+    try:
+        base, key = channel_credentials(channel, providers)
+    except Exception as exc:
+        detail = _probe_detail(exc)
+        return {kind: {'status': 'error', 'checked_at': checked_at, 'http_status': None,
+                       'latency_ms': 0, 'detail': detail}
+                for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning')}
+    model = channel.litellm_model.rsplit('/', 1)[-1]
+    observations: dict[str, dict] = {}
+    for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning'):
+        started = time.monotonic()
+        status, http_status, detail = await asyncio.to_thread(_capability_probe_sync, base, key, model, kind)
+        observations[kind] = {'status': status, 'checked_at': checked_at,
+                              'http_status': http_status,
+                              'latency_ms': int((time.monotonic() - started) * 1000),
+                              'detail': detail}
+    return observations
 # B类瞬时限流：每次真实 429 后按 2^n 退避，直到本请求的类型上限。
 TPM_BACKOFF_BASE=4
 RPM_BACKOFF_BASE=8
@@ -550,7 +685,7 @@ def create_app(config_path:str|Path):
     if override_path.exists():
         try: override_on=bool(int(read_setup().get('FLEX_OVERRIDE','1')))
         except: override_on=True
-    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.first_activity_watch={}; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD
+    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.capability_probe_tasks=set(); app.state.capability_probe_channels=set(); app.state.config_write_lock=asyncio.Lock(); app.state.first_activity_watch={}; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD
     # DEBUG 日志开关: setup.conf 的 FLEX_DEBUG 优先, 缺省看环境变量, 默认关
     state.debug_enabled = read_setup().get('FLEX_DEBUG', os.getenv('FLEX_DEBUG','0'))=='1'
     capture_setup=read_setup()
@@ -824,6 +959,52 @@ def create_app(config_path:str|Path):
         logger.warning('config saved backup=%s (hot-applied)',backup)
         return backup
 
+    async def run_channel_capability_probe(channel_id: str):
+        """Probe a newly-created Channel and hot-apply safe observations."""
+        channel = config.channels.get(channel_id)
+        if channel is None:
+            return
+        try:
+            observations = await probe_channel_capabilities(channel, config.providers)
+            # A successful /models response is the authoritative source for
+            # input/output limits when the Provider exposes them.
+            metadata = await asyncio.to_thread(fetch_provider_model_metadata, channel, config.providers)
+            async with app.state.config_write_lock:
+                mapping = yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+                channels = mapping.setdefault('channels', {})
+                current = dict(channels.get(channel_id) or {})
+                support = dict(current.get('protocol_support') or {})
+                support.update(observations)
+                current['protocol_support'] = support
+                capabilities = list(current.get('capabilities') or [])
+                for name, result in observations.items():
+                    if result.get('status') == 'supported' and name not in capabilities:
+                        capabilities.append(name)
+                    elif result.get('status') == 'unsupported' and name in capabilities:
+                        capabilities.remove(name)
+                current['capabilities'] = capabilities
+                if metadata.get('max_input_tokens'):
+                    current['context_window_tokens'] = int(metadata['max_input_tokens'])
+                channels[channel_id] = current
+                # Probe persistence is best-effort; a transient failure must
+                # not take down the Router or roll back the Channel creation.
+                persist_config_mapping(mapping)
+            logger.info('channel capability probe complete channel=%s capabilities=%s', channel_id, capabilities)
+        except Exception as exc:
+            logger.warning('channel capability probe failed channel=%s error=%s', channel_id, _probe_detail(exc))
+
+    def schedule_channel_capability_probe(channel_id: str):
+        if channel_id in app.state.capability_probe_channels:
+            return None
+        app.state.capability_probe_channels.add(channel_id)
+        task = asyncio.create_task(run_channel_capability_probe(channel_id))
+        app.state.capability_probe_tasks.add(task)
+        def done(completed):
+            app.state.capability_probe_tasks.discard(completed)
+            app.state.capability_probe_channels.discard(channel_id)
+        task.add_done_callback(done)
+        return task
+
     async def structured_config_error(exc):
         raise HTTPException(400,f'invalid config edit: {exc}') from exc
 
@@ -978,7 +1159,8 @@ def create_app(config_path:str|Path):
         channels[channel_id]=item
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)
-        return {'status':'saved','channel':channel_id,'backup':str(backup)}
+        schedule_channel_capability_probe(channel_id)
+        return {'status':'saved','channel':channel_id,'probe':'scheduled','backup':str(backup)}
 
     @app.post('/api/config/channels-bulk')
     async def create_channels_bulk(request:Request):
@@ -1019,7 +1201,21 @@ def create_app(config_path:str|Path):
         if not created: return {'status':'unchanged','created':[]}
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)
-        return {'status':'saved','created':created,'backup':str(backup)}
+        for channel_id in created:
+            schedule_channel_capability_probe(channel_id)
+        return {'status':'saved','created':created,'probe':'scheduled','backup':str(backup)}
+
+    @app.post('/api/config/channels/{channel_id}/capabilities-test')
+    async def config_channel_capabilities_test(channel_id: str):
+        """Run the complete on-demand capability probe for an existing Channel."""
+        if channel_id not in config.channels:
+            raise HTTPException(404, 'unknown channel')
+        # Keep one probe per Channel at a time; callers can safely refresh the
+        # UI without multiplying upstream test traffic.
+        if channel_id in app.state.capability_probe_channels:
+            return {'channel': channel_id, 'status': 'already_running'}
+        task = schedule_channel_capability_probe(channel_id)
+        return {'channel': channel_id, 'status': 'scheduled' if task is not None else 'already_running'}
 
     @app.post('/api/config/channels/{channel_id}/test')
     async def config_channel_test(channel_id:str):
@@ -1372,7 +1568,11 @@ def create_app(config_path:str|Path):
                 for item in raw:
                     if isinstance(item,str): result.append({'id':item})
                     elif isinstance(item,dict) and item.get('id'):
-                        result.append({'id':str(item['id']),'owned_by':item.get('owned_by')})
+                        # Preserve public model metadata when the Provider
+                        # exposes it; never include credentials or raw payloads.
+                        result.append({key:item.get(key) for key in (
+                            'id','owned_by','display_name','max_input_tokens',
+                            'max_tokens','capabilities') if item.get(key) is not None})
             return {'provider':provider_name,'refreshed':True,'source':'upstream',
                     'available':True,'data':result}
         except Exception as exc:

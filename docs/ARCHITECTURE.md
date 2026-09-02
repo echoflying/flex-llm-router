@@ -49,8 +49,10 @@ Model、别名、启用和 CHN Content Policy Fallback 标记；外部暴露字�
   策略选择确认后立即保存；Runner 名称只允许字母、数字、点、下划线和连字符，
   最多 64 个字符。
 - Channel 按 Provider 分组，管理 Provider/Model、别名、启用状态、CHN Content
-  Policy Fallback 标记、普通自检和 Responses 能力检测。检测只在人工点击时发起，
-  不做周期性主动健康检查。
+  Policy Fallback 标记和能力结果。创建 Channel 后会后台执行一次低成本能力探测；
+  页面也提供“探测能力”和普通自检/Responses 检测按钮。探测结果按
+  `supported`、`unsupported`、`unknown` 或 `error` 保存，不会把一次网络故障误判成
+  永久不支持；仍不做周期性主动健康检查。
 - Model 管理 Provider 及其 `.env` 变量名引用，只显示变量名、存在性和模型候选，
   不显示密钥值。
 
@@ -65,13 +67,15 @@ Model、别名、启用和 CHN Content Policy Fallback 标记；外部暴露字�
 - `/v1/models`、`/v1/chat/completions`：OpenAI 兼容入口；
 - `/api/runners`、`/api/providers`、`/api/config/editor`：管理数据；
 - `/api/traces`、`/api/requests`、`/api/statistics/*`：调用轨迹和统计；
-- `/api/config/channels/{id}/test`、`responses-test`：人工测试和协议能力检测；
+- `/api/config/channels/{id}/test`、`capabilities-test`、`responses-test`：普通自检、
+  完整能力探测和单独 Responses 协议检测；
 - `/healthz`：版本、构建特性、Hedge 截止策略、活跃 watchdog 和启动恢复数量；
 - `/api/admin/restart`：macOS launchd 核心重启入口。
 
 LiteLLM 的返回错误先由 Flex 归类；只有明确登记的协议兼容错误才允许切换到兼容
-Channel，普通参数/鉴权/模型不存在错误不会盲目重试。Responses 能力检测结果持久化
-在 Channel 的 `protocol_support.responses` 中。
+Channel，普通参数/鉴权/模型不存在错误不会盲目重试。能力探测结果持久化在 Channel
+的 `protocol_support` 中；已确认的能力同步到 `capabilities`，其中 `responses`
+保留完整的探测详情。
 
 ## 6. 状态、统计与隐私
 
@@ -87,4 +91,3 @@ Trace 和统计。Trace 默认最近 3 天、最多 1000 条；三小时完整�
 本地 checkout 是唯一编辑源；`scripts/sync_to_mac.ps1` 只同步已提交的代码、文档、
 模板和测试，排除 Mac 运行时 `config/`、`.env`、数据库、日志、虚拟环境、缓存和备份。
 同步脚本的 Mac 用户、主机和目录必须由调用者通过参数或本地环境变量提供，不写入仓库。
-

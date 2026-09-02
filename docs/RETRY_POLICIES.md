@@ -96,8 +96,9 @@ Channel 先按流式、工具、JSON、上下文窗口和启用/冷却状态筛�
 首个有效 SSE 到达后重新初始化 6/3/3 分钟空闲时钟：连续 6 分钟无后续有效 SSE
 启动下一阶段，之后 3 分钟再启动下一阶段，再过 3 分钟硬终止。另有一个从首个
 SSE 开始计算的绝对流式截止（单 Channel 9 分钟，多 Channel 12 分钟），不会因
-隐藏 `reasoning_content`、心跳或元数据帧持续到达而无限延长；这样客户端看不到正文
-时也能最终收到终止信号。SDK 取消清理不能阻塞 watchdog；必要时底层读取任务会被
+隐藏 `reasoning_content`、心跳或元数据帧持续到达而无限延长。这个截止由核心 7800
+的独立 watchdog 持有，首个 SSE 到来后 Trace 仍保留在 watchdog 注册表；即使上游
+SDK 流读取卡死或下游发送阻塞，也会结束 Attempt/Trace 并向调用方发送终止信号。SDK 取消清理不能阻塞 watchdog；必要时底层读取任务会被
 分离回收。
 
 HTTP disconnect 是标准 OpenAI 协议下可靠的取消信号：首活动前记录

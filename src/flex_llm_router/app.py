@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-09-02.stream-idle-absolute-v2'
+ROUTER_BUILD='2026-09-02.core-stream-watchdog-v3'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -1557,7 +1557,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','absolute_post_sse_deadline','trace_finalize_on_stream_watchdog','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','core_stream_watchdog','absolute_post_sse_deadline','trace_finalize_on_stream_watchdog','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -2572,9 +2572,11 @@ def create_app(config_path:str|Path):
                         # partial Channel; final completion refreshes it.
                         state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
                         state.trace_event(rid,'session_affinity_provisional',ch.id,detail='First upstream SSE received; provisional affinity updated before stream completion')
-                    # A protocol event has arrived.  No more first-activity
-                    # hedges or deadline checks are appropriate for this trace.
-                    stop_first_activity_watch()
+                    # The first protocol event ends the *pre-response* phase,
+                    # but must not remove this Trace from the core watchdog.
+                    # A stalled SSE iterator can stop the request coroutine
+                    # itself from making progress, so the core-owned watchdog
+                    # takes over the post-first-SSE hard deadline below.
                     if label!='original': state.trace_event(rid,'hedge_won',ch.id,detail=f'{label} produced the first upstream SSE event')
                     for task in pending:
                         if not task.done():
@@ -2593,6 +2595,30 @@ def create_app(config_path:str|Path):
                     stream_idle_timeout_recorded=[False]
                     stream_idle_guard_task=None
                     stream_idle_hard_seconds=(hedge_plan[-1][0]+180) if hedge_plan else 720
+                    if watch_record is not None:
+                        watch_record['phase']='stream'
+                        watch_record['stream_started']=stream_absolute_started[0]
+                        watch_record['stream_deadline_seconds']=stream_idle_hard_seconds
+                        watch_record['stream_deadline_forced']=False
+                        # This callback runs from the independent core loop,
+                        # rather than from the provider iterator.  It is the
+                        # authoritative escape hatch if an SDK stream ignores
+                        # cancellation or never yields another frame.
+                        def watchdog_stream_deadline():
+                            if watch_record.get('stream_deadline_forced'):
+                                return
+                            watch_record['stream_deadline_forced']=True
+                            detail=(f'No completed upstream response within '
+                                    f'{stream_idle_hard_seconds//60} minutes after first SSE; '
+                                    'core watchdog closed the stream.')
+                            if not stream_idle_timeout_recorded[0]:
+                                stream_idle_timeout_recorded[0]=True
+                                state.trace_event(rid,'stream_idle_deadline',ch.id,504,detail=detail)
+                                state.finish(active_attempt,'failure','upstream_total_timeout',int((time.monotonic()-active_started)*1000),error_detail=detail,error_code=504)
+                                state.trace_finish(rid,'failed',ch.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                            state.trace_event(rid,'upstream_cancel_requested',ch.id,504,detail='Core watchdog forced post-first-SSE stream shutdown')
+                            downstream_timeout_event.set()
+                        watch_record['on_stream_deadline']=watchdog_stream_deadline
                     async def stream_idle_guard():
                         while not stream_idle_guard_stop.is_set():
                             try:
@@ -2876,6 +2902,25 @@ def create_app(config_path:str|Path):
             await asyncio.sleep(1)
             now=time.monotonic()
             for trace_id,record in list(app.state.first_activity_watch.items()):
+                # Once first SSE arrived, the pre-response queue must no
+                # longer drive hedges.  Keep the Trace registered solely so
+                # this independent loop can enforce an absolute stream
+                # deadline even if the upstream async iterator is wedged.
+                if record.get('phase')=='stream':
+                    stream_started=record.get('stream_started')
+                    stream_deadline=int(record.get('stream_deadline_seconds',0) or 0)
+                    if stream_started is not None and stream_deadline>0:
+                        stream_elapsed=now-stream_started
+                        if stream_elapsed>=stream_deadline and 'stream_deadline' not in record['sent']:
+                            record['sent'].add('stream_deadline')
+                            state.trace_event(trace_id,'watchdog_stream_deadline_due',http_status=504,detail=f'Core stream watchdog reached {stream_deadline}s after first SSE; cancellation due.')
+                            callback=record.get('on_stream_deadline')
+                            if callback is not None:
+                                try:
+                                    callback()
+                                except Exception as exc:
+                                    logger.exception('stream watchdog cancellation failed trace=%s: %s',trace_id,exc)
+                    continue
                 elapsed=now-record['started']; sent=record['sent']; signals=record['signals']
                 deadline_seconds=int(record.get('deadline_seconds',UPSTREAM_FIRST_ACTIVITY_TIMEOUT))
                 for index,(delay,target_ids) in enumerate(record.get('hedge_plan',()),1):

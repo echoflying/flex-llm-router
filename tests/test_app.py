@@ -35,6 +35,14 @@ def test_stream_idle_read_is_bounded_without_waiting_for_iterator_cleanup():
     asyncio.run(exercise())
 
 
+def test_core_watchdog_keeps_trace_registered_after_first_sse():
+    """Post-first-SSE timeout is owned by the core loop, not only the iterator."""
+    source = (_REPO / 'src' / 'flex_llm_router' / 'app.py').read_text(encoding='utf-8')
+    assert "watch_record['phase']='stream'" in source
+    assert "watch_record['on_stream_deadline']=watchdog_stream_deadline" in source
+    assert "if record.get('phase')=='stream':" in source
+
+
 def test_empty_sse_does_not_refresh_stream_idle_timer():
     assert not has_stream_activity({'choices': [{'delta': {'role': 'assistant'}}]})
     assert not has_stream_activity({'choices': [{'delta': {}}]})

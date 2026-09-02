@@ -546,6 +546,32 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
             return 'unknown', status_code, detail
     return ('supported' if isinstance(payload, dict) and isinstance(payload.get('choices'), list) else 'error'), status_code, detail
 
+def _responses_probe_sync(base_url: str, api_key: str, model: str) -> tuple[str, int | None, str, str]:
+    endpoint = responses_probe_url(base_url)
+    request_body = json.dumps({'model': model, 'input': 'Reply with exactly OK.',
+                               'max_output_tokens': 8}, ensure_ascii=False).encode('utf-8')
+    request = urllib.request.Request(endpoint, data=request_body, method='POST', headers={
+        'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json',
+        'Accept': 'application/json', 'User-Agent': 'flex-router-capability-probe/1.0',
+    })
+    status_code = None; payload: Any = None; detail = ''
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            status_code = response.status
+            raw = response.read(65536).decode('utf-8', 'replace')
+            try: payload = json.loads(raw)
+            except Exception: payload = raw
+    except urllib.error.HTTPError as exc:
+        status_code = exc.code
+        raw = exc.read(4096).decode('utf-8', 'replace')
+        try: payload = json.loads(raw)
+        except Exception: payload = raw
+    except Exception as exc:
+        detail = _probe_detail(exc)
+    if not detail:
+        detail = _probe_detail(payload)
+    return classify_responses_probe(status_code, payload, detail), status_code, detail, endpoint
+
 async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict]:
     """Probe one Channel and return safe observations keyed by capability."""
     checked_at = int(time.time())
@@ -555,7 +581,7 @@ async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict
         detail = _probe_detail(exc)
         return {kind: {'status': 'error', 'checked_at': checked_at, 'http_status': None,
                        'latency_ms': 0, 'detail': detail}
-                for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning')}
+                for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning', 'responses')}
     model = channel.litellm_model.rsplit('/', 1)[-1]
     observations: dict[str, dict] = {}
     for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning'):
@@ -565,6 +591,16 @@ async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict
                               'http_status': http_status,
                               'latency_ms': int((time.monotonic() - started) * 1000),
                               'detail': detail}
+    # Responses is a separate API protocol rather than a model feature, but
+    # it is included in the same post-creation probe so a Channel is complete
+    # immediately after it is added.
+    started = time.monotonic()
+    status, http_status, detail, endpoint = await asyncio.to_thread(
+        _responses_probe_sync, base, key, model)
+    observations['responses'] = {'status': status, 'checked_at': checked_at,
+                                 'http_status': http_status, 'endpoint': endpoint,
+                                 'latency_ms': int((time.monotonic() - started) * 1000),
+                                 'detail': detail}
     return observations
 # B类瞬时限流：每次真实 429 后按 2^n 退避，直到本请求的类型上限。
 TPM_BACKOFF_BASE=4

@@ -138,6 +138,38 @@ def test_cost_aware_switches_after_channel_retry_budget(tmp_path, monkeypatch):
     assert seen[4] != seen[0], 'cost_aware did not switch after retry budget'
 
 
+def test_streaming_second_rpm_is_harvested_and_falls_back(tmp_path, monkeypatch):
+    """A fast second streaming 429 must not remain as a started Attempt."""
+    monkeypatch.setenv('FLEX_STATE_DB', str(tmp_path / 'flex.db'))
+    monkeypatch.setattr(app_mod, 'QUEUE_RPM_SECONDS', 30)
+    monkeypatch.setattr(app_mod, 'RPM_BACKOFF_BASE', 0)
+    monkeypatch.setattr(app_mod, 'UPSTREAM_FIRST_ACTIVITY_TIMEOUT', 2)
+    calls = []
+
+    class _Stream:
+        async def __aiter__(self):
+            yield {'choices': [{'index': 0, 'delta': {'role': 'assistant'}}]}
+            yield {'choices': [{'index': 0, 'delta': {'content': 'ok'}, 'finish_reason': 'stop'}]}
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs.get('api_base'))
+        if len(calls) <= 2:
+            raise _Err('HTTP 429: rpm exhausted')
+        return _Stream()
+
+    monkeypatch.setattr(app_mod.litellm, 'acompletion', fake_acompletion)
+    client = TestClient(app_mod.create_app(str(_copy_config(tmp_path))))
+    response = client.post('/v1/chat/completions', json={
+        'model': 'M2-deepseek-v4-flash',
+        'stream': True,
+        'messages': [{'role': 'user', 'content': 'exercise consecutive rpm'}],
+    })
+    assert response.status_code == 200, response.text
+    assert 'data: [DONE]' in response.text
+    assert len(calls) >= 3
+    assert calls[2] != calls[0], 'second RPM should escalate to the next Channel'
+
+
 def test_p0_3_quota_exhausted_triggers_cooldown(tmp_path, monkeypatch):
     """P0-3：A 类 quota_exhausted 429 必须触发长冷却（写 states 表），而非直接 502 反复打。"""
     import sqlite3, time

@@ -1,0 +1,142 @@
+<h1>Flex LLM Router</h1>
+<small>Local-only administration · refreshes every 5 seconds</small>
+<small id="notice"></small>
+<div class="tabs">
+  <button class="tab active" data-tab="active">当天有访问</button>
+  <button class="tab" data-tab="all">全部</button>
+</div>
+<div id="app">Loading…</div>
+<style>
+body{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+table{font-size:12px;width:100%;table-layout:fixed;border-collapse:collapse}
+#app h2{font-size:15px;margin:18px 0 6px}
+.tabs{margin:10px 0}
+.tab{font:inherit;padding:4px 14px;border:1px solid #c4ccd8;background:#fff;color:#18212f;cursor:pointer;border-radius:6px;margin-right:6px}
+.tab.active{background:#2764a8;color:#fff;border-color:#2764a8}
+.errrow td{background:#fff5f5;font-size:12px}
+.errrow td.bad{color:#b42318;font-weight:600}
+td,th{padding:3px 8px;border-bottom:1px solid #e3e8ef;word-break:break-word;overflow:hidden}
+code{font-size:11px}
+button[data-kind]{font:inherit;font-size:10px;padding:1px 4px;margin-right:3px;cursor:pointer}
+.acts{white-space:nowrap}
+/* 第一部分 channel 表固定列宽，保证跨 pool 对齐；Actions 留足空间 */
+#app table{margin-bottom:10px}
+#app table tr> :nth-child(1){width:22%}
+#app table tr> :nth-child(2){width:8%}
+#app table tr> :nth-child(3){width:11%}
+#app table tr> :nth-child(4){width:6%}
+#app table tr> :nth-child(5){width:5%}
+#app table tr> :nth-child(6){width:4%}
+#app table tr> :nth-child(7){width:5%}
+#app table tr> :nth-child(8){width:6%}
+#app table tr> :nth-child(9){width:8%}
+#app table tr> :nth-child(10){width:25%}
+/* 底部 Recent / Error 表也用统一宽度 */
+#bottom table{margin:8px 0 18px}
+</style>
+<script>
+const q=s=>document.querySelector(s),
+show=x=>x==null?'—':x,
+when=x=>x?new Date(x*1000).toLocaleString():'—',
+rel=ts=>{ if(!ts)return '—'; const s=Math.floor(Date.now()/1000-ts); if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; if(s<86400)return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago'; },
+test=x=>x?x.outcome
+  +(x.error_type?' ('+x.error_type+(x.error_detail?' — '+x.error_detail:'').slice(0,120)+')':'')
+  +' · '+show(x.latency_ms)+' ms · '+when(x.tested_at):'—',
+testShort=x=>{
+  if(!x)return '—';
+  const line1=x.outcome+(x.error_type?' ('+x.error_type+')':'');
+  const line2=rel(x.tested_at)+(x.latency_ms!=null?' · '+x.latency_ms+'ms':'');
+  return `<div class="${x.outcome=='success'?'ok':'bad'}" style="font-weight:600">${line1}</div><div style="font-size:10px;color:#889">${line2}</div>`;
+},
+fmtCtx=x=>x==null?'—':(x>=1000000?(x/1000000)+'M':(x>=1000?(x/1000)+'K':x));
+let curTab='active';
+q('.tabs').addEventListener('click',e=>{
+  const b=e.target.closest('.tab'); if(!b)return;
+  curTab=b.dataset.tab;
+  q('.tabs').querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t===b));
+  renderTab();
+});
+let _runners=[];
+async function load(){
+  const runners=await fetch('/api/runners').then(r=>r.json());
+  _runners=[];
+  for(const runner of runners.data){
+    const n=runner.id,
+      d=await fetch('/api/runners/'+encodeURIComponent(n)+'/channels').then(r=>r.json());
+    _runners.push({name:n,channels:d.channels});
+  }
+  renderTab();
+  const recent=await fetch('/api/requests?limit=12').then(r=>r.json());
+  let out='';
+  out+=`<h2>Recent attempts</h2><table>`+
+    `<tr><th>Time</th><th>Runner</th><th>Channel</th><th>Result</th><th>TTFT</th><th>Latency</th></tr>`+
+    `${recent.data.map(x=>`<tr><td>${when(x.started)}</td><td>${x.pool}</td><td>${x.channel}</td><td class="${x.outcome!='success'?'bad':''}">${x.outcome}${x.error_type?' ('+x.error_type+')':''}</td><td>${show(x.ttft_ms)} ms</td><td>${show(x.latency_ms)} ms</td></tr>`).join('')}`+
+    `</table>`;
+  const errs=await fetch('/api/errors?limit=20').then(r=>r.json());
+  out+=`<h2>Error log (429 / failures)</h2><table>`+
+    `<tr><th>Time</th><th>Runner</th><th>Channel</th><th>Code</th><th>Type</th><th>Detail</th><th>Latency</th></tr>`+
+    `${errs.data.length?errs.data.map(x=>`<tr class="errrow"><td>${when(x.started)}</td><td>${x.pool}</td><td>${x.channel}</td><td class="bad">${show(x.error_code)}</td><td class="bad">${x.error_type||'error'}</td><td style="max-width:480px;white-space:pre-wrap;word-break:break-word">${show(x.error_detail)}</td><td>${show(x.latency_ms)} ms</td></tr>`).join(''):'<tr><td colspan="7">— no errors —</td></tr>'}`+
+    `</table>`;
+  q('#bottom').innerHTML=out;
+}
+function renderTab(){
+  let out='';
+  _runners.forEach(({name,channels})=>{
+    if(curTab==='active' && !(channels.some(c=>(c.calls_today||0)>0))) return;
+    if(!channels.length){out+=`<h2>${name}</h2><div style="color:#889;padding:4px 0">（无渠道）</div>`;return;}
+    const rows=channels.map(c=>{
+      const learned=c.learned_limits?('safe_rpm='+show(c.learned_limits.safe_rpm)+' safe_tpm='+show(c.learned_limits.safe_tpm)+' conf='+show(c.learned_limits.confidence)+' 429s='+show(c.learned_limits.success_since_429)):'none',
+        ev=c.learned_limits&&c.learned_limits.last_429_evidence?(()=>{try{return JSON.parse(c.learned_limits.last_429_evidence)}catch(e){return null}})():null,
+        evTxt=ev?('req='+ev.requests+' tok='+show(ev.tokens)+' release='+when(ev.next_release_at)):'—',
+        l429=c.learned_limits&&c.learned_limits.last_429_at?(' · last429='+c.learned_limits.last_429_kind+' @ '+when(c.learned_limits.last_429_at)+' ['+evTxt+']'):'',
+        detail=`<tr class="detail"><td colspan="9">`+
+          `<b>Capabilities:</b> ${show(c.capabilities&&c.capabilities.length?c.capabilities.join(', '):'—')}`+
+          `<br><b>Context window:</b> ${fmtCtx(c.context_window_tokens)} tokens · <b>Learned limits:</b> ${learned}${l429}`+
+          `<br><b>Tokens/min:</b> ${show(c.tokens_last_minute)} · <b>Quota release:</b> ${when(c.next_quota_release_at)} · <b>Today calls:</b> ${show(c.calls_today)}</td></tr>`;
+      return `<tr class="main">`+
+        `<td class="tgl" data-runner="${name}" data-channel="${c.id}">▸ ${c.id}</td>`+
+        `<td>${show(c.provider)}</td>`+
+        `<td><code>${c.model}</code></td>`+
+        `<td class="${c.enabled?'ok':'bad'}">${c.enabled}</td>`+
+        `<td>${c.calls_last_minute}${c.rpm?'/'+c.rpm:''}</td>`+
+        `<td>${c.calls_last_5_hours}${c.requests_per_5_hours?'/'+c.requests_per_5_hours:''}</td>`+
+        `<td>${show(c.cooldown_reason)}<br><small>${when(c.cooldown_until)}</small></td>`+
+        `<td title="${c.last_test?when(c.last_test.tested_at):'—'}">${testShort(c.last_test)}</td>`+
+        `<td class="acts">`+
+          `<button data-kind="test" data-runner="${name}" data-channel="${c.id}">Test</button>`+
+          `<button data-kind="enabled" data-runner="${name}" data-channel="${c.id}" data-value="${!c.enabled}">${c.enabled?'Disable':'Enable'}</button>`+
+          `<button data-kind="reset" data-runner="${name}" data-channel="${c.id}">Reset</button>`+
+        `</td>`+
+        `</tr>${detail}`;
+    }).join('');
+    out+=`<h2>${name}</h2>`+
+      `<table>`+
+        `<tr><th>Channel</th><th>Prov</th><th>Model</th><th>Enab</th><th>1m</th><th>5h</th><th>Cool</th><th>Last test</th><th>Actions</th></tr>`+
+        `${rows}`+
+      `</table>`;
+  });
+  q('#app').innerHTML=out;
+  q('#app').querySelectorAll('tr.main').forEach(tr=>{
+    const tgl=tr.querySelector('.tgl');
+    tgl.onclick=()=>{
+      const d=tr.nextElementSibling;
+      const open=d.style.display!=='none';
+      d.style.display=open?'none':'';
+      tgl.textContent=(open?'▸':'▾')+' '+tgl.dataset.channel;
+    };
+  });
+  q('#app').querySelectorAll('tr.detail').forEach(d=>d.style.display='none');
+}
+q('#app').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-kind]'); if(!b)return;
+  const suffix=b.dataset.kind==='enabled'?'enabled?value='+b.dataset.value:b.dataset.kind==='reset'?'reset?scope=all':'test';
+  q('#notice').textContent=b.dataset.kind==='test'?' Testing '+b.dataset.channel+'…':'';
+  fetch('/api/runners/'+encodeURIComponent(b.dataset.runner)+'/channels/'+encodeURIComponent(b.dataset.channel)+'/'+suffix,{method:'POST'}).then(async r=>({ok:r.ok,status:r.status,v:await r.json()})).then(({ok,status,v})=>{
+    q('#notice').textContent=b.dataset.kind==='test'?(ok?' Test succeeded in '+v.latency_ms+' ms':' Test failed: '+(v.detail?.error_type||status)):'';
+    load();
+  });
+});
+load();
+setInterval(load,5000);
+</script>
+<div id="bottom"></div>

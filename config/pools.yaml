@@ -1,0 +1,641 @@
+version: 1
+providers:
+  opencode-go:
+    base_url_env: OPENCODE_GO_API_BASE
+    api_key_env: OPENCODE_GO_API_KEY
+  sensenova:
+    base_url_env: SENSENOVA_API_BASE
+    api_key_env: SENSENOVA_API_KEY
+  deepseek-official:
+    base_url_env: DEEPSEEK_OFFICIAL_API_BASE
+    api_key_env: DEEPSEEK_OFFICIAL_API_KEY
+  agnes-official:
+    base_url_env: AGNES_API_BASE
+    api_key_env: AGNES_API_KEY
+  AntDigital:
+    base_url_env: ANTDIGITAL_API_BASE
+    api_key_env: ANTDIGITAL_API_KEY
+channels:
+  sensenova-deepseek-v4-flash:
+    id: sensenova-deepseek-v4-flash
+    provider: sensenova
+    externally_exposed: true
+    public_model: sensenova-deepseek-v4-flash
+    litellm_model: openai/deepseek-v4-flash
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    provider_type: openai_compatible
+    supported_params:
+    - reasoning_effort
+    limits:
+      rpm: 3
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: 500
+      quota_cooldown_seconds: 3600
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 3
+      backoff:
+        base_seconds: 5
+        max_seconds: 60
+        exponential: true
+  opencode-go-deepseek-v4-flash:
+    id: opencode-go-deepseek-v4-flash
+    provider: opencode-go
+    externally_exposed: true
+    public_model: opencode-go-deepseek-v4-flash
+    litellm_model: openai/deepseek-v4-flash
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    provider_type: openai_compatible
+    supported_params:
+    - reasoning_effort
+    limits:
+      rpm: null
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: null
+      quota_cooldown_seconds: 18000
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 2
+      backoff:
+        base_seconds: 3
+        max_seconds: 30
+  deepseek-official-deepseek-v4-flash:
+    id: deepseek-official-deepseek-v4-flash
+    provider: deepseek-official
+    externally_exposed: true
+    public_model: deepseek-official-deepseek-v4-flash
+    litellm_model: openai/deepseek-v4-flash
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    provider_type: openai_compatible
+    supported_params:
+    - reasoning_effort
+    limits:
+      rpm: null
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: null
+      quota_cooldown_seconds: 18000
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 1
+      backoff:
+        base_seconds: 10
+        max_seconds: 120
+        exponential: false
+  agnes-flash:
+    id: agnes-flash
+    provider: agnes-official
+    externally_exposed: true
+    public_model: agnes-flash
+    litellm_model: openai/agnes-2.5-flash
+    context_window_tokens: 524288
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    provider_type: agnes
+    supported_params: []
+    limits:
+      rpm: null
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 3
+    chn_content_policy_fallback: true
+    protocol_support:
+      responses:
+        status: supported
+        checked_at: 1788152647
+        http_status: 200
+        endpoint: https://apihub.agnes-ai.com/v1/responses
+        latency_ms: 6731
+        detail: '{"id": "resp_p8RJpK9_95buqDNpaYsT7Q9yoQdxxrQLrUbALGJIPpFFlHmPyC7ibDrG3QJWV3LfUZPKViHbcCkTPVGa_ynUqBEazm9aCiLr6wPEIPgMLkh49gF3_wDRG2hqIITMJlae2PIwzE0X1JYQp6Sf4aWMRkXX84jiSEHe7cu_81lTAmye0C2dyPcysh8UaatNZJZVC4srpSG9qd7qorS-go2vqfCVUaB1RrBB9g8XRihrlJCQnBjGhBPiIXuBIPoFrYohy53R_ZZ2QLDNXBGMb0qqyb0BRxFkpr0uthHonLwhrEVBe2IB4xPbnS74diNmkWDvHlVKEP5wg0D2oZfg2oV6d0HlBLWRndVPbTuhV9s0ClaEyopX6lbnZmuCWoI8fKMu5xrlbvtRLI7hqRuSgXrae8Dj4iGSbTT0wC4a6dtowDlbnD2VTzij1AU-Q0pvRF-JJiEULZs7yVTj49F_29_a",
+          "created_at": 17'
+  sensenova-flash-lite:
+    id: sensenova-flash-lite
+    provider: sensenova
+    externally_exposed: true
+    public_model: sensenova-flash-lite
+    litellm_model: openai/sensenova-6.8-flash-lite
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    provider_type: openai_compatible
+    supported_params:
+    - reasoning_effort
+    limits:
+      rpm: null
+      tpm: null
+      local_cooldown_seconds: 300
+      window_seconds: 18000
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      busy_threshold: 3
+      busy_window_minutes: 5
+      busy_cooldown_seconds: 300
+    retry_policy:
+      max_retries: 3
+      backoff:
+        base_seconds: 5
+        max_seconds: 60
+        exponential: true
+  AntDigital-glm-5-3:
+    id: AntDigital-glm-5-3
+    provider: AntDigital
+    litellm_model: openai/glm-5.3
+    public_model: AntDigital-glm-5-3
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - streaming
+    - tools
+    - json
+    protocol_support:
+      responses:
+        status: unsupported
+        checked_at: 1788309974
+        http_status: 400
+        endpoint: https://maas-api.antdigital.com/v1/responses
+        latency_ms: 210
+        detail: '{"error": {"message": "Protocol conversion is not supported", "type":
+          "protocol_conversion_not_support", "code": "protocol_conversion_not_support"},
+          "trace_id": "95d1e322f22aeb5770b6309de842f36c", "request_id": "e402fccf-45b8-44e8-a87e-728af528639c"}'
+      chat:
+        status: supported
+        checked_at: 1788311090
+        http_status: 200
+        latency_ms: 1304
+        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
+          "", "reasoning_content": "The user has instructed me to reply with exactly
+          \"OK\". This is a simple", "role": "assistant"}}], "created": 1788311091,
+          "id": "202609020904503b4c4dc945274d29", "model": "glm-5.3", "object": "chat.completion",
+          "request_id": "202609020904503b4c4dc945274d29", "usage": {"completion_tokens":
+          16, "completion_tokens_details": {"reasoning_tokens": 13}, "prompt_tokens":
+          17, "prompt_tokens_details": {"'
+      streaming:
+        status: supported
+        checked_at: 1788311090
+        http_status: 200
+        latency_ms: 839
+        detail: 'data: {"id":"2026090209045190f6bcfe99f542c8","created":1788311091,"object":"chat.completion.chunk","model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"}}]}
+
+          '
+      tools:
+        status: supported
+        checked_at: 1788311090
+        http_status: 200
+        latency_ms: 1125
+        detail: '{"choices": [{"finish_reason": "tool_calls", "index": 0, "message":
+          {"content": "", "reasoning_content": "The user says \"Call the tool now.\"
+          The only tool available is `flex_probe_noop`. I should call it.", "role":
+          "assistant", "tool_calls": [{"function": {"arguments": "{}", "name": "flex_probe_noop"},
+          "id": "call_-7293537849444395711", "index": 0, "type": "function"}]}}],
+          "created": 1788311093, "id": "202609020904524ed664ced8724842", "model":
+          "glm-5.3", "object": "chat.completion", "request_i'
+      json:
+        status: supported
+        checked_at: 1788311090
+        http_status: 200
+        latency_ms: 922
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "{\"answer\":{\"ok\":true}}", "role": "assistant"}}], "created": 1788311094,
+          "id": "20260902090453b2b6749ede304bb7", "model": "glm-5.3", "object": "chat.completion",
+          "request_id": "20260902090453b2b6749ede304bb7", "usage": {"completion_tokens":
+          13, "completion_tokens_details": {"reasoning_tokens": 0}, "prompt_tokens":
+          78, "prompt_tokens_details": {"cached_tokens": 0}, "total_tokens": 91}}'
+      reasoning:
+        status: unknown
+        checked_at: 1788311090
+        http_status: 200
+        latency_ms: 819
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "OK", "role": "assistant"}}], "created": 1788311095, "id": "20260902090454a7a463d21ccd49be",
+          "model": "glm-5.3", "object": "chat.completion", "request_id": "20260902090454a7a463d21ccd49be",
+          "usage": {"completion_tokens": 2, "completion_tokens_details": {"reasoning_tokens":
+          0}, "prompt_tokens": 17, "prompt_tokens_details": {"cached_tokens": 0},
+          "total_tokens": 19}}'
+    chn_content_policy_fallback: false
+    externally_exposed: true
+    enabled: true
+  AntDigital-minimax-m2-7:
+    id: AntDigital-minimax-m2-7
+    provider: AntDigital
+    litellm_model: openai/minimax-m2.7
+    public_model: AntDigital-minimax-m2-7
+    context_window_tokens: 200000
+    capabilities:
+    - chat
+    - streaming
+    - tools
+    protocol_support:
+      responses:
+        status: supported
+        checked_at: 1788309974
+        http_status: 200
+        endpoint: https://maas-api.antdigital.com/v1/responses
+        latency_ms: 1069
+        detail: '{"id": "06e6a4d73f8c7038b202c2b7d651fd91", "object": "response",
+          "created_at": 1788309975, "model": "MiniMax-M2.7", "status": "incomplete",
+          "output": [{"id": "06e6a4d73f8c7038b202c2b7d651fd91_rs", "type": "reasoning",
+          "status": "completed", "summary": [], "content": [{"type": "reasoning_text",
+          "text": "We have a user request: \"Reply"}]}], "output_text": null, "usage":
+          {"input_tokens": 48, "output_tokens": 8, "total_tokens": 56, "input_tokens_details":
+          {"cached_tokens": 15}}, "error": null, "inc'
+      chat:
+        status: supported
+        checked_at: 1788311229
+        http_status: 200
+        latency_ms: 1599
+        detail: '{"id": "06e6a9bdb96d07bf2feb3f2b0a1aa98b", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "<think>\nThe user says: \"Reply
+          with exactly OK.\"\n\nWe must respond with\n</think>\n", "role": "assistant",
+          "name": "MiniMax AI", "audio_content": ""}}], "created": 1788311229, "model":
+          "MiniMax-M2.7", "object": "chat.completion", "usage": {"total_tokens": 62,
+          "total_characters": 0, "prompt_tokens": 46, "completion_tokens": 16}, "input_sensitive":
+          false, "output_sensitive": fa'
+      streaming:
+        status: supported
+        checked_at: 1788311229
+        http_status: 200
+        latency_ms: 1534
+        detail: 'data: {"id":"06e6a9bfc9f77a3333bfe5c34733286f","choices":[{"index":0,"delta":{"content":"<think>\nWe
+          have","role":"assistant","name":"MiniMax AI","audio_content":""}}],"created":1788311231,"model":"MiniMax-M2.7","object":"chat.completion.chunk","usage":null,"input_sensitive":false,"output_sensitive":false,"input_sensitive_type":0,"output_sensitive_type":0,"output_sensitive_int":0}
+
+          '
+      tools:
+        status: unknown
+        checked_at: 1788311229
+        http_status: 200
+        latency_ms: 2320
+        detail: '{"id": "06e6a9c0473acd572f17b053ada74ba7", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "<think>The user is asking
+          me to call a tool. Looking at the available tools, I see \"flex_probe_noop\"
+          which is described as a \"No-op capability probe\". This seems to be a simple
+          probe tool that doesn''t do anything significant - it''s likely used to
+          test if the tool calling capability is working.\n\nI''ll call</think>\n\n",
+          "role": "assistant"}}], "created": 1788311232, "model":'
+      json:
+        status: unknown
+        checked_at: 1788311229
+        http_status: 200
+        latency_ms: 963
+        detail: '{"id": "06e6a9c3c28ef30a1588cd56274d86c0", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "<think>The user is asking
+          me to return a JSON object with `ok: true`.</think>\n\n", "role": "assistant"}}],
+          "created": 1788311235, "model": "MiniMax-M2.7", "object": "chat.completion",
+          "usage": {"total_tokens": 44, "total_characters": 0, "prompt_tokens": 28,
+          "completion_tokens": 16, "completion_tokens_details": {"reasoning_tokens":
+          0}, "prompt_tokens_details": {"cached_tokens": '
+      reasoning:
+        status: unknown
+        checked_at: 1788311229
+        http_status: 200
+        latency_ms: 1117
+        detail: '{"id": "06e6a9c48e3eb618956cc53621f66bad", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "<think>\nThe user says: \"Reply
+          with exactly OK.\" So they want a\n</think>\n", "role": "assistant", "name":
+          "MiniMax AI", "audio_content": ""}}], "created": 1788311236, "model": "MiniMax-M2.7",
+          "object": "chat.completion", "usage": {"total_tokens": 62, "total_characters":
+          0, "prompt_tokens": 46, "completion_tokens": 16}, "input_sensitive": false,
+          "output_sensitive": false, "inp'
+    chn_content_policy_fallback: false
+    externally_exposed: true
+    enabled: true
+  opencode-go-kimi-k2-6:
+    id: opencode-go-kimi-k2-6
+    provider: opencode-go
+    litellm_model: openai/kimi-k2.6
+    public_model: opencode-go-kimi-k2-6
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - streaming
+    - reasoning
+    protocol_support:
+      chat:
+        status: supported
+        checked_at: 1788312584
+        http_status: 200
+        latency_ms: 2112
+        detail: '{"id": "gen-1788312585-b41ITZ1ihuZGvdl7DywK", "object": "chat.completion",
+          "created": 1788312585, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
+          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
+          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
+          no", "format": "unknown", "index": 0}]'
+      streaming:
+        status: supported
+        checked_at: 1788312584
+        http_status: 200
+        latency_ms: 1877
+        detail: ': keep-alive
+
+
+          data: {"id":"gen-1788312587-3C17jYWywEow9IteXZ0c","object":"chat.completion.chunk","created":1788312587,"model":"kimi-k2.6","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":"The","reasoning_details":[{"type":"reasoning.text","text":"The","format":"unknown","index":0}]}}]}
+
+          '
+      tools:
+        status: error
+        checked_at: 1788312584
+        http_status: 400
+        latency_ms: 1324
+        detail: '{"error": {"type": "server_error", "message": "Error from provider
+          (Console Go): Upstream request failed: [400] Provider returned error"}}'
+      json:
+        status: unknown
+        checked_at: 1788312584
+        http_status: 200
+        latency_ms: 2359
+        detail: '{"id": "gen-1788312590-gshRbn1ien2C8WkWz8b2", "object": "chat.completion",
+          "created": 1788312590, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants a JSON object with \"ok\":
+          true. I need to", "reasoning_details": [{"type": "reasoning.text", "text":
+          "The user wants a JSON object with \"ok\": true. I need to", "format": "unknown",
+          "index": 0}]}}], "usage": {"pr'
+      reasoning:
+        status: supported
+        checked_at: 1788312584
+        http_status: 200
+        latency_ms: 2350
+        detail: '{"id": "gen-1788312592-FxbDGrMzZiYSehdl9b0l", "object": "chat.completion",
+          "created": 1788312592, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
+          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
+          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
+          no", "format": "unknown", "index": 0}]'
+    chn_content_policy_fallback: false
+    externally_exposed: true
+    enabled: true
+  AntDigital-qwen3-7-plus:
+    id: AntDigital-qwen3-7-plus
+    provider: AntDigital
+    litellm_model: openai/qwen3.7-plus
+    public_model: AntDigital-qwen3-7-plus
+    context_window_tokens: 1000000
+    capabilities:
+    - chat
+    - streaming
+    - tools
+    - json
+    - reasoning
+    protocol_support:
+      responses:
+        status: error
+        checked_at: 1788309976
+        http_status: 400
+        endpoint: https://maas-api.antdigital.com/v1/responses
+        latency_ms: 499
+        detail: '{"error": {"message": "Invalid request parameters. Please verify
+          your input and try again.", "type": "InvalidParameter", "code": "InvalidParameter"},
+          "trace_id": "1307dc95eceaf86a185cd283d1b38c1f", "request_id": "850ee408-c74b-4626-87be-a6f482df4901"}'
+      chat:
+        status: supported
+        checked_at: 1788311167
+        http_status: 200
+        latency_ms: 3639
+        detail: '{"id": "chatcmpl-5c5425e6-35ff-9c45-a23d-4e8932540426", "object":
+          "chat.completion", "created": 1788311167, "model": "qwen3.7-plus", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning_content": "Thinking
+          Process:\n\n1.  **Analyze the Request:** The user is asking for a specific
+          response: \"exactly OK\".\n2.  **Identify Constraints:** The response must
+          be *exactly* \"OK\". No extra punctuation, no extra words, no conversational
+          filler.\n3.  **Formulate Response:** \"OK\"\n4.  **'
+      streaming:
+        status: supported
+        checked_at: 1788311167
+        http_status: 200
+        latency_ms: 629
+        detail: 'data: {"model":"qwen3.7-plus","id":"chatcmpl-aabbf803-ba55-9a54-8fd4-04c407560b48","created":1788311171,"object":"chat.completion.chunk","usage":null,"choices":[{"logprobs":null,"index":0,"delta":{"reasoning_content":"","content":"","role":"assistant"},"finish_reason":null}]}
+
+          '
+      tools:
+        status: supported
+        checked_at: 1788311167
+        http_status: 200
+        latency_ms: 2180
+        detail: '{"model": "qwen3.7-plus", "id": "chatcmpl-c1ea8819-d422-9195-8133-2dc138b2447b",
+          "choices": [{"message": {"tool_calls": [{"index": 0, "id": "call_5b46633133504ace8ab29462",
+          "type": "function", "function": {"name": "flex_probe_noop", "arguments":
+          "{}"}}, {"index": 1, "id": "call_818131bd9b7b43e6a3e562bf", "type": "function",
+          "function": {"name": "flex_probe_noop", "arguments": "{}"}}], "role": "assistant",
+          "content": "\n</think>\n\n", "reasoning_content": ""}, "index": 0, "finish_reason":
+          "tool_c'
+      json:
+        status: supported
+        checked_at: 1788311167
+        http_status: 200
+        latency_ms: 8086
+        detail: '{"id": "chatcmpl-8e3a192d-59f6-92f4-8548-e720aeb37146", "object":
+          "chat.completion", "created": 1788311173, "model": "qwen3.7-plus", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning_content": "Thinking
+          Process:\n\n1.  **Analyze the Request:**\n    *   Condition 1: Return valid
+          JSON.\n    *   Condition 2: Return a JSON object.\n    *   Condition 3:
+          The JSON object must have a key \"ok\" with the boolean value `true`.\n\n2.  **Construct
+          the JSON:**\n    *   Object format: `{ \"'
+      reasoning:
+        status: supported
+        checked_at: 1788311167
+        http_status: 200
+        latency_ms: 4096
+        detail: '{"model": "qwen3.7-plus", "id": "chatcmpl-73c916dc-397d-95a2-a1b6-4fff56ea84c7",
+          "choices": [{"message": {"content": "OK", "reasoning_content": "Thinking
+          Process:\n\n1.  **Analyze the Request:** The user is asking for a specific,
+          exact response: \"OK\".\n2.  **Analyze Constraints:** The constraint is
+          \"exactly OK\". This means no punctuation (unless part of the exact string,
+          but usually \"OK\" implies just the letters), no extra words, no conversational
+          filler.\n3.  **Formulate Response:** \"OK\'
+    chn_content_policy_fallback: false
+    externally_exposed: true
+    enabled: true
+protocol_error_rules:
+- id: reasoning_content_required
+  http_status: 400
+  message_regex: reasoning_content.*(required|must|return)
+  retry_other_channel: true
+  clear_session_affinity: true
+  only_before_first_sse: true
+runners:
+  sensenova-flash-plus:
+    public_model: sensenova-flash-plus
+    tiers:
+      sensenova-flash-lite: 0
+      sensenova-deepseek-v4-flash: 1
+      agnes-flash: 1
+    selection:
+      strategy: cost_aware
+      fallback:
+        order: cost_ascending
+        trigger:
+        - quota_exhausted
+        - busy_persistent
+        - failure
+        max_fallback_tiers: 2
+        reattach:
+          probe_before_switch_back: true
+          quiet_window_seconds: 1200
+          quota_recover_seconds: 3600
+          failure_retry_after: 300
+    context_policy:
+      reserve_output_tokens: 8192
+    session_affinity:
+      enabled: true
+      idle_seconds: 3600
+      minimum_messages: 2
+    channels:
+    - sensenova-flash-lite
+    - agnes-flash
+    - sensenova-deepseek-v4-flash
+  mix-deepseek-v4-flash:
+    public_model: mix-deepseek-v4-flash
+    tiers:
+      sensenova-deepseek-v4-flash: 0
+      opencode-go-deepseek-v4-flash: 1
+      deepseek-official-deepseek-v4-flash: 2
+    selection:
+      strategy: cost_aware
+      fallback:
+        order: cost_ascending
+        trigger:
+        - quota_exhausted
+        - busy_persistent
+        - failure
+        max_fallback_tiers: 2
+        reattach:
+          probe_before_switch_back: true
+          quiet_window_seconds: 1200
+          quota_recover_seconds: 3600
+          failure_retry_after: 300
+      stickiness:
+        min_stable_seconds: 3600
+    context_policy:
+      reserve_output_tokens: 8192
+    session_affinity:
+      enabled: true
+      idle_seconds: 3600
+      minimum_messages: 2
+    channels:
+    - sensenova-deepseek-v4-flash
+    - opencode-go-deepseek-v4-flash
+    - deepseek-official-deepseek-v4-flash
+  sensenova-deepseek-v4-flash:
+    public_model: sensenova-deepseek-v4-flash
+    channels:
+    - sensenova-deepseek-v4-flash
+    tiers:
+      sensenova-deepseek-v4-flash: 0
+    selection:
+      strategy: round_robin
+  agnes-flash:
+    public_model: agnes-flash
+    channels:
+    - agnes-flash
+    tiers:
+      agnes-flash: 0
+    selection:
+      strategy: round_robin
+  opencode-go-deepseek-v4-flash:
+    public_model: opencode-go-deepseek-v4-flash
+    channels:
+    - opencode-go-deepseek-v4-flash
+    tiers:
+      opencode-go-deepseek-v4-flash: 0
+    selection:
+      strategy: round_robin
+  M2-deepseek-v4-flash:
+    public_model: M2-deepseek-v4-flash
+    channels:
+    - sensenova-deepseek-v4-flash
+    - opencode-go-deepseek-v4-flash
+    - agnes-flash
+    tiers:
+      sensenova-deepseek-v4-flash: 0
+      opencode-go-deepseek-v4-flash: 0
+      agnes-flash: 0
+    selection:
+      strategy: cost_aware
+  AntDigital-glm-5-3:
+    public_model: AntDigital-glm-5-3
+    channels:
+    - AntDigital-glm-5-3
+    tiers:
+      AntDigital-glm-5-3: 0
+    selection:
+      strategy: round_robin
+  AntDigital-minimax-m2-7:
+    public_model: AntDigital-minimax-m2-7
+    channels:
+    - AntDigital-minimax-m2-7
+    tiers:
+      AntDigital-minimax-m2-7: 0
+    selection:
+      strategy: round_robin
+  AntDigital-qwen3-7-plus:
+    public_model: AntDigital-qwen3-7-plus
+    channels:
+    - AntDigital-qwen3-7-plus
+    tiers:
+      AntDigital-qwen3-7-plus: 0
+    selection:
+      strategy: round_robin
+links:
+  main: mix-deepseek-v4-flash
+  sensenova-only: sensenova-deepseek-v4-flash
+  hermes-backend: agnes-flash

@@ -2529,8 +2529,12 @@ def create_app(config_path:str|Path):
                             cleanup.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
                     except Exception:pass
                 async def first_event(resp,attempt_id,attempt_started,label,target):
-                    iterator=resp.__aiter__()
-                    state.trace_event(rid,'upstream_first_sse_wait_started',target.id,detail=f'Waiting up to {UPSTREAM_FIRST_CHUNK_TIMEOUT}s for first SSE event')
+                    # Every stream, not only the ASGI handoff path, is read
+                    # through the same raw FIFO.  This preserves Provider
+                    # extension frames and makes downstream backpressure a
+                    # bounded pause rather than an implicit event loss.
+                    iterator=BufferedUpstreamStream(resp)
+                    state.trace_event(rid,'upstream_first_sse_wait_started',target.id,detail=f'Buffering raw SSE events; waiting up to {UPSTREAM_FIRST_CHUNK_TIMEOUT}s for first event')
                     first=await await_bounded(anext(iterator),UPSTREAM_FIRST_CHUNK_TIMEOUT)
                     state.trace_event(rid,'upstream_first_sse',target.id,detail=f'First SSE event received within {UPSTREAM_FIRST_CHUNK_TIMEOUT}s')
                     return iterator,first,attempt_id,attempt_started,label,target
@@ -2659,6 +2663,11 @@ def create_app(config_path:str|Path):
                         _,target_ids=hedge_plan[hedge_index-1]
                         for target_id in target_ids: schedule_hedge_event(hedge_index,channel_by_id[target_id])
                     iterator,first_item,active_attempt,active_started,label,winner_channel=winner
+                    # ``iterator`` is the BufferedUpstreamStream that owns
+                    # the provider reader.  Keep it as the active response so
+                    # every cancellation/cleanup path closes the FIFO pump,
+                    # not merely the underlying response object.
+                    response=iterator
                     ch=winner_channel; base,key_=channel_credentials(ch,config.providers)
                     if affinity.get('enabled'):
                         # A first SSE proves this Channel can serve the current
@@ -2771,7 +2780,7 @@ def create_app(config_path:str|Path):
                                         fallback_response=await call_upstream(target)
                                         new_iterator,new_first,_,_,_,_=await first_event(fallback_response,h_attempt,h_started,'policy fallback',target)
                                         await close_upstream(current_response)
-                                        current_response=fallback_response; response=fallback_response; current_iterator=new_iterator; current_item=new_first
+                                        current_response=new_iterator; response=new_iterator; current_iterator=new_iterator; current_item=new_first
                                         ch=target; base,key_=channel_credentials(ch,config.providers); active_attempt=h_attempt; active_started=h_started; emitted=False; buffered=[]; buffered_chars=0; idle_started=time.monotonic(); idle_stage=0
                                         stream_guard_last[0]=time.monotonic()
                                         if affinity.get('enabled'):
@@ -2898,7 +2907,7 @@ def create_app(config_path:str|Path):
                                 state.trace_event(rid,'protocol_fallback_error',target.id,error_code(fallback_exc),detail=f'{rule.id}: {error_type(fallback_exc)}: {error_detail(fallback_exc)}')
                                 raise fallback_exc
                             await close_upstream(response)
-                            response=new_response; iterator=new_iterator; first_item=new_first; ch=target; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
+                            response=new_iterator; iterator=new_iterator; first_item=new_first; ch=target; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
                             if affinity.get('enabled'):
                                 state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2),kind='protocol')
                                 state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Protocol fallback Channel produced first SSE; provisional affinity updated')

@@ -67,6 +67,15 @@ def test_buffered_upstream_stream_preserves_raw_order():
     asyncio.run(exercise())
 
 
+def test_all_stream_paths_use_raw_fifo_and_close_the_active_pump():
+    """Fallback/hedge cleanup must not bypass the raw SSE FIFO."""
+    source = (_REPO / 'src' / 'flex_llm_router' / 'app.py').read_text(encoding='utf-8')
+    assert "iterator=BufferedUpstreamStream(resp)" in source
+    assert "current_response=new_iterator; response=new_iterator" in source
+    assert "response=new_iterator; iterator=new_iterator; first_item=new_first" in source
+    assert "response=iterator\n                    ch=winner_channel" in source
+
+
 def test_initial_response_arbitration_has_completed_task_fifo():
     """Fast 429s must be harvested rather than waiting for a later Hedge tick."""
     source = (_REPO / 'src' / 'flex_llm_router' / 'app.py').read_text(encoding='utf-8')

@@ -42,7 +42,7 @@ def backup_config_file(config_path: Path, keep: int = 10) -> Path | None:
 
 # Change this for every core behavior release.  It is exposed by /healthz so a
 # restart can be verified without inferring it from a changing uptime counter.
-ROUTER_BUILD='2026-09-02.core-stream-watchdog-v3'
+ROUTER_BUILD='2026-09-02.stream-handoff-buffer-v4'
 RESPONSE_REPLAY_SECONDS=int(os.getenv('FLEX_RESPONSE_REPLAY_SECONDS','120'))
 class ClientDisconnectedBeforeResponse(Exception):
     """The downstream socket closed while LiteLLM was still awaiting headers/SSE."""
@@ -655,6 +655,58 @@ async def await_stream_next(iterator, timeout_seconds):
         cancel_detached({task})
         raise asyncio.TimeoutError()
     return task.result()
+
+class BufferedUpstreamStream:
+    """Decouple the provider's SSE reader from ASGI's downstream sender.
+
+    LiteLLM can hand the Router a response object before Starlette begins
+    consuming ``StreamingResponse``.  Reading into this bounded FIFO at once
+    preserves every raw provider event during that handoff.  No event type is
+    interpreted or discarded here; the normal stream dispatcher receives the
+    original objects in order.
+    """
+    def __init__(self, response, max_items=64):
+        self.response=response
+        self.iterator=response.__aiter__()
+        self.queue=asyncio.Queue(maxsize=max_items)
+        self.closed=False
+        self.task=asyncio.create_task(self._pump())
+
+    async def _pump(self):
+        try:
+            async for item in self.iterator:
+                await self.queue.put(('item',item))
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            await self.queue.put(('error',exc))
+        else:
+            await self.queue.put(('done',None))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        kind,value=await self.queue.get()
+        if kind=='item':
+            return value
+        if kind=='done':
+            raise StopAsyncIteration
+        raise value
+
+    async def aclose(self):
+        if self.closed:
+            return
+        self.closed=True
+        cancel_detached({self.task})
+        close=getattr(self.response,'aclose',None) or getattr(self.response,'close',None)
+        if callable(close):
+            try:
+                result=close()
+                if hasattr(result,'__await__'):
+                    cancel_detached({asyncio.create_task(result)})
+            except Exception:
+                pass
 LARGE_CONTEXT_THRESHOLD_TOKENS=int(os.getenv('FLEX_LARGE_CONTEXT_THRESHOLD_TOKENS','100000'))
 LARGE_CONTEXT_HEDGE_DELAYS=(int(os.getenv('FLEX_LARGE_CONTEXT_HEDGE_FIRST_SECONDS','180')),
                             int(os.getenv('FLEX_LARGE_CONTEXT_HEDGE_SECOND_SECONDS','360')))
@@ -1557,7 +1609,7 @@ def create_app(config_path:str|Path):
             'status':'ok',
             'router_version':app.version,
             'build':app.state.build,
-            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','core_stream_watchdog','absolute_post_sse_deadline','trace_finalize_on_stream_watchdog','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
+            'build_features':['deadline_event_hard_stop','pre_response_deadline_hard_stop','detached_upstream_cancellation','detached_stream_idle_read','visible_sse_idle_guard','independent_stream_idle_guard','core_stream_watchdog','buffered_stream_handoff','absolute_post_sse_deadline','trace_finalize_on_stream_watchdog','pre_response_error_preservation','pre_response_completed_task_harvest','completed_limit_task_harvest','downstream_timeout_signal','stream_idle_absolute_hedges','nonblocking_sse_cleanup','config_driven_hedge_stages','generic_runner_policy','inflight_channel_dedupe','bounded_upstream_wait','upstream_lifecycle_events','stream_consumer_observability','watchdog_phase_handoff','handoff_hedge_adoption','rpm_limit_two_stage_escalation','trace_list_query_index','channel_count_aware_6m_9m_hedges','single_channel_6m_retry_9m_deadline','dynamic_9m_12m_first_activity_deadline','local_full_request_viewer'],
             'process':{
                 'instance_id':app.state.instance_id,
                 'pid':os.getpid(),
@@ -1981,6 +2033,19 @@ def create_app(config_path:str|Path):
             # Shared with both the pre-response watchdog callback and the
             # outer HTTP handler, so a forced deadline is only finalized once.
             deadline_forced={'value':False}
+            async def prefetch_first_sse(resp,attempt_id,attempt_started,label,target):
+                """Begin reading a provider stream immediately after LiteLLM
+                returns its response object, before ASGI enters the body.
+
+                ASGI can schedule that body later (or a downstream handoff can
+                become half-open).  Leaving the first read inside ``events``
+                meant upstream output was not observed during that gap.
+                """
+                iterator=BufferedUpstreamStream(resp)
+                state.trace_event(rid,'upstream_first_sse_wait_started',target.id,detail=f'Router buffering raw SSE events before downstream streaming; waiting up to {UPSTREAM_FIRST_CHUNK_TIMEOUT}s for first event')
+                first=await await_bounded(anext(iterator),UPSTREAM_FIRST_CHUNK_TIMEOUT)
+                state.trace_event(rid,'upstream_first_sse',target.id,detail=f'First SSE event received within {UPSTREAM_FIRST_CHUNK_TIMEOUT}s (buffered before downstream dispatch)')
+                return iterator,first,attempt_id,attempt_started,label,target
             async def await_initial_response():
                 """Hedge while the provider has not even returned a response object yet."""
                 nonlocal initial_hedges_started, ch, attempt, started
@@ -2185,8 +2250,11 @@ def create_app(config_path:str|Path):
                                     target=channel_by_id[target_id]
                                     hedge_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
                                     hedge_started=time.monotonic(); state.trace_attempt(rid,target.id)
-                                    task=asyncio.create_task(call_upstream(target))
-                                    watch_record['handoff_hedges'][task]={'attempt_id':hedge_attempt,'started':hedge_started,'target':target,'number':hedge_no}
+                                    async def handoff_prefetch(target=target, hedge_attempt=hedge_attempt, hedge_started=hedge_started, hedge_no=hedge_no):
+                                        hedge_response=await call_upstream(target)
+                                        return await prefetch_first_sse(hedge_response,hedge_attempt,hedge_started,f'hedge {hedge_no}',target)
+                                    task=asyncio.create_task(handoff_prefetch())
+                                    watch_record['handoff_hedges'][task]={'attempt_id':hedge_attempt,'started':hedge_started,'target':target,'number':hedge_no,'prefetched':True}
                                     state.trace_event(rid,'pre_response_hedge_started',target.id,detail=f'无上游活动已达 {due}s；第 {hedge_no} 个 Hedge 阶段（{len(target_ids)} 个 Channel），发往 {target.id}（流式消费者尚未进入，先行启动）')
                                 watch_record['handoff_hedge_stages'].add(hedge_no)
                             watch_record['on_hedge']=handoff_watchdog_start_hedge
@@ -2201,6 +2269,9 @@ def create_app(config_path:str|Path):
                                 for handoff_task,info in list(watch_record.get('handoff_hedges',{}).items()):
                                     if not handoff_task.done(): handoff_task.cancel()
                                     state.finish(info['attempt_id'],'cancelled','upstream_total_timeout',int((time.monotonic()-info['started'])*1000),error_detail='Watchdog deadline before streaming consumer entered',error_code=504)
+                                prefetched=watch_record.get('prefetched_first_sse')
+                                if prefetched is not None:
+                                    cancel_detached({prefetched})
                                 state.trace_finish(rid,'failed',target.id,504,'upstream_total_timeout',detail,latency_ms=int((time.monotonic()-req_started)*1000))
                                 close=getattr(selected_response,'aclose',None) or getattr(selected_response,'close',None)
                                 if callable(close):
@@ -2212,7 +2283,9 @@ def create_app(config_path:str|Path):
                                     except Exception: pass
                             watch_record['deadline_forced']=False
                             watch_record['on_deadline']=stream_deadline_hard_stop
-                            state.trace_event(rid,'watchdog_handoff',target.id,detail='Response object selected; first-SSE watchdog queue now owned by streaming phase')
+                            first_sse_task=asyncio.create_task(prefetch_first_sse(value,attempt_id,attempt_started,label,target))
+                            watch_record['prefetched_first_sse']=first_sse_task
+                            state.trace_event(rid,'watchdog_handoff',target.id,detail='Response object selected; Router began raw SSE buffering before downstream streaming phase')
                             return value,attempt_id,attempt_started,target
                     # Every pre-response attempt ended in an error.  Preserve
                     # the final attempt's identity for trace/error handling and
@@ -2481,6 +2554,8 @@ def create_app(config_path:str|Path):
                     """Adopt a Hedge started while ASGI had not entered events()."""
                     target=info['target']; number=info['number']
                     try:
+                        if info.get('prefetched'):
+                            return await upstream_task
                         hedge_response=await upstream_task
                         return await first_event(hedge_response,info['attempt_id'],info['started'],f'hedge {number}',target)
                     except asyncio.CancelledError:
@@ -2510,7 +2585,9 @@ def create_app(config_path:str|Path):
                         # the handoff callback must not create duplicates.
                         watch_record['on_hedge']=None
                     state.trace_event(rid,'stream_consumer_started',ch.id,detail='Streaming response body consumer entered')
-                    original_task=asyncio.create_task(original_first_event(response))
+                    prefetched_first_sse=watch_record.pop('prefetched_first_sse',None) if watch_record else None
+                    original_task=(prefetched_first_sse if prefetched_first_sse is not None
+                                   else asyncio.create_task(original_first_event(response)))
                     pending={original_task}; pending_channels[original_task]=ch.id
                     if watch_record:
                         for upstream_task,info in list(watch_record.get('handoff_hedges',{}).items()):

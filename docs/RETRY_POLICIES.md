@@ -101,6 +101,10 @@ SSE 开始计算的绝对流式截止（单 Channel 9 分钟，多 Channel 12 �
 SDK 流读取卡死或下游发送阻塞，也会结束 Attempt/Trace 并向调用方发送终止信号。SDK 取消清理不能阻塞 watchdog；必要时底层读取任务会被
 分离回收。
 
+上游 response object 一返回，Router 就启动原始 SSE 读取泵，将事件按到达顺序写入
+有界 FIFO，再由 ASGI 向下游派发。队列不按事件类型过滤：未知的 Provider 扩展帧、
+reasoning 帧、工具调用帧都会原样保留；满队列只会反压上游读取，不会静默丢弃事件。
+
 HTTP disconnect 是标准 OpenAI 协议下可靠的取消信号：首活动前记录
 `client_disconnected_before_first_token`，流式期间记录 `client_disconnected`/
 `cancelled`，并取消全部 Hedge。核心会在首个有效 SSE 到达前暂存流式响应头，硬截止

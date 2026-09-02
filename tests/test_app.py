@@ -4,7 +4,7 @@ import asyncio
 import shutil
 import pytest
 from fastapi.testclient import TestClient
-from flex_llm_router.app import create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action, await_stream_next, has_stream_activity
+from flex_llm_router.app import BufferedUpstreamStream, create_app, error_type, hedge_plan_for, first_activity_deadline_for, rpm_limit_exhausted_action, await_stream_next, has_stream_activity
 
 import os
 _REPO = Path(__file__).resolve().parent.parent
@@ -41,6 +41,30 @@ def test_core_watchdog_keeps_trace_registered_after_first_sse():
     assert "watch_record['phase']='stream'" in source
     assert "watch_record['on_stream_deadline']=watchdog_stream_deadline" in source
     assert "if record.get('phase')=='stream':" in source
+
+
+def test_response_object_buffers_first_sse_before_asgi_body():
+    """The handoff gap must not leave a returned upstream stream unread."""
+    source = (_REPO / 'src' / 'flex_llm_router' / 'app.py').read_text(encoding='utf-8')
+    assert 'class BufferedUpstreamStream:' in source
+    assert "watch_record['prefetched_first_sse']=first_sse_task" in source
+    assert 'Router began raw SSE buffering before downstream streaming phase' in source
+
+
+def test_buffered_upstream_stream_preserves_raw_order():
+    class FakeResponse:
+        async def __aiter__(self):
+            yield {'unknown_provider_frame': 1}
+            yield {'choices': [{'delta': {'content': 'ok'}}]}
+
+    async def exercise():
+        buffered = BufferedUpstreamStream(FakeResponse())
+        assert await anext(buffered) == {'unknown_provider_frame': 1}
+        assert await anext(buffered) == {'choices': [{'delta': {'content': 'ok'}}]}
+        with pytest.raises(StopAsyncIteration):
+            await anext(buffered)
+
+    asyncio.run(exercise())
 
 
 def test_empty_sse_does_not_refresh_stream_idle_timer():

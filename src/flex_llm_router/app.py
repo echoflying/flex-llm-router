@@ -2193,7 +2193,13 @@ def create_app(config_path:str|Path):
                                 done=completed
                             else:
                                 if time.monotonic()-req_started>=UPSTREAM_FIRST_ACTIVITY_TIMEOUT-0.1:
-                                    continue
+                                    # No provider task completed at the local
+                                    # hard deadline.  Do not spin until the
+                                    # background watchdog happens to notice;
+                                    # that loop may not be running in a test
+                                    # client and must not be required for
+                                    # correctness.
+                                    raise UpstreamTotalTimeout()
                                 watchdog_start_hedge(initial_hedges_started+1)
                                 continue
                         for task in list(done):

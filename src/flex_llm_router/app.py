@@ -2054,7 +2054,18 @@ def create_app(config_path:str|Path):
                 # The caller must see the provider's real error (for example
                 # rpm_limit/429), not ``cannot unpack ... NoneType``.
                 last_error=None; last_attempt_id=attempt; last_attempt_started=started; last_target=ch
-                active={asyncio.create_task(call_upstream(ch)):(attempt,started,'original',ch)}
+                # Do not rely solely on ``asyncio.wait(active)`` noticing a
+                # very fast LiteLLM failure.  A completed-task FIFO makes the
+                # RPM/TPM state machine consume every result exactly once,
+                # including 429s that arrive between scheduler wake-ups.
+                completion_queue=asyncio.Queue()
+                def track_upstream_task(task):
+                    def notify(done):
+                        if not done.cancelled():
+                            completion_queue.put_nowait(done)
+                    task.add_done_callback(notify)
+                    return task
+                active={track_upstream_task(asyncio.create_task(call_upstream(ch))):(attempt,started,'original',ch)}
                 def launch_hedge_targets(hedge_no):
                     due,target_ids=hedge_plan[hedge_no-1]
                     active_channel_ids={target.id for _,(_,_,_,target) in active.items()}
@@ -2067,7 +2078,7 @@ def create_app(config_path:str|Path):
                         hedge_attempt=state.start(key,target.id,target.litellm_model,input_tokens=input_tokens(body,target.litellm_model),trace_id=rid)
                         hedge_started=time.monotonic(); state.trace_attempt(rid,target.id)
                         state.trace_event(rid,'pre_response_hedge_started',target.id,detail=f'无上游活动已达 {due}s；第 {hedge_no} 个 Hedge 阶段（{len(target_ids)} 个 Channel），发往 {target.id}')
-                        active[asyncio.create_task(call_upstream(target))]=(hedge_attempt,hedge_started,f'pre-response hedge {hedge_no}',target)
+                        active[track_upstream_task(asyncio.create_task(call_upstream(target)))]=(hedge_attempt,hedge_started,f'pre-response hedge {hedge_no}',target)
                         active_channel_ids.add(target.id)
                 # Register a direct callback only after the real task exists.
                 # The core watchdog invokes it itself at the deadline; this is
@@ -2112,6 +2123,7 @@ def create_app(config_path:str|Path):
                 disconnect_task=asyncio.create_task(watch_disconnect())
                 watchdog_task=asyncio.create_task(watchdog_signals.get())
                 deadline_task=asyncio.create_task(deadline_event.wait())
+                completion_task=asyncio.create_task(completion_queue.get())
                 try:
                     while active:
                         elapsed=time.monotonic()-req_started
@@ -2125,13 +2137,18 @@ def create_app(config_path:str|Path):
                         next_delay=hedge_plan[initial_hedges_started][0] if initial_hedges_started<len(hedge_plan) else None
                         hedge_wait=max(0,next_delay-elapsed) if next_delay is not None else remaining
                         timeout=min(hedge_wait,remaining)
-                        done,_=await asyncio.wait(set(active)|{disconnect_task,watchdog_task,deadline_task},timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
+                        done,_=await asyncio.wait(set(active)|{disconnect_task,watchdog_task,deadline_task,completion_task},timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
                         # A provider task can complete in the same event-loop
                         # turn as a watchdog/control task. Keep that concrete
                         # result so an RPM/TPM exception is harvested before a
                         # time-based Hedge is advanced (or silently skipped).
                         control_done=done
                         completed={task for task in active if task.done()}
+                        if completion_task in control_done:
+                            notified=completion_task.result()
+                            if notified in active:
+                                completed.add(notified)
+                            completion_task=asyncio.create_task(completion_queue.get())
                         if deadline_task in control_done or deadline_due['value']:
                             for task,(attempt_id,attempt_started,label,target) in active.items():
                                 if attempt_id!=attempt:
@@ -2300,7 +2317,8 @@ def create_app(config_path:str|Path):
                     if not disconnect_task.done(): disconnect_task.cancel()
                     if not watchdog_task.done(): watchdog_task.cancel()
                     if not deadline_task.done(): deadline_task.cancel()
-                    await asyncio.gather(disconnect_task,watchdog_task,deadline_task,return_exceptions=True)
+                    if not completion_task.done(): completion_task.cancel()
+                    await asyncio.gather(disconnect_task,watchdog_task,deadline_task,completion_task,return_exceptions=True)
             try:
                 base,key_=channel_credentials(ch, config.providers)
                 state.trace_event(rid,'upstream_request',ch.id,detail=f'{ch.provider} · {ch.litellm_model}')

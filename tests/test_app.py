@@ -67,6 +67,14 @@ def test_buffered_upstream_stream_preserves_raw_order():
     asyncio.run(exercise())
 
 
+def test_initial_response_arbitration_has_completed_task_fifo():
+    """Fast 429s must be harvested rather than waiting for a later Hedge tick."""
+    source = (_REPO / 'src' / 'flex_llm_router' / 'app.py').read_text(encoding='utf-8')
+    assert 'completion_queue=asyncio.Queue()' in source
+    assert 'completion_task=asyncio.create_task(completion_queue.get())' in source
+    assert 'if notified in active:' in source
+
+
 def test_empty_sse_does_not_refresh_stream_idle_timer():
     assert not has_stream_activity({'choices': [{'delta': {'role': 'assistant'}}]})
     assert not has_stream_activity({'choices': [{'delta': {}}]})

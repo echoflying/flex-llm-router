@@ -655,14 +655,41 @@ async def await_stream_next(iterator, timeout_seconds):
         cancel_detached({task})
         raise asyncio.TimeoutError()
     return task.result()
-def hedge_plan_for(pool_name,channels,selected,pool=None):
+LARGE_CONTEXT_THRESHOLD_TOKENS=int(os.getenv('FLEX_LARGE_CONTEXT_THRESHOLD_TOKENS','100000'))
+LARGE_CONTEXT_HEDGE_DELAYS=(int(os.getenv('FLEX_LARGE_CONTEXT_HEDGE_FIRST_SECONDS','180')),
+                            int(os.getenv('FLEX_LARGE_CONTEXT_HEDGE_SECOND_SECONDS','360')))
+LARGE_CONTEXT_DEADLINES={'one_channel':int(os.getenv('FLEX_LARGE_CONTEXT_DEADLINE_ONE_SECONDS','360')),
+                         'two_channels':int(os.getenv('FLEX_LARGE_CONTEXT_DEADLINE_TWO_SECONDS','360')),
+                         'three_or_more_channels':int(os.getenv('FLEX_LARGE_CONTEXT_DEADLINE_THREE_SECONDS','540'))}
+
+def _large_context_policy(pool):
+    """Return per-Runner large-context Hedge overrides (or global defaults)."""
+    cfg=(pool.selection.get('large_context_hedge',{}) if pool is not None and isinstance(pool.selection,dict) else {})
+    if not isinstance(cfg,dict): cfg={}
+    enabled=bool(cfg.get('enabled',True))
+    try: threshold=max(1,int(cfg.get('threshold_tokens',LARGE_CONTEXT_THRESHOLD_TOKENS)))
+    except (TypeError,ValueError): threshold=LARGE_CONTEXT_THRESHOLD_TOKENS
+    try: first=max(1,int(cfg.get('first_seconds',LARGE_CONTEXT_HEDGE_DELAYS[0])))
+    except (TypeError,ValueError): first=LARGE_CONTEXT_HEDGE_DELAYS[0]
+    try: second=max(first+1,int(cfg.get('second_seconds',LARGE_CONTEXT_HEDGE_DELAYS[1])))
+    except (TypeError,ValueError): second=LARGE_CONTEXT_HEDGE_DELAYS[1]
+    deadlines=dict(LARGE_CONTEXT_DEADLINES)
+    for key in deadlines:
+        try:
+            if key in cfg: deadlines[key]=max(1,int(cfg[key]))
+        except (TypeError,ValueError): pass
+    return enabled,threshold,(first,second),deadlines
+
+def hedge_plan_for(pool_name,channels,selected,pool=None,input_tokens_count=None):
     """Return configured (due_seconds, channel ids) first-activity Hedge steps.
     Channel IDs are always read from the selected Pool; no model/provider names
     are special-cased here. Without explicit stages, use same-channel defaults.
     """
+    large_enabled,large_threshold,large_delays,_= _large_context_policy(pool)
+    is_large=large_enabled and input_tokens_count is not None and input_tokens_count >= large_threshold
     configured=(pool.selection.get('hedge',{}) if pool is not None and isinstance(pool.selection,dict) else {})
     stages=configured.get('stages',[]) if isinstance(configured,dict) else []
-    if stages:
+    if stages and not is_large:
         known={channel.id for channel in channels}
         plan=[]
         for stage in stages:
@@ -677,18 +704,23 @@ def hedge_plan_for(pool_name,channels,selected,pool=None):
     # the request's model0; subsequent configured Channels are model1/model2.
     ordered=[selected]+[channel for channel in channels if channel.id!=selected.id]
     if len(ordered)>=3:
-        return ((360,(ordered[1].id,)),(540,(ordered[2].id,)))
+        delays=large_delays if is_large else (360,540)
+        return ((delays[0],(ordered[1].id,)),(delays[1],(ordered[2].id,)))
     if len(ordered)==2:
-        return ((360,(ordered[1].id,)),)
+        return ((large_delays[0] if is_large else 360,(ordered[1].id,)),)
     # A single Channel still gets one same-Channel retry. This is not a
     # provider failover: it is a second request for the same model at T+6m,
     # followed by the common T+9m hard stop.
     if len(ordered)==1:
-        return ((360,(ordered[0].id,)),)
+        return ((large_delays[0] if is_large else 360,(ordered[0].id,)),)
     return ()
 
-def first_activity_deadline_for(channels):
+def first_activity_deadline_for(channels,input_tokens_count=None,pool=None):
     """Return the request hard-stop implied by Runner Channel count."""
+    large_enabled,threshold,_,deadlines=_large_context_policy(pool)
+    if large_enabled and input_tokens_count is not None and input_tokens_count >= threshold:
+        key='three_or_more_channels' if len(channels)>=3 else ('two_channels' if len(channels)==2 else 'one_channel')
+        return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,deadlines[key])
     if len(channels)>=3:
         return min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)
     if len(channels)==2:
@@ -1537,6 +1569,9 @@ def create_app(config_path:str|Path):
             'effective_policy':{
                 'automatic_hedge_seconds':{'one_channel':[360],'two_channels':[360],'three_or_more_channels':[360,540]},
                 'automatic_deadline_seconds':{'one_channel':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'two_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,540),'three_or_more_channels':min(UPSTREAM_FIRST_ACTIVITY_TIMEOUT,720)},
+                'large_context_policy':{'enabled':True,'threshold_tokens':LARGE_CONTEXT_THRESHOLD_TOKENS,
+                                        'hedge_seconds':list(LARGE_CONTEXT_HEDGE_DELAYS),
+                                        'deadline_seconds':dict(LARGE_CONTEXT_DEADLINES)},
                 'configured_pool_hedges':{
                     pool_name:[{'after_seconds':due,'channels':list(targets)} for due,targets in hedge_plan_for(pool_name,[ch for _,ch in config.get_pool_channels(pool_name)],config.get_pool_channels(pool_name)[0][1],config.pools[pool_name])]
                     for pool_name in config.runners
@@ -1907,12 +1942,12 @@ def create_app(config_path:str|Path):
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
             sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages'],affinity.get('protocol_idle_seconds')) if affinity.get('enabled') else None
-            ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None)); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=input_tokens(body,ch.litellm_model),trace_id=rid); started=time.monotonic()
+            ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None)); request_input_tokens=input_tokens(body,ch.litellm_model); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=request_input_tokens,trace_id=rid); started=time.monotonic()
             state.trace_event(rid,'channel_selected',ch.id,detail='session affinity hit' if sticky==ch.id else 'scheduler selected channel')
             state.trace_attempt(rid,ch.id)
             initial_hedges_started=0
-            hedge_plan=[] if policy_fallback_active else hedge_plan_for(internal,request_channels,ch,pool)
-            first_activity_deadline=first_activity_deadline_for(request_channels)
+            hedge_plan=[] if policy_fallback_active else hedge_plan_for(internal,request_channels,ch,pool,request_input_tokens)
+            first_activity_deadline=first_activity_deadline_for(request_channels,request_input_tokens,pool)
             channel_by_id={candidate.id:candidate for candidate in request_channels}
             # The watchdog is owned by the core (7800), not the UI.  It sends
             # deadline signals through this queue, so a hung provider request

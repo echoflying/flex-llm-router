@@ -71,6 +71,12 @@ Channel 先按流式、工具、JSON、上下文窗口和启用/冷却状态筛�
 
 ## 6. 无首活动 Hedge
 
+默认普通请求使用 6/9/12 分钟（按 Channel 数量）；输入规模达到大上下文阈值时，
+自动切换为更激进的 3/6/9 分钟计划。默认阈值为 100,000 input tokens，可通过
+`FLEX_LARGE_CONTEXT_THRESHOLD_TOKENS` 或 Runner 的
+`selection.large_context_hedge` 覆盖。大包会重复发送输入，应只用于确实需要更快
+恢复的场景。
+
 核心 7800 watchdog 独立每秒观察响应对象或有效 SSE 活动，按 Runner Channel 数量
 生成副本计划：
 
@@ -198,6 +204,9 @@ wait_n = min(base_seconds × (2^n if exponential else 1), max_seconds)
 | `FLEX_UPSTREAM_RESPONSE_TIMEOUT` | `180` 秒 | `180` 秒 | 单次 LiteLLM 调用等待 response object 的安全边界；超时会脱离底层任务。 |
 | `FLEX_UPSTREAM_FIRST_CHUNK_TIMEOUT` | `180` 秒 | `180` 秒 | response object 后等待首个有效 SSE 的安全边界。 |
 | `FLEX_UPSTREAM_FIRST_ACTIVITY_TIMEOUT` | `900` 秒 | `900` 秒 | 请求级首活动全局上限；按 Runner Channel 数量自动收紧为 9 分钟或 12 分钟。 |
+| `FLEX_LARGE_CONTEXT_THRESHOLD_TOKENS` | `100000` | `100000` | 达到该输入规模时启用大上下文 3/6/9 分钟 Hedge。 |
+| `FLEX_LARGE_CONTEXT_HEDGE_FIRST_SECONDS` | `180` 秒 | `180` 秒 | 大上下文第一次 Hedge 延迟。 |
+| `FLEX_LARGE_CONTEXT_HEDGE_SECOND_SECONDS` | `360` 秒 | `360` 秒 | 大上下文第二次 Hedge 延迟。 |
 | `FLEX_SESSION_AFFINITY_IDLE_SECONDS` | `3600` 秒 | 由 Setup 覆盖 | 普通会话粘性闲置时间，范围 60–86400 秒。 |
 | `FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS` | `3600` 秒 | 由 Setup 覆盖 | 协议兼容回退后的独立粘性闲置时间，范围 60–86400 秒。 |
 | `FLEX_PROBE_INTERVAL` | `120` 秒 | 未写入 setup.conf | 配额恢复后台循环的检查频率，不等于每个 Channel 的健康检查频率。 |

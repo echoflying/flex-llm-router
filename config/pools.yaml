@@ -1037,9 +1037,9 @@ channels:
           16}, "prompt_tokens": 10, "prompt_tokens_details": {"cached_to'
       vision:
         status: error
-        checked_at: 1795044062
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 151
+        latency_ms: 206
         detail: '{"error": {"code": "1210", "message": "messages.content.type 参数非法，取值范围
           [''text'']"}}'
     provider_type: openai_compatible
@@ -1268,58 +1268,58 @@ channels:
         retried_429: false
       chat:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 194
+        latency_ms: 249
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-1a38558f-b86c-9722-abbe-fb2a83bd87b9",
-          "request_id": "1a38558f-b86c-9722-abbe-fb2a83bd87b9"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-cc85793f-3da2-9061-b0da-f2d59086d494",
+          "request_id": "cc85793f-3da2-9061-b0da-f2d59086d494"}'
       streaming:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 189
+        latency_ms: 477
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-3625cef9-a2cb-9883-9d9f-0963ccd0223a",
-          "request_id": "3625cef9-a2cb-9883-9d9f-0963ccd0223a"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-d9db8aec-dc25-950c-ae1a-c2e39e953ff3",
+          "request_id": "d9db8aec-dc25-950c-ae1a-c2e39e953ff3"}'
       tools:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 184
+        latency_ms: 359
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-1b8c6719-9fcf-9360-b66f-3b527657cf2c",
-          "request_id": "1b8c6719-9fcf-9360-b66f-3b527657cf2c"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-a2476d35-e00d-9f92-b5f9-0c0b55d330ba",
+          "request_id": "a2476d35-e00d-9f92-b5f9-0c0b55d330ba"}'
       json:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 186
+        latency_ms: 332
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-20ee24e6-6c6b-9aac-8cad-b785270f3a85",
-          "request_id": "20ee24e6-6c6b-9aac-8cad-b785270f3a85"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-bbf00244-5d4c-9077-a7a5-434b95d23c3d",
+          "request_id": "bbf00244-5d4c-9077-a7a5-434b95d23c3d"}'
       reasoning:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 198
+        latency_ms: 207
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-dfa93762-7560-94f5-82c2-bb40cfced937",
-          "request_id": "dfa93762-7560-94f5-82c2-bb40cfced937"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-467dda4b-0fba-9ff0-a90b-3c6bf06e22e0",
+          "request_id": "467dda4b-0fba-9ff0-a90b-3c6bf06e22e0"}'
       vision:
         status: error
-        checked_at: 1795044086
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 228
+        latency_ms: 222
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-7d027548-9d50-9adf-bd03-98eb2bcdafd9",
-          "request_id": "7d027548-9d50-9adf-bd03-98eb2bcdafd9"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-443ad6bd-b640-90c4-823c-3bc449957432",
+          "request_id": "443ad6bd-b640-90c4-823c-3bc449957432"}'
     provider_type: openai_compatible
   deepseek-official-deepseek-flash:
     id: deepseek-official-deepseek-flash
@@ -1494,17 +1494,17 @@ channels:
         retried_429: false
       vision:
         status: error
-        checked_at: 1795044097
+        checked_at: 1795106595
         http_status: 400
-        latency_ms: 145
+        latency_ms: 204
         detail: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
       responses:
         status: error
-        checked_at: 1795044097
+        checked_at: 1795106595
         http_status: 400
         endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 508
+        latency_ms: 521
         detail: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
     chn_content_policy_fallback: false

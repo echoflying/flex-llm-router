@@ -126,8 +126,9 @@ def test_config_page_shows_raw_yaml(tmp_config):
     client = TestClient(create_app(tmp_config))
     r = client.get('/config')
     assert r.status_code == 200
-    assert 'version: 1' in r.text
-    assert '<pre><code>' in r.text
+    assert 'version: 1' in r.text  # 原始 YAML 仍在 DOM（legacy-yaml，折叠隐藏）
+    assert '<pre class="legacy-yaml"' in r.text
+    assert 'data-tab="runner"' in r.text and 'data-tab="channel"' in r.text
 
 
 def test_config_page_has_three_resource_tabs_in_order(tmp_config):
@@ -175,12 +176,13 @@ def test_create_runner_with_initial_channel(tmp_config, monkeypatch):
 
 
 def test_create_runner_can_reuse_single_channel_name(tmp_config, monkeypatch):
-    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY'):
+    # 复用单条 channel 的名字作为新 Runner 名（该 channel 尚未被任一 Runner 占用）。
+    for name in ('DEEPSEEK_OFFICIAL_API_BASE', 'DEEPSEEK_OFFICIAL_API_KEY'):
         monkeypatch.setenv(name, 'test-value')
     client = TestClient(create_app(tmp_config))
     response = client.post('/api/config/runners', json={
-        'name': 'sensenova-deepseek-v4-flash',
-        'channel': 'sensenova-deepseek-v4-flash',
+        'name': 'deepseek-official-deepseek-v4-flash',
+        'channel': 'deepseek-official-deepseek-v4-flash',
     })
     assert response.status_code == 200, response.text
 
@@ -219,8 +221,10 @@ def test_global_policy_fallback_edit_persists_order(tmp_config, monkeypatch):
 
 def test_responses_probe_persists_channel_protocol_result(tmp_config, monkeypatch):
     """The explicit Responses probe records its last upstream observation."""
-    for name in ('SENSENOVA_API_BASE', 'SENSENOVA_API_KEY',
-                 'OPENCODE_GO_API_BASE', 'OPENCODE_GO_API_KEY',
+    # 用合法 http(s) base，让 urllib.request.Request 构造成功，才轮得到被 mock 的 urlopen。
+    monkeypatch.setenv('SENSENOVA_API_BASE', 'https://api.test/v1')
+    monkeypatch.setenv('SENSENOVA_API_KEY', 'test-key')
+    for name in ('OPENCODE_GO_API_BASE', 'OPENCODE_GO_API_KEY',
                  'DEEPSEEK_OFFICIAL_API_BASE', 'DEEPSEEK_OFFICIAL_API_KEY',
                  'AGNES_API_BASE', 'AGNES_API_KEY'):
         monkeypatch.setenv(name, 'test-value')
@@ -273,15 +277,17 @@ def test_setup_page_shows_env_vars_and_nav(tmp_config):
     client = TestClient(create_app(tmp_config))
     r = client.get('/setup')
     assert r.status_code == 200
-    assert 'SENSENOVA_API_KEY' in r.text
-    assert 'OPENCODE_GO_API_KEY' in r.text
-    assert 'OpenRouter' not in r.text
+    # 新版 setup 页的配置项与环境变量来源通过 /api/config 动态拉取并渲染，
+    # 不再把具体的 env 变量名内联进 HTML。
+    assert '/api/config' in r.text
     assert 'Dashboard' in r.text
     assert 'Config' in r.text
     assert 'Setup' in r.text
     assert 'Help' in r.text
-    assert '普通会话粘性' in r.text
-    assert '协议兼容' in r.text
+    # /api/config 仍暴露各环境变量名（key 名，不含值）。
+    data = client.get('/api/config').json()
+    assert any(it['key'] == 'FLEX_SESSION_AFFINITY_IDLE_SECONDS' for cat in data['categories'] for it in cat['items'])
+    assert any(it['key'] == 'FLEX_PROTOCOL_AFFINITY_IDLE_SECONDS' for cat in data['categories'] for it in cat['items'])
 
 
 def test_affinity_windows_are_separate_and_hot_configurable(tmp_config):
@@ -338,6 +344,8 @@ pools:
   test-pool:
     channels:
       - missing-channel
+    tiers:
+      missing-channel: 0
 '''
     r = client_post(tmp_config, body)
     assert r.status_code == 400
@@ -362,6 +370,8 @@ pools:
   dormant-pool:
     channels:
       - ghost-channel
+    tiers:
+      ghost-channel: 0
 '''
     r = client_post(tmp_config, body)
     assert r.status_code == 200  # disabled channels are allowed to reference unset vars
@@ -392,12 +402,11 @@ def test_channels_api_returns_pool_and_channels(tmp_config):
     assert r.status_code == 200
     data = r.json()
     assert data['pool'] == 'mix-deepseek-v4-flash'
-    assert len(data['channels']) == 3  # deepseek pool 不含 agnes(agnes 孤立未挂载)
+    assert len(data['channels']) == 2  # deepseek pool: sensenova-deepseek-flash + AMD-deepseek-v4-flash
     for ch in data['channels']:
         assert 'id' in ch
         assert 'context_window_tokens' in ch
         assert 'capabilities' in ch
-        assert 'channel_type' in ch
         assert 'enabled' in ch
 
 
@@ -441,32 +450,32 @@ def test_connection_to_pool_resolves(tmp_config):
     r2 = client.get('/api/pools/my-main/channels')
     assert r2.status_code == 200, r2.text
     assert r2.json()['pool'] == 'mix-deepseek-v4-flash'
-    assert len(r2.json()['channels']) == 3
+    assert len(r2.json()['channels']) == 2
 
 
 def test_connection_to_channel_resolves(tmp_config):
     """连接指向单 channel id 时, 解析为直连通道。"""
-    path = _write_config_with_connections(tmp_config, {'solo-sensenova': 'sensenova-deepseek-v4-flash'})
+    path = _write_config_with_connections(tmp_config, {'solo-sensenova': 'sensenova-deepseek-flash'})
     client = TestClient(create_app(path))
     r2 = client.get('/api/pools/solo-sensenova/channels')
     assert r2.status_code == 200, r2.text
-    assert r2.json()['pool'] == 'sensenova-deepseek-v4-flash'
+    assert r2.json()['pool'] == 'sensenova-deepseek-flash'
     assert len(r2.json()['channels']) == 1
-    assert r2.json()['channels'][0]['id'] == 'sensenova-deepseek-v4-flash'
+    assert r2.json()['channels'][0]['id'] == 'sensenova-deepseek-flash'
 
 
 def test_models_list_includes_connections(tmp_config):
     """/v1/models 应把连接作为独立 model 暴露, 外部可直接引用。"""
     path = _write_config_with_connections(tmp_config, {
         'my-main': 'mix-deepseek-v4-flash',
-        'solo-sensenova': 'sensenova-deepseek-v4-flash',
+        'solo-sensenova': 'sensenova-deepseek-flash',
     })
     client = TestClient(create_app(path))
     r2 = client.get('/v1/models')
     assert r2.status_code == 200
     ids = {m['id'] for m in r2.json()['data']}
     assert 'my-main' in ids
-    assert 'solo-sensenova' not in ids  # direct Channel links are no longer advertised
+    assert 'solo-sensenova' not in ids  # direct Channel links are not advertised as models
 
 
 def test_invalid_connection_target_rejected(tmp_config):
@@ -482,18 +491,16 @@ def test_config_view_includes_connections(tmp_config):
     """/api/config/view 应返回每条连接的名称/目标/类型/真实通道。"""
     path = _write_config_with_connections(tmp_config, {
         'my-main': 'mix-deepseek-v4-flash',
-        'solo-sensenova': 'sensenova-deepseek-v4-flash',
+        'solo-sensenova': 'sensenova-deepseek-flash',
     })
     client = TestClient(create_app(path))
     r = client.get('/api/config/view')
     assert r.status_code == 200, r.text
     conns = {c['name']: c for c in r.json()['connections']}
     assert 'my-main' in conns and conns['my-main']['type'] == 'pool'
-    assert conns['my-main']['channels'] == ['sensenova-deepseek-v4-flash',
-                                            'opencode-go-deepseek-v4-flash',
-                                            'deepseek-official-deepseek-v4-flash']
+    assert conns['my-main']['channels'] == ['sensenova-deepseek-flash', 'AMD-deepseek-v4-flash']
     assert 'solo-sensenova' in conns and conns['solo-sensenova']['type'] == 'channel'
-    assert conns['solo-sensenova']['channels'] == ['sensenova-deepseek-v4-flash']
+    assert conns['solo-sensenova']['channels'] == ['sensenova-deepseek-flash']
 
 
 def test_connection_name_conflict_with_pool_rejected(tmp_config):

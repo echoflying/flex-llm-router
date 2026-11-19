@@ -20,7 +20,7 @@ def validate_runner_name(value: str) -> str:
     Runners are required to follow this rule.
     """
     name = str(value or '').strip()
-    if not RUNNER_NAME_PATTERN.fullmatch(name):
+    if not RUNNER_NAME_PATTERN.fullmatch(str(value or '')):
         raise ValueError('Runner 名称只能包含字母、数字、点、下划线和连字符，且必须以字母或数字开头（最多 64 个字符）')
     return name
 

@@ -583,7 +583,13 @@ def responses_probe_url(base_url: str) -> str:
 
 def _probe_detail(value: Any) -> str:
     """Return a bounded, credential-redacted probe detail for the UI/config."""
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(value)
     text = re.sub(r'(?i)((?:api[_-]?key|authorization|token)\s*[=:]\s*)[^\s,}]+', r'\1[redacted]', text)
     return text[:500]
 
@@ -591,7 +597,11 @@ def _probe_detail_has(status_code: int | None, payload: Any, detail: str, *marke
     """Case-insensitively test whether a probe failure matches any transient marker."""
     if status_code is not None and str(status_code) in markers:
         return True
-    hay = f'{detail} {payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)}'.lower()
+    try:
+        payload_txt = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        payload_txt = str(payload)
+    hay = f'{detail} {payload_txt}'.lower()
     return any(m.lower() in hay for m in markers)
 
 def classify_responses_probe(http_status: int | None, payload: Any, detail: str = '') -> str:
@@ -1667,17 +1677,17 @@ def create_app(config_path:str|Path):
         membership is controlled here by the Runner editor.
         """
         body=await request.json()
-        name=str(body.get('name') or '').strip()
+        raw_name=str(body.get('name') or '')
+        try:
+            name=validate_runner_name(raw_name)  # 校验原始值（含首尾空格拒绝），返回规范化后的名称
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
         public_model=str(body.get('public_model') or name).strip()
         channels=body.get('channels')
         if channels is None and body.get('channel'):
             channels=[body.get('channel')]
-        if not name or not public_model:
+        if not public_model:
             raise HTTPException(400,'name is required')
-        try:
-            validate_runner_name(name)
-        except ValueError as exc:
-            raise HTTPException(400,str(exc)) from exc
         if not isinstance(channels,list) or not channels:
             raise HTTPException(400,'select at least one Channel')
         channels=[str(channel).strip() for channel in channels if str(channel).strip()]

@@ -3306,6 +3306,25 @@ def create_app(config_path:str|Path):
                         state.cooldown(key,ch.id,wait,'busy')
                         state.trace_event(rid,'retry_wait',ch.id,detail=f'{typ}; 指数退避第 {step+1} 次，等待 {wait:.0f}s（基准 {backoff:.0f}s，累计上限 {cap}s）')
                         continue
+                # 连接层瞬态错误（Connection error / server_error / timeout）：反映的是
+                # 上游或网络层的短时不可用，不是请求本身。若 Runner 里还有其它可用兄弟
+                # 通道，优先切过去，而不是在同一通道上耗完 max_retries 次退避后 500，
+                # 白白把 Runner 的多通道冗余降成单通道硬扛。仅当没有兄弟通道时才退回
+                # 原来的同通道退避重试。
+                if typ in ('connection_error','server_error','timeout','upstream_response_timeout') and retries < rp.max_retries:
+                    siblings=[]
+                    for candidate in request_channels:
+                        if candidate.id==ch.id or candidate.id in tried: continue
+                        if not state.is_enabled(key,candidate.id): continue
+                        ok_c,reason_c,total_c=compatibility(reserve,candidate,body,stream)
+                        if not ok_c: continue
+                        ok_e,reason_e=state.eligible(key,candidate.id,candidate.limits,total_c or 0)
+                        if ok_e: siblings.append(candidate)
+                    if siblings:
+                        state.cooldown(key,ch.id,max(5,int(rp.backoff.get('base_seconds',5))),'busy')
+                        tried.add(ch.id); retry_steps.pop(typ,None); retries=0
+                        state.trace_fallback(rid,f'{ch.id} 连接层错误 {typ}: {detail[:120]}; 切换至兄弟通道 {siblings[0].id}，不再在同一通道重试')
+                        continue
                 elif typ in rp.retry_on and retries < rp.max_retries:
                     wait = min(rp.backoff['base_seconds'] * (2 ** retries if rp.backoff.get('exponential') else 1), rp.backoff['max_seconds'])
                     logger.info('req=%s channel=%s retry %d/%d in %.1fs', name, ch.id, retries+1, rp.max_retries, wait)

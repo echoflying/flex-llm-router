@@ -36,6 +36,9 @@ class StateStore:
             # creation; create its index only after the compatibility ALTER.
             self.db.execute('CREATE INDEX IF NOT EXISTS attempts_trace_id ON attempts(trace_id)')
             self.db.execute('CREATE INDEX IF NOT EXISTS request_traces_duplicate_lookup ON request_traces(status,pool,client_label,requested_model,request_fingerprint,started)')
+            # Dashboard 首屏的 Runner 活跃度排序缓存：按小时内桶计算一次，
+            # 页面刷新时只读这一行，避免每次进入都做 24 小时 GROUP BY。
+            self.db.execute('CREATE TABLE IF NOT EXISTS runner_activity_order(key TEXT PRIMARY KEY,rank_names TEXT NOT NULL,computed_at REAL NOT NULL)')
             # 短时、精确匹配的非流式结果回放。这里保存的是完整响应（不是 prompt），
             # 因此 TTL 很短且有大小上限；分析表和调用轨迹不会保存这份内容。
             self.db.execute('''CREATE TABLE IF NOT EXISTS response_replays(
@@ -852,6 +855,45 @@ class StateStore:
                    FROM attempts WHERE started>=? GROUP BY pool,channel""",
                 (since1,since1,since24)).fetchall()
         return {(r['pool'],r['channel']):{'n24':r['n24'],'n1':r['n1'],'ok1':r['ok1'],'last':r['last']} for r in rows}
+
+    def runner_activity_scan(self,since):
+        """Pools ranked by attempt count inside the window (active first).
+
+        ``direct:*`` rows are internal probe/self-test traffic, not user calls.
+        """
+        with self.lock:
+            rows=self.db.execute(
+                """SELECT pool,COUNT(*) AS n,MAX(started) AS last FROM attempts
+                   WHERE started>=? AND pool NOT LIKE 'direct:%'
+                   GROUP BY pool HAVING n>0 ORDER BY n DESC,last DESC,pool""",
+                (since,)).fetchall()
+        return [{'pool':r['pool'],'n':r['n'],'last':r['last']} for r in rows]
+
+    def runner_activity_order(self,since24,max_age_seconds=3600):
+        """Activity ranking of Runners, recomputed at most once per hour bucket.
+
+        The dashboard's first section must not reorder itself while the user is
+        reading it, and a 24-hour GROUP BY does not need to run on every visit,
+        so the ranking is cached per hour bucket.  A Runner that was called for
+        the first time since the cached computation triggers an immediate
+        recompute instead of staying invisible for up to an hour.
+        """
+        now=time.time(); bucket=int(now//max_age_seconds)*max_age_seconds; key=str(int(bucket))
+        with self.lock:
+            row=self.db.execute('SELECT rank_names,computed_at FROM runner_activity_order WHERE key=?',(key,)).fetchone()
+            if row is not None:
+                names=json.loads(row['rank_names']); known=set(names)
+                fresh=[r[0] for r in self.db.execute(
+                    """SELECT DISTINCT pool FROM attempts WHERE started>=? AND pool NOT LIKE 'direct:%'""",
+                    (max(since24,bucket-max_age_seconds),)).fetchall()]
+                if all(pool in known for pool in fresh):
+                    return {'rank':names,'source':'cache','computed_at':row['computed_at'],'max_age_seconds':max_age_seconds}
+        names=[r['pool'] for r in self.runner_activity_scan(since24)]
+        with self.lock,self.db:
+            self.db.execute('INSERT OR REPLACE INTO runner_activity_order(key,rank_names,computed_at) VALUES(?,?,?)',
+                            (key,json.dumps(names,ensure_ascii=False),now))
+            self.db.execute('DELETE FROM runner_activity_order WHERE key!=?',(key,))
+        return {'rank':names,'source':'recomputed','computed_at':now,'max_age_seconds':max_age_seconds}
 
     def runner_recent_tone(self,pool,limit=20):
         """Recent attempts for one pool as trace-tones (newest-first).

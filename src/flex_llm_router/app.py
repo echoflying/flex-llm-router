@@ -2351,8 +2351,15 @@ def create_app(config_path:str|Path):
         # ``direct:*`` attempts are internal probe/self-test activity whose
         # trace_id never appears in request_traces; they are not user-visible
         # Runner or Channel calls and must not be shown here.
-        groups.sort(key=lambda g:(-g['calls_1h'],-(g['last_used_at'] or 0)))
-        return {'generated_at':now,'hours':hours,'runners':groups}
+        # Ordering is the cached 24-hour activity rank (recomputed hourly);
+        # live lights/counts inside each row stay fresh.
+        order=state.runner_activity_order(since24)
+        rank=order['rank']; position={name:i for i,name in enumerate(rank)}
+        groups.sort(key=lambda g:(position.get(g['name'],len(rank)),-g['calls_24h'],-(g['last_used_at'] or 0)))
+        return {'generated_at':now,'hours':hours,
+                'activity_cache':{'source':order['source'],'computed_at':order['computed_at'],
+                                  'max_age_seconds':order['max_age_seconds']},
+                'runners':groups}
 
     @app.get('/api/runners/{name}/channels')
     async def runner_channels(name:str):

@@ -29,6 +29,7 @@ code{font-size:11px}
 #app table col.c-last{width:12%}
 .runner-name{font-weight:600;font-size:13px}
 .runner-sub{font-size:10px;color:#889;margin-top:2px}
+.cache-sub{font-size:10px;color:#889;font-weight:400;margin:-2px 0 6px}
 .ch-name{font-size:12px}
 .ch-model{font-size:10px;color:#889;margin-top:2px}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
@@ -79,7 +80,7 @@ function statusCell(ch){
     ch.cooldown_until?`<div class="status-sub">解封 ${esc(when(ch.cooldown_until))}</div>`:''}</td>`;
 }
 
-function renderRunners(groups){
+function renderRunners(groups,cache){
   if(!groups.length){ q('#app').innerHTML='<p class="empty">最近 24 小时没有 Runner / Channel 被调用。</p>'; return; }
   let rows='';
   for(const g of groups){
@@ -100,7 +101,11 @@ function renderRunners(groups){
         `</tr>`;
     });
   }
-  q('#app').innerHTML=`<h2>最近被调用的 Runner（按最近 1 小时调用次数排序）</h2>`+
+  // 排序使用后端按小时缓存的“最近 24 小时调用次数”排名；状态灯与计数仍是实时值。
+  const cacheNote=cache&&cache.computed_at
+    ? `<div class="cache-sub">排序缓存：${when(cache.computed_at)} 计算 · ${cache.source==='cache'?'复用本小时结果':'重新计算'}</div>`
+    : '';
+  q('#app').innerHTML=`<h2>最近被调用的 Runner（按最近 24 小时调用次数排序，每小时更新）</h2>`+cacheNote+
     `<table><colgroup><col class="c-runner"><col class="c-channel"><col class="c-status"><col class="c-last"></colgroup>`+
     `<tr><th>Runner</th><th>Provider / Channel</th><th>状态</th><th>最后访问</th></tr>${rows}</table>`;
 }
@@ -145,7 +150,7 @@ async function load(){
   try{
     const d=await fetch('/api/dashboard').then(r=>r.json());
     renderPulse(d.runners||[]);
-    renderRunners(d.runners||[]);
+    renderRunners(d.runners||[],d.activity_cache);
   }catch(e){ q('#app').innerHTML='<p class="empty">加载失败：'+esc(e.message)+'</p>'; }
   await loadBottom();
 }

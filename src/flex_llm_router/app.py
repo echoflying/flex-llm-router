@@ -97,8 +97,10 @@ async def await_upstream_or_disconnect(request: Request, upstream):
 class DisconnectAwareStreamingResponse(StreamingResponse):
     """Listen for http.disconnect after LiteLLM has returned the stream response."""
     def __init__(self,*args,on_disconnect=None,timeout_event=None,timeout_detail=None,
-                 restart_event=None,on_finished=None,**kwargs):
+                 restart_event=None,on_finished=None,on_call=None,on_stream=None,**kwargs):
         super().__init__(*args,**kwargs)
+        self.on_call=on_call
+        self.on_stream=on_stream
         self.on_disconnect=on_disconnect
         self.timeout_event=timeout_event
         self.timeout_detail=timeout_detail or 'Upstream stream timed out before producing usable activity.'
@@ -107,6 +109,9 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
     async def __call__(self,scope,receive,send):
         if scope['type']=='websocket':
             return await super().__call__(scope,receive,send)
+        if self.on_call is not None:
+            try: self.on_call()
+            except Exception: pass
         # A watchdog can fire after the response object has been selected but
         # before the StreamingResponse generator is entered.  In that gap the
         # generator cannot send its usual SSE error.  Race the body consumer
@@ -151,6 +156,9 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
             async def stream():
                 with anyio.CancelScope() as scope:
                     holder['scope']=scope
+                    if self.on_stream is not None:
+                        try: self.on_stream()
+                        except Exception: pass
                     try:
                         await self.stream_response(guarded_send)
                     finally:
@@ -2848,10 +2856,17 @@ def create_app(config_path:str|Path):
                     app.state.first_activity_watch.pop(rid,None)
                 watch_record['on_hedge']=watchdog_start_hedge
                 watch_record['on_deadline']=watchdog_cancel_deadline
+                # Starlette wraps ``is_disconnected`` in its own anyio
+                # CancelScope, which absorbs an outer Task.cancel(): the task
+                # keeps polling and can never be cancelled again.  Exit through
+                # a flag instead of relying on cancellation, so the handoff
+                # never waits on (or leaks) this watcher.
+                disconnect_stop=asyncio.Event()
                 async def watch_disconnect():
-                    while True:
+                    while not disconnect_stop.is_set():
                         if await request.is_disconnected(): return True
                         await asyncio.sleep(0.5)
+                    return False
                 disconnect_task=asyncio.create_task(watch_disconnect())
                 watchdog_task=asyncio.create_task(watchdog_signals.get())
                 deadline_task=asyncio.create_task(deadline_event.wait())
@@ -3074,11 +3089,21 @@ def create_app(config_path:str|Path):
                         raise last_error
                     raise RuntimeError('all pre-response upstream attempts ended without a response')
                 finally:
+                    disconnect_stop.set()
                     if not disconnect_task.done(): disconnect_task.cancel()
                     if not watchdog_task.done(): watchdog_task.cancel()
                     if not deadline_task.done(): deadline_task.cancel()
                     if not completion_task.done(): completion_task.cancel()
-                    await asyncio.gather(disconnect_task,watchdog_task,deadline_task,completion_task,return_exceptions=True)
+                    # Cancellation cleanup must never delay the handoff: a
+                    # provider task stuck in a thread pool cannot be cancelled
+                    # promptly, and the StreamingResponse is ready to go now.
+                    cleanup={disconnect_task:'disconnect',watchdog_task:'watchdog',deadline_task:'deadline',completion_task:'completion'}
+                    done,pending=await asyncio.wait(set(cleanup),timeout=1.0,return_when=asyncio.ALL_COMPLETED)
+                    if pending:
+                        for task in pending: task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                        state.trace_event(rid,'handoff_cleanup_pending',detail='Cancelled watch task(s) did not stop within 1s: '+', '.join(cleanup[t] for t in pending))
+                        for task in pending:
+                            if cleanup[task]=='disconnect': task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
             try:
                 base,key_=channel_credentials(ch, config.providers)
                 state.trace_event(rid,'upstream_request',ch.id,detail=f'{ch.provider} · {ch.litellm_model}')
@@ -3086,6 +3111,7 @@ def create_app(config_path:str|Path):
                 response,attempt,started,winner_channel=await await_initial_response()
                 ch=winner_channel
                 base,key_=channel_credentials(ch,config.providers)
+                state.trace_event(rid,'handler_response_ready',ch.id,detail=f'Response selected after {int((time.monotonic()-req_started)*1000)}ms; handler proceeds to build the streaming response')
             except ClientDisconnectedBeforeResponse:
                 stop_first_activity_watch()
                 elapsed=int((time.monotonic()-started)*1000)
@@ -3819,7 +3845,9 @@ def create_app(config_path:str|Path):
                         stream_idle_guard_task.cancel()
                     if 'watchdog_task' in locals() and not watchdog_task.done():
                         watchdog_task.cancel()
-            return DisconnectAwareStreamingResponse(events(),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,restart_event=restart_event,on_finished=unregister_restart_signal,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
+            state.trace_event(rid,'handler_response_built',ch.id,detail='StreamingResponse constructed; returning to ASGI layer')
+            return DisconnectAwareStreamingResponse(events(),on_call=lambda: state.trace_event(rid,'asgi_response_call',ch.id,detail='ASGI entered the streaming response wrapper'),
+                on_stream=lambda: state.trace_event(rid,'asgi_stream_task_started',ch.id,detail='ASGI body-producer task started'),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,restart_event=restart_event,on_finished=unregister_restart_signal,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
     async def _first_activity_watchdog():
         """Core-owned watchdog for requests that have not received upstream activity.
 

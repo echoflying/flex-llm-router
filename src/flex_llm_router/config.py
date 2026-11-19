@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import re
+from typing import Any
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
@@ -51,6 +52,69 @@ class RetryPolicy(BaseModel):
         if 'exponential' not in v: v['exponential'] = True
         return v
 
+class Quota429Policy(BaseModel):
+    """Per-Channel policy for upstream 429/rate-limit responses.
+
+    Different upstreams impose very different 429 semantics: a transient RPM
+    window is worth a short backoff, while a *daily* allowance with a known
+    reset time should sideline the Channel until that instant.  This policy is
+    intentionally per-Channel and data-driven so adding a new provider only
+    needs configuration, not a new code path.
+
+    ``mode``:
+      - ``retry``       keep the built-in class-specific behavior (default);
+                        1/2/4-minute in-request verification, then 10-minute
+                        re-validation of the same request.
+      - ``cooldown``    sideline the Channel for ``cooldown_seconds`` and let
+                        this request fail over to a sibling Channel at once.
+      - ``until_reset`` sideline the Channel until the reset instant parsed
+                        from the upstream error text (or ``next_local_midnight``
+                        when the text carries no timestamp) and fail over.
+    ``applies_to`` narrows which 429 sub-types the policy governs (the
+    ``error_type`` names: ``quota_exhausted``, ``rpm_limit``, ``tpm_limit``).
+    ``scope``: ``channel`` blocks the Channel in every Runner that mounts it;
+    ``pool`` (default) blocks it only in the Runner where the 429 occurred.
+    """
+
+    mode: str = Field(default='retry')
+    # ``applies_to`` governs by error class; ``match`` governs by upstream error
+    # text (case-insensitive regular expressions).  ``match`` wins when present,
+    # because daily-allowance messages from some upstreams are classified as a
+    # transient rpm_limit yet never recover before their stated reset instant.
+    applies_to: list[str] = Field(default_factory=lambda: ['quota_exhausted'])
+    match: list[str] = Field(default_factory=list)
+    # ``cooldown`` mode: explicit seconds; defaults to the Channel's
+    # ``limits.quota_cooldown_seconds`` for quota_exhausted, else 300.
+    cooldown_seconds: int | None = Field(default=None, ge=1)
+    # ``until_reset`` mode: where the reset instant comes from.
+    # ``error_text`` parses the upstream message; ``next_local_midnight``
+    # always uses the next local 00:00.
+    reset_hint: str = Field(default='error_text')
+    scope: str = Field(default='pool')
+    label: str = ''
+
+    @field_validator('mode')
+    @classmethod
+    def known_mode(cls, value):
+        if value not in ('retry', 'cooldown', 'until_reset'):
+            raise ValueError('quota_429_policy.mode must be retry, cooldown or until_reset')
+        return value
+
+    @field_validator('scope')
+    @classmethod
+    def known_scope(cls, value):
+        if value not in ('pool', 'channel'):
+            raise ValueError('quota_429_policy.scope must be pool or channel')
+        return value
+
+    @field_validator('reset_hint')
+    @classmethod
+    def known_reset_hint(cls, value):
+        if value not in ('error_text', 'next_local_midnight'):
+            raise ValueError('quota_429_policy.reset_hint must be error_text or next_local_midnight')
+        return value
+
+
 class Channel(BaseModel):
     """A Channel is a specific provider/model instance with capabilities and limits."""
     id: str
@@ -63,6 +127,22 @@ class Channel(BaseModel):
     # fallback.  This is deliberately a capability of the fallback Channel,
     # not a claim about whether its own upstream blocks content.
     chn_content_policy_fallback: bool = False
+    # Maximum output tokens this Channel's upstream actually accepts.  When a
+    # request's max_tokens/max_completion_tokens exceeds it, the Channel is
+    # rejected in compatibility() so the Runner falls back to a sibling before
+    # any upstream call — mirroring context_exceeded handling.  If unset, the
+    # router may still learn the cap from an upstream "max_tokens exceeds the
+    # limit of N" error at runtime and remember it for later requests.
+    max_output_tokens: int | None = None
+    # Provenance for the two limit fields, so operators can tell a verified
+    # capability apart from a UI default: default|measured|docs|metadata|learned.
+    context_window_source: str | None = None
+    max_output_tokens_source: str | None = None
+    limits_verified_at: float | None = None
+    # Per-Channel 429 policy.  Omitted means the historical behavior (retry
+    # and re-validate the same Channel).  A daily-allowance upstream such as
+    # AMD only needs ``mode: until_reset`` here.
+    quota_429_policy: Quota429Policy | None = None
     provider: str  # references providers.xxx
     litellm_model: str
     public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.
@@ -70,6 +150,11 @@ class Channel(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     provider_type: str = 'openai_compatible'
     supported_params: list[str] = Field(default_factory=list)
+    # Fixed body overrides injected on every request to this Channel, e.g.
+    # {"thinking": {"type": "disabled"}} to turn off a thinking model's
+    # reasoning (GLM-4.7 对长指令会无限思考、吃光输出预算).  Merged into
+    # the request body via extra_body so the caller need not know it.
+    extra_body: dict[str, Any] = Field(default_factory=dict)
     # Protocol capability probes are explicit, on-demand observations rather
     # than claims inferred from the model name.  Keys currently include
     # ``responses``; each value stores status/checked_at and a safe summary.
@@ -374,10 +459,39 @@ class FlexConfig(BaseModel):
         return result
 
     def runner_models(self) -> list[dict]:
-        """Return the canonical external Runner model catalogue."""
-        return [{'id': runner.public_model, 'object': 'model', 'owned_by': 'flex-runner',
-                 'runner': name, 'channel_count': len(runner.channels)}
-                for name, runner in self.runners.items()]
+        """Return the canonical external Runner model catalogue.
+
+        Advertises the Runner's usable capabilities so clients can size
+        max_tokens / compaction thresholds up front:
+        * ``context_window`` = minimum across member Channels (conservative:
+          the client's compaction threshold must fit every Channel).
+        * ``max_output_tokens`` = maximum across member Channels: an oversized
+          request is served by the biggest-capacity sibling, and when no
+          sibling can satisfy it the Router clamps max_tokens to the chosen
+          Channel's cap instead of failing.
+        """
+        models=[]
+        for name, runner in self.runners.items():
+            entry={'id': runner.public_model, 'object': 'model', 'owned_by': 'flex-runner',
+                   'runner': name, 'channel_count': len(runner.channels)}
+            windows=[]; caps=[]
+            for ch_id in runner.channels:
+                ch=self.channels.get(ch_id)
+                if ch is None: continue
+                windows.append(ch.context_window_tokens)
+                if ch.max_output_tokens: caps.append(ch.max_output_tokens)
+            if windows:
+                # 上下文窗口取最小值：客户端的压缩/裁剪阈值必须在任何成员
+                # 通道上都装得下，保守值最安全。
+                entry['context_window']=min(windows)
+            if caps:
+                # 输出上限取最大值：请求超限时，选路层的 output_limit_exceeded
+                # 预检会把接不住的通道排除、落到能承载的兄弟通道。若取最小，
+                # 一个 1024 的视觉模型会把同 Runner 里 64K/384K 的文本模型一起
+                # 拖成 1024，反而不可用。
+                entry['max_output_tokens']=max(caps)
+            models.append(entry)
+        return models
 
 def load_config(path: str | Path, override: bool = False) -> FlexConfig:
     p = Path(path).expanduser().resolve()

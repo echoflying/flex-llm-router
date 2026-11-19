@@ -9,7 +9,7 @@ nav{margin-bottom:14px;display:flex;align-items:center}
 nav a{color:#2764a8;text-decoration:none;margin-right:18px;padding:3px 0;border-bottom:2px solid transparent}
 nav a:hover{border-bottom-color:#2764a8}
 nav .spacer{flex:1}
-.backend-notice{display:none;position:sticky;top:10px;z-index:10;margin:0 0 14px;padding:10px 13px;border:1px solid #e4c987;border-radius:8px;background:#fff9e9;color:#765615;font-size:13px;box-shadow:0 2px 8px #76561518}.backend-notice.show{display:block}.backend-notice b{margin-right:5px}
+.backend-notice{display:none;position:fixed;right:18px;bottom:18px;z-index:999;max-width:min(460px,calc(100vw - 36px));margin:0;padding:11px 14px;border:1px solid #e4c987;border-radius:9px;background:#fff9e9;color:#765615;font-size:13px;line-height:1.5;box-shadow:0 4px 16px rgba(118,86,21,.18)}.backend-notice.show{display:block;animation:flexToastIn .18s ease-out}.backend-notice b{margin-right:5px}.backend-notice code{background:#f3ecd7;border-radius:4px;padding:1px 5px;font-size:12px;color:#8a6d1a}.backend-notice .reason{margin-left:6px;color:#8a6d1a;font-size:12px}@keyframes flexToastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
 {{ extra_css }}
 </style>
@@ -21,8 +21,29 @@ nav .spacer{flex:1}
 <a href="/setup">Setup</a>
 <a href="/help">Help</a>
 </nav>
-<aside id="backend-notice" class="backend-notice" role="status"><b>核心 Router 正在重启或暂不可用。</b>此页面仍可浏览，数据会在服务恢复后自动重新连接。</aside>
+<aside id="backend-notice" class="backend-notice" role="status"><b>后端响应异常</b><code id="backend-notice-code">—</code><span class="reason" id="backend-notice-reason"></span></aside>
 {{ content }}
 <script>
-(()=>{const note=document.querySelector('#backend-notice'),raw=window.fetch.bind(window);let offline=false;const show=()=>{offline=true;note.classList.add('show')},hide=()=>{offline=false;note.classList.remove('show')};window.fetch=async(...args)=>{try{const r=await raw(...args);if(r.status>=502)show();else if(r.ok)hide();return r}catch(e){show();throw e}};window.addEventListener('unhandledrejection',e=>{show();e.preventDefault()});setInterval(async()=>{if(!offline)return;try{const r=await raw('/healthz',{cache:'no-store'});if(r.ok){hide();location.reload()}}catch(_){show()}},2000)})();
+(()=>{const note=document.querySelector('#backend-notice'),codeEl=document.querySelector('#backend-notice-code'),reasonEl=document.querySelector('#backend-notice-reason'),raw=window.fetch.bind(window);
+// offline: 后端连接失败(弹TOAST且自动探测恢复+reload); httpErr: 普通5xx(只弹TOAST,不整页刷新)
+let offline=false,httpErr=false,lastCode='',lastPath='',hideTimer=null;
+const show=()=>{note.classList.add('show')},hide=()=>{note.classList.remove('show')};
+function describe(status,path){
+  const p=String(path||'');
+  if(status===0)return ['连接失败','无法连接后端('+p+')'];
+  if(status>=500)return [String(status),'后端/上游错误('+p+')'];
+  return [String(status),p];
+}
+function notify(status,path){const[code,reason]=describe(status,path);lastCode=code;lastPath=path;codeEl.textContent='错误 '+code;reasonEl.textContent=reason;show();
+  if(hideTimer)clearTimeout(hideTimer);
+  // 普通5xx: 5秒后自动消失; 连接失败(offline): 不自动消失, 由healthz恢复时reload
+  if(!offline)hideTimer=setTimeout(()=>{hide();hideTimer=null},5000);
+  try{raw('/api/ui/alert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,path:String(path||''),time:Date.now()})})}catch(_){}}
+window.fetch=async(...args)=>{try{const r=await raw(...args);
+  if(r.status>=500){httpErr=true;notify(r.status,args[0]);}
+  else if(r.ok&&offline){hide();offline=false;}
+  return r}catch(e){offline=true;notify(0,args[0]);throw e}};
+window.addEventListener('unhandledrejection',e=>{if(e&&e.reason&&e.reason&&String(e.reason.message||'').toLowerCase().includes('fetch')){offline=true;notify(0,location.pathname)}else{show()}e.preventDefault()});
+// 仅"后端连接失败"(offline)时每5秒探测并自动恢复+reload; 普通5xx不整页刷新。
+setInterval(async()=>{if(!offline)return;try{const r=await raw('/healthz',{cache:'no-store'});if(r.ok){hide();offline=false;location.reload()}}catch(_){}},5000)})();
 </script>

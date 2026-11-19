@@ -18,7 +18,7 @@ class StateStore:
         p=Path(path); p.parent.mkdir(parents=True, exist_ok=True)
         self.db=sqlite3.connect(p, check_same_thread=False); self.db.row_factory=sqlite3.Row; self.lock=RLock(); self.session_key=self._load_session_key(p.parent/'session-hmac.key')
         with self.db:
-            self.db.executescript('''CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY,started REAL,pool TEXT,channel TEXT,model TEXT,outcome TEXT,error_type TEXT,latency_ms INTEGER,input_tokens INTEGER,output_tokens INTEGER,total_tokens INTEGER); CREATE INDEX IF NOT EXISTS attempts_channel_time ON attempts(pool,channel,started); CREATE TABLE IF NOT EXISTS states(pool TEXT,channel TEXT,until REAL,reason TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS busy_counts(pool TEXT,channel TEXT,count INTEGER,window_start REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS probe_log(pool TEXT,channel TEXT,last_probe_at REAL,probe_fail_streak INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS quota_resets(pool TEXT,channel TEXT,reset_at REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_overrides(pool TEXT,channel TEXT,enabled INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_tests(pool TEXT,channel TEXT,tested_at REAL,outcome TEXT,error_type TEXT,latency_ms INTEGER,error_detail TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS learned_limits(pool TEXT,channel TEXT,safe_rpm INTEGER,safe_tpm INTEGER,last_429_at REAL,last_429_kind TEXT,last_429_evidence TEXT,confidence INTEGER NOT NULL DEFAULT 0,success_since_429 INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS session_affinity_updated ON session_affinity(updated); CREATE TABLE IF NOT EXISTS protocol_session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS protocol_session_affinity_updated ON protocol_session_affinity(updated); CREATE TABLE IF NOT EXISTS request_traces(trace_id TEXT PRIMARY KEY,started REAL,updated REAL,status TEXT,requested_model TEXT,pool TEXT,client_label TEXT,input_preview TEXT,context_summary TEXT,stream INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,fallback_count INTEGER NOT NULL DEFAULT 0,final_channel TEXT,http_status INTEGER,error_type TEXT,error_detail TEXT,output_preview TEXT,ttft_ms INTEGER,latency_ms INTEGER); CREATE INDEX IF NOT EXISTS request_traces_status_updated ON request_traces(status,updated); CREATE TABLE IF NOT EXISTS trace_events(id INTEGER PRIMARY KEY,trace_id TEXT NOT NULL,ts REAL,event TEXT NOT NULL,channel TEXT,http_status INTEGER,detail TEXT); CREATE INDEX IF NOT EXISTS trace_events_trace_id_id ON trace_events(trace_id,id);''')
+            self.db.executescript('''CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY,started REAL,pool TEXT,channel TEXT,model TEXT,outcome TEXT,error_type TEXT,latency_ms INTEGER,input_tokens INTEGER,output_tokens INTEGER,total_tokens INTEGER); CREATE INDEX IF NOT EXISTS attempts_channel_time ON attempts(pool,channel,started); CREATE TABLE IF NOT EXISTS states(pool TEXT,channel TEXT,until REAL,reason TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS busy_counts(pool TEXT,channel TEXT,count INTEGER,window_start REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS probe_log(pool TEXT,channel TEXT,last_probe_at REAL,probe_fail_streak INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS quota_resets(pool TEXT,channel TEXT,reset_at REAL,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_overrides(pool TEXT,channel TEXT,enabled INTEGER,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS channel_tests(pool TEXT,channel TEXT,tested_at REAL,outcome TEXT,error_type TEXT,latency_ms INTEGER,error_detail TEXT,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS learned_limits(pool TEXT,channel TEXT,safe_rpm INTEGER,safe_tpm INTEGER,last_429_at REAL,last_429_kind TEXT,last_429_evidence TEXT,confidence INTEGER NOT NULL DEFAULT 0,success_since_429 INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(pool,channel)); CREATE TABLE IF NOT EXISTS session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS session_affinity_updated ON session_affinity(updated); CREATE TABLE IF NOT EXISTS protocol_session_affinity(pool TEXT,prefix_hmac TEXT,channel TEXT,updated REAL,PRIMARY KEY(pool,prefix_hmac)); CREATE INDEX IF NOT EXISTS protocol_session_affinity_updated ON protocol_session_affinity(updated); CREATE TABLE IF NOT EXISTS request_traces(trace_id TEXT PRIMARY KEY,started REAL,updated REAL,status TEXT,requested_model TEXT,pool TEXT,client_label TEXT,input_preview TEXT,context_summary TEXT,stream INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,fallback_count INTEGER NOT NULL DEFAULT 0,final_channel TEXT,http_status INTEGER,error_type TEXT,error_detail TEXT,output_preview TEXT,ttft_ms INTEGER,latency_ms INTEGER); CREATE INDEX IF NOT EXISTS request_traces_status_updated ON request_traces(status,updated); CREATE TABLE IF NOT EXISTS trace_events(id INTEGER PRIMARY KEY,trace_id TEXT NOT NULL,ts REAL,event TEXT NOT NULL,channel TEXT,http_status INTEGER,detail TEXT); CREATE INDEX IF NOT EXISTS trace_events_trace_id_id ON trace_events(trace_id,id); CREATE TABLE IF NOT EXISTS learned_output_caps(channel TEXT PRIMARY KEY,max_output_tokens INTEGER NOT NULL,learned_at REAL,evidence TEXT);''')
             # Trace list rendering joins attempts by trace_id.  Without this
             # index the correlated channel-count subquery scans the entire
             # attempts table once per retained trace and can starve the
@@ -669,6 +669,18 @@ class StateStore:
         now=now or time.time(); start=now-seconds
         row=self.db.execute('SELECT COUNT(*) AS requests,COALESCE(SUM(total_tokens),SUM(input_tokens),0) AS tokens,MIN(started) AS oldest FROM attempts WHERE pool=? AND channel=? AND started>=?',(pool,ch_id,start)).fetchone()
         return {'requests':row['requests'],'tokens':row['tokens'],'next_release_at':row['oldest']+seconds if row['oldest'] else None}
+    def learn_output_cap(self,channel,limit,evidence=None):
+        """Persist the upstream output-token cap learned from an error message."""
+        if not limit or int(limit)<=0:return
+        with self.lock,self.db:
+            self.db.execute("INSERT INTO learned_output_caps(channel,max_output_tokens,learned_at,evidence) VALUES(?,?,?,?) ON CONFLICT(channel) DO UPDATE SET max_output_tokens=excluded.max_output_tokens,learned_at=excluded.learned_at,evidence=excluded.evidence",(channel,int(limit),time.time(),(evidence or '')[:400]))
+    def output_cap(self,channel):
+        row=self.db.execute('SELECT max_output_tokens FROM learned_output_caps WHERE channel=?',(channel,)).fetchone()
+        return int(row[0]) if row else None
+    def output_caps(self):
+        """All persisted learned output caps, keyed by Channel id."""
+        return {r[0]:int(r[1]) for r in self.db.execute('SELECT channel,max_output_tokens FROM learned_output_caps')}
+
     def learned_limit(self,pool,ch_id):
         row=self.db.execute('SELECT * FROM learned_limits WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
         return dict(row) if row else None
@@ -680,23 +692,31 @@ class StateStore:
             # 与 app.error_type 一致: A类=allocated quota exceeded; B类=rpm/tpm exhausted/rate limit
             if any(x in text for x in ('allocated quota exceeded','quota exceeded','insufficient_quota','free allocated','exceeded your quota','额度','配额')):
                 kind='quota_exhausted'
-            elif any(x in text for x in ('requests per minute','request limit',' rpm','rate limit','exhausted',' tpm','tokens per minute','token limit')):
-                kind='rpm'  # B类瞬时限流(含 rpm/tpm exhausted) 统一归 rpm 走 busy 计数
+            elif 'tpm' in text or 'tokens per minute' in text or 'token limit' in text:
+                kind='tpm'
+            elif any(x in text for x in ('requests per minute','request limit',' rpm','rate limit','exhausted')):
+                kind='rpm'
             else:
                 kind='unknown_429'
-        # learned limit 估算（rpm/tpm）仍做
-        # 防误判: 窗口内请求太少(<3)时推不出可靠 safe_rpm/safe_tpm —— 一次瞬时429不该把限额定成1
+        # learned limit 估算（rpm/tpm）：
+        # 旧实现用 min() 聚合，遇到“窗口内几乎没有流量”的容量型 429 会把
+        # safe_tpm 压到几十 token（历史数据里的 19/31），完全不可用。改为：
+        #   - 分别从本次 60s 窗口取样本（低于合理下限的样本视为噪声丢弃）；
+        #   - 用 EWMA 平滑（旧值已塌缩到下限以下时直接替换，自动自愈）。
         safe_rpm=safe_tpm=None
-        if metrics['requests']>=3:
-            if any(x in text for x in ('requests per minute','request limit',' rpm','rate limit')):
-                safe_rpm=max(1,int(metrics['requests']*.8))
-            elif any(x in text for x in ('tokens per minute','token limit',' tpm')):
-                safe_tpm=max(1,int(metrics['tokens']*.8))
+        if metrics['requests']>=2:
+            safe_rpm=max(1,int(metrics['requests']*.8))
+        if metrics['tokens']>=1000:
+            safe_tpm=max(1,int(metrics['tokens']*.8))
         with self.lock,self.db:
             old=self.db.execute('SELECT safe_rpm,safe_tpm,confidence FROM learned_limits WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
+            def _blend(previous,sample,floor):
+                if sample is None:return previous
+                if previous is None or previous<floor:return sample
+                return max(floor,int(previous*.7+sample*.3))
             if old:
-                safe_rpm=min(old['safe_rpm'],safe_rpm) if safe_rpm and old['safe_rpm'] else safe_rpm or old['safe_rpm']
-                safe_tpm=min(old['safe_tpm'],safe_tpm) if safe_tpm and old['safe_tpm'] else safe_tpm or old['safe_tpm']
+                safe_rpm=_blend(old['safe_rpm'],safe_rpm,1)
+                safe_tpm=_blend(old['safe_tpm'],safe_tpm,1024)
                 confidence=old['confidence']+1
             else:confidence=1
             self.db.execute('INSERT INTO learned_limits(pool,channel,safe_rpm,safe_tpm,last_429_at,last_429_kind,last_429_evidence,confidence,success_since_429) VALUES(?,?,?,?,?,?,?,?,0) ON CONFLICT(pool,channel) DO UPDATE SET safe_rpm=excluded.safe_rpm,safe_tpm=excluded.safe_tpm,last_429_at=excluded.last_429_at,last_429_kind=excluded.last_429_kind,last_429_evidence=excluded.last_429_evidence,confidence=excluded.confidence,success_since_429=0',(pool,ch_id,safe_rpm,safe_tpm,now,kind,json.dumps(metrics),confidence))
@@ -821,6 +841,45 @@ class StateStore:
                 self.db.execute('INSERT INTO quota_resets(pool,channel,reset_at) VALUES(?,?,?) ON CONFLICT(pool,channel) DO UPDATE SET reset_at=excluded.reset_at',(pool,ch_id,now))
             if scope in ('cooldown','all'):
                 self.db.execute('DELETE FROM states WHERE pool=? AND channel=?',(pool,ch_id))
+    def dashboard_stats(self,since24,since1):
+        """Per (pool, channel) call counts for the dashboard (hour granularity)."""
+        with self.lock:
+            rows=self.db.execute(
+                """SELECT pool,channel,COUNT(*) AS n24,
+                          SUM(CASE WHEN started>=? THEN 1 ELSE 0 END) AS n1,
+                          SUM(CASE WHEN started>=? AND outcome='success' THEN 1 ELSE 0 END) AS ok1,
+                          MAX(started) AS last
+                   FROM attempts WHERE started>=? GROUP BY pool,channel""",
+                (since1,since1,since24)).fetchall()
+        return {(r['pool'],r['channel']):{'n24':r['n24'],'n1':r['n1'],'ok1':r['ok1'],'last':r['last']} for r in rows}
+
+    def runner_recent_tone(self,pool,limit=20):
+        """Recent attempts for one pool as trace-tones (newest-first).
+
+        Mirrors the traces-page tone mapping so the dashboard lights agree with
+        the trace list: first=one-shot success, retry=success after >1 attempt,
+        cross=success across >1 channel, failed/cancelled=red.
+        """
+        rows=self.db.execute(
+            """SELECT a.outcome,a.error_type,a.trace_id,
+                      (SELECT COUNT(*) FROM attempts b WHERE b.trace_id=a.trace_id) AS att,
+                      (SELECT COUNT(DISTINCT b.channel) FROM attempts b WHERE b.trace_id=a.trace_id) AS chans,
+                      (SELECT COUNT(*) FROM attempts b WHERE b.trace_id=a.trace_id AND b.channel!=a.channel) AS fb
+                 FROM attempts a WHERE a.pool=? AND a.trace_id IS NOT NULL
+                 GROUP BY a.trace_id ORDER BY MAX(a.started) DESC LIMIT ?""",
+            (pool,limit)).fetchall()
+        tones=[]
+        for r in rows:
+            if r['outcome']!='success':
+                tones.append('failed')
+            elif r['chans']>1:
+                tones.append('cross')
+            elif r['att']>1:
+                tones.append('retry')
+            else:
+                tones.append('first')
+        return tones
+
     def calls_today(self,ch_id):
         """Count attempts for this channel since local midnight today."""
         now=time.time(); local=time.localtime(now); midnight=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
@@ -868,6 +927,13 @@ class StateStore:
         with self.lock:
             row=self.db.execute('SELECT MAX(started) AS ts FROM attempts WHERE channel=?',(channel,)).fetchone()
             return row['ts'] if row and row['ts'] is not None else None
+    def last_test(self, pool, ch_id):
+        """Latest admin self-test result for a Channel (dict or None)."""
+        with self.lock:
+            t=self.db.execute('SELECT tested_at,outcome,error_type,latency_ms,error_detail FROM channel_tests WHERE pool=? AND channel=?',(pool,ch_id)).fetchone()
+            if not t: return None
+            d=dict(t); d['error_type']=canonical_error_type(d.get('error_type'))
+            return d
     def errors(self,limit=50):
         with self.lock:
             rows=[dict(r) for r in self.db.execute('SELECT * FROM attempts WHERE outcome!=? ORDER BY id DESC LIMIT ?',('success',limit)).fetchall()]

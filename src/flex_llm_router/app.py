@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,fnmatch,html,json,logging,os,re,shutil,subprocess,sys,time,uuid
+import asyncio,calendar,datetime,fnmatch,html,json,logging,os,random,re,shutil,subprocess,sys,time,uuid
 import anyio
 from pathlib import Path
 from typing import Any
@@ -299,6 +299,8 @@ def cooldown_label(cooling):
     if kind=='quota_exhausted':return '上游 429（配额耗尽）'
     if cooling.get('reason')=='five_hour_quota':return '五小时调用配额已用完'
     if cooling.get('reason')=='quota_exhausted':return '上游配额耗尽'
+    if cooling.get('reason')=='quota_daily':return f'上游每日额度耗尽（按通道 429 策略封禁至 {clock(cooling.get("until"))} 重置）'
+    if cooling.get('reason')=='policy_cooldown':return f'上游 429（按通道 429 策略冷却至 {clock(cooling.get("until"))}）'
     if cooling.get('reason')=='unknown_429':return '上游 429（原因未识别）'
     return f'通道冷却（{cooling.get("reason") or "未知原因"}）'
 def client_label(headers):
@@ -310,9 +312,46 @@ def client_label(headers):
     if declared:return declared[:120]
     if agent:return agent[:120]
     return '未识别本机客户端'
+_OUTPUT_LIMIT_PATTERNS=[
+    re.compile(r'max[_ ]?(?:completion_)?tokens?\s+exceeds\s+(?:the\s+)?limit\s+of\s+(\d+)',re.I),
+    re.compile(r'maximum\s+(?:output\s+|completion\s+)?tokens?\s+(?:is|of)\s+(\d+)',re.I),
+    re.compile(r'(?:max|maximum)[_ ]?(?:completion_)?tokens?[^0-9]{0,100}?'
+               r'(?:should\s+be\s+in|valid\s+range(?:\s+of\s+max_tokens)?\s+is|限制数值范围)'
+               r'\s*\[\s*1\s*,\s*(\d+)\s*\]',re.I),
+]
+def output_limit_from_detail(detail):
+    """Extract the upstream's max-output-tokens cap from any known phrasing.
+
+    Covered spellings (all observed in real provider errors):
+      * max_tokens exceeds the limit of N            (Agnes)
+      * maximum output tokens is/of N
+      * field MaxTokens invalid, should be in [1, N] (GLM / SenseNova)
+      * valid range of max_tokens is [1, N]           (DeepSeek)
+      * max_tokens参数非法：限制数值范围[1,N]          (Zhipu)
+    Returns N or None when the message is not an output-limit complaint.
+    """
+    if not detail:return None
+    for pat in _OUTPUT_LIMIT_PATTERNS:
+        m=pat.search(detail)
+        if m:
+            try:
+                value=int(m.group(1))
+            except (TypeError,ValueError):
+                continue
+            if value>0:return value
+    return None
+
 def error_type(e):
     n=type(e).__name__.lower(); s=getattr(e,'status_code',None)
     detail=(getattr(e,'message',None) or str(e) or '').lower()
+    # 鉴权/授权失败（密钥无效、过期、未授权）：401/403 或明确的鉴权关键字。
+    # 注意：403 也可能是区域限制（opencode 等），但鉴权类关键字优先归类。
+    if s in (401, 403) or any(marker in detail for marker in (
+        'authentication', 'authorization', 'unauthorized', 'not authorized',
+        'invalid api key', 'invalid key', 'api key is invalid', 'api key expired',
+        'apikey', 'permission denied', 'access denied', 'forbidden', 'credential',
+        'token has expired', 'invalid token', 'unauthorised')):
+        return 'authentication'
     if any(marker in detail for marker in (
         'content_policy_blocked', 'content policy blocked',
         'content_filter', 'content filter',
@@ -323,6 +362,20 @@ def error_type(e):
     # 仅识别已验证的上游临时引擎报错；兼容上游偶发的 avaiable 拼写错误。
     # 其他 400 仍为 request_error，避免掩盖请求格式问题。
     if re.search(r'engine\s+is\s+not\s+avai(?:l)?able\s+temporarily',detail):return 'engine_unavailable'
+    # 通道硬性上限（并非请求本身有问题，而是该通道能力不足）：请求的输出预算
+    # 或上下文超出上游模型允许的上限。这类错误按通道级 Fallback 处理——换到
+    # 有更大预算/窗口的通道重试，而不是把 400 直接丢给客户端。
+    if (output_limit_from_detail(detail) is not None
+            or 'output token limit' in detail
+            or 'max output tokens' in detail and 'exceed' in detail):
+        return 'output_limit_exceeded'
+    if (re.search(r'context[_ ](?:length|window)[_ ](?:exceeded|is\s+larger|limit)',detail)
+            or re.search(r'maximum\s+context\s+(?:length|window)',detail)
+            or 'context_length_exceeded' in detail
+            or 'prompt is too long' in detail
+            or 'input is too long' in detail
+            or 'too many tokens' in detail and 'limit' in detail):
+        return 'context_exceeded'
     if s==429 or 'ratelimit' in n:
         # 两类 429 细分（依据真实日志 P.AAAA/P.WANGYUYAN session）：
         #   A类(套餐/总量配额耗尽): 'HTTP 429: Allocated quota exceeded, please increase your quota limit.'
@@ -353,6 +406,91 @@ def rpm_limit_exhausted_action(selection):
     if action in ('failover','wait','fail'):
         return action
     return 'failover' if strategy=='cost_aware' else 'wait'
+# --- 429 / quota policy helpers -------------------------------------------
+# Reset timestamps appear in several provider-specific spellings, e.g.
+#   "It resets at 2026-11-16 16:00 UTC (2026-11-17 00:00 UTC+8)"
+#   "将于 2026-11-17 00:00（UTC+8）恢复"
+# Each match captures a wall-clock time plus an optional UTC offset nearby.
+_CLOCK_AFTER_RE=re.compile(r'(?:try\s+again|retry)\s+after\s+(\d{1,2}):(\d{2})(?::(\d{2}))?',re.IGNORECASE)
+_RESET_TS_RE=re.compile(
+    r'(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?'
+    r'\s*(?:（|\(|\s)?\s*(UTC|GMT)?\s*([+-]\d{1,2}(?::?\d{2})?)?\s*(?:）|\))?',
+    re.IGNORECASE)
+def next_local_midnight(now:float|None=None)->float:
+    """Epoch of the next local 00:00 (daily allowances reset there)."""
+    now=now or time.time(); lt=time.localtime(now)
+    return time.mktime((lt.tm_year,lt.tm_mon,lt.tm_mday+1,0,0,0,0,0,-1))
+def _offset_seconds(spec:str)->int:
+    """Parse ``+8``/``-05:30``/``+08:00`` into a signed seconds offset."""
+    sign=-1 if spec.startswith('-') else 1
+    body=spec[1:].replace(':','')
+    hours=int(body[:2]); minutes=int(body[2:]) if len(body)>2 else 0
+    return sign*(hours*3600+minutes*60)
+def parse_reset_epoch(text:str)->float|None:
+    """Return the first reset instant stated in an upstream error, else None.
+
+    A stated offset is honored (``UTC`` = +0, ``+08:00``/``UTC+8`` = +8); a
+    time without an offset is interpreted as local wall-clock time.  Only
+    future instants are accepted so a stale example in help text cannot pin a
+    Channel in the past.
+    """
+    if not text:return None
+    now=time.time()
+    # Some upstreams only state a clock time: "Try again after 20:43:10".
+    # Interpret it as today (or tomorrow when that time already passed).
+    clock_match=_CLOCK_AFTER_RE.search(text)
+    if clock_match:
+        lt=time.localtime(now)
+        base=datetime.datetime(lt.tm_year,lt.tm_mon,lt.tm_mday,
+                               int(clock_match.group(1)),int(clock_match.group(2)),
+                               int(clock_match.group(3) or 0))
+        epoch=time.mktime(base.timetuple())
+        if epoch<=now+60:epoch=time.mktime((base+datetime.timedelta(days=1)).timetuple())
+        return epoch
+    for m in _RESET_TS_RE.finditer(text):
+        try:
+            base=datetime.datetime(int(m.group(1)),int(m.group(2)),int(m.group(3)),
+                                   int(m.group(4)),int(m.group(5)),int(m.group(6) or 0))
+        except ValueError:
+            continue
+        named=(m.group(7) or '').strip().upper()
+        offset=(m.group(8) or '').strip()
+        try:
+            if named:
+                # "UTC" alone means the wall clock is UTC; "UTC+8" means the
+                # wall clock is in a +8 zone, so move the instant back by 8h.
+                epoch=calendar.timegm(base.timetuple())-(0 if not offset else _offset_seconds(offset))
+            elif offset:
+                epoch=calendar.timegm(base.timetuple())-_offset_seconds(offset)
+            else:
+                epoch=time.mktime(base.timetuple())
+        except ValueError:
+            continue
+        if epoch>now+60:return epoch
+    return None
+def quota_429_block(ch,policy,detail,typ):
+    """Resolve (reason, seconds) to sideline ``ch`` under its 429 policy.
+
+    Returns ``None`` when the policy does not apply to this error or asks for
+    the historical retry behavior, so the request-loop branch keeps its
+    existing verification cycle.
+    """
+    if policy is None:return None
+    # ``match`` (upstream text) takes precedence over the error-class list: a
+    # daily allowance may arrive as rpm_limit but never clears before its reset.
+    if policy.match:
+        if not any(re.search(pattern,detail or '',re.IGNORECASE) for pattern in policy.match):
+            return None
+    elif typ not in policy.applies_to:
+        return None
+    if policy.mode=='retry':return None
+    if policy.mode=='cooldown':
+        seconds=int(policy.cooldown_seconds or (ch.limits.quota_cooldown_seconds if typ=='quota_exhausted' else 300))
+        return 'policy_cooldown',max(1,seconds)
+    # until_reset: parse the upstream's stated reset, else the next 00:00.
+    reset=parse_reset_epoch(detail) if policy.reset_hint=='error_text' else None
+    if reset is None:reset=next_local_midnight()
+    return 'quota_daily',max(1,int(reset-time.time()))
 def error_code(e):
     """Return the provider's HTTP status code if present (e.g. 429, 500, 408), else None."""
     return getattr(e, 'status_code', None)
@@ -413,7 +551,12 @@ def usage_tokens(response):
     total=usage.get('total_tokens')
     return output,total
 def channel_request_kwargs(channel):
-    return {'allowed_openai_params':channel.supported_params} if channel.supported_params else {}
+    kwargs={'allowed_openai_params':channel.supported_params} if channel.supported_params else {}
+    # Fixed per-Channel body overrides (e.g. {"thinking":{"type":"disabled"}} for
+    # thinking models like GLM-4.7).  Merged so the caller stays unaware of them.
+    if getattr(channel, 'extra_body', None):
+        kwargs['extra_body']=dict(channel.extra_body)
+    return kwargs
 
 def responses_probe_url(base_url: str) -> str:
     """Build the Responses endpoint from a provider base URL.
@@ -435,6 +578,13 @@ def _probe_detail(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     text = re.sub(r'(?i)((?:api[_-]?key|authorization|token)\s*[=:]\s*)[^\s,}]+', r'\1[redacted]', text)
     return text[:500]
+
+def _probe_detail_has(status_code: int | None, payload: Any, detail: str, *markers: str) -> bool:
+    """Case-insensitively test whether a probe failure matches any transient marker."""
+    if status_code is not None and str(status_code) in markers:
+        return True
+    hay = f'{detail} {payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)}'.lower()
+    return any(m.lower() in hay for m in markers)
 
 def classify_responses_probe(http_status: int | None, payload: Any, detail: str = '') -> str:
     """Classify an actual Responses probe without treating auth/upstream faults as unsupported."""
@@ -477,8 +627,48 @@ def fetch_provider_model_metadata(channel, providers: dict) -> dict[str, Any]:
     if isinstance(raw, list):
         for item in raw:
             if isinstance(item, dict) and str(item.get('id', '')) == target:
-                return {key: item.get(key) for key in ('max_input_tokens', 'max_tokens', 'display_name') if item.get(key) is not None}
+                return {key: item.get(key) for key in (
+                    'context_length', 'context_window', 'max_input_tokens',
+                    'max_output_length', 'max_output_tokens', 'max_tokens',
+                    'display_name',
+                ) if item.get(key) is not None}
     return {}
+
+_OUTPUT_LIMIT_LADDER=(65536,131072,262144,393216,524288,786432,1048576)
+def _probe_output_limit_sync(base_url:str,api_key:str,model:str,context_window:int)->tuple[int|None,str]:
+    """Find a Channel's max_tokens cap with a tiny, bounded, one-shot probe.
+
+    Sends at most one request per ladder rung with ``max_tokens`` increasing
+    until the upstream rejects the value; the rejection's ``[1, N]`` range (or
+    "limit of N") yields the exact cap.  Any auth / rate-limit / not-found /
+    unrelated-400 response aborts without inventing a value, so a transient
+    failure can never write a bogus limit.  The caller persists a successful
+    result once, so the probe is never repeated for the same Channel.
+    """
+    endpoint=_capability_endpoint(base_url)
+    accepted=None
+    for value in _OUTPUT_LIMIT_LADDER:
+        if context_window and value>context_window: break
+        body=json.dumps({'model':model,'messages':[{'role':'user','content':'hi'}],'max_tokens':value},ensure_ascii=False).encode('utf-8')
+        request=urllib.request.Request(endpoint,data=body,method='POST',
+            headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json',
+                     'Accept':'application/json','User-Agent':'flex-router-limit-probe/1.0'})
+        try:
+            with urllib.request.urlopen(request,timeout=30) as response:
+                response.read(4096)
+            accepted=value
+        except urllib.error.HTTPError as exc:
+            raw=exc.read(2048).decode('utf-8','replace')
+            cap=output_limit_from_detail(raw)
+            if cap:return cap,raw[:200]
+            # 400/422 without a parseable range is an unrelated request problem:
+            # stop rather than guess a limit from it.
+            return None,f'HTTP {exc.code}: {raw[:160]}'
+        except Exception as exc:
+            return None,str(exc)[:160]
+        time.sleep(0.3)
+    if accepted:return accepted,f'probe accepted up to {accepted}'
+    return None,'no value accepted'
 
 def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -> tuple[str, int | None, str]:
     """Run one bounded, tiny protocol probe without LiteLLM parameter dropping.
@@ -497,12 +687,18 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
         body['stream'] = True
     elif kind == 'tools':
         body.update({
-            'messages': [{'role': 'user', 'content': 'Call the tool now.'}],
+            # Do NOT force tool_choice='required' here: thinking models (e.g.
+            # DeepSeek V4) reject 'required' with a 400 ("Thinking mode does
+            # not support this tool_choice").  Letting the model decide still
+            # yields tool_calls for a tools-capable model when the prompt asks
+            # for it.  max_tokens must be large enough for the reasoning phase
+            # to finish and reach the tool-call output.
+            'messages': [{'role': 'user', 'content': 'Use the flex_probe_noop tool to confirm tool calling works, then reply OK.'}],
             'tools': [{'type': 'function', 'function': {
                 'name': 'flex_probe_noop', 'description': 'No-op capability probe',
                 'parameters': {'type': 'object', 'properties': {}},
             }}],
-            'tool_choice': 'required', 'max_tokens': 64,
+            'max_tokens': 256,
         })
     elif kind == 'json':
         body.update({
@@ -512,6 +708,20 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
         })
     elif kind == 'reasoning':
         body['reasoning_effort'] = 'low'
+    elif kind == 'vision':
+        # Probe with a real 1x1 transparent PNG.  A model that accepts image
+        # input answers 2xx; one that does not returns 4xx with an explicit
+        # message (e.g. "image not supported" / "invalid content type") that
+        # we classify as unsupported.  429 stays 'error' (rate-limited), so a
+        # transient throttle never demotes a vision-capable model.
+        body['max_tokens'] = 64
+        body['messages'] = [{'role': 'user', 'content': [
+            {'type': 'text', 'text': 'Reply with exactly OK.'},
+            {'type': 'image_url', 'image_url': {'url': (
+                'data:image/png;base64,'
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+                'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')}},
+        ]}]
     request = urllib.request.Request(
         _capability_endpoint(base_url),
         data=json.dumps(body, ensure_ascii=False).encode('utf-8'), method='POST',
@@ -553,6 +763,12 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
         haystack = detail.lower()
         if status_code in (404, 405, 501) or any(x in haystack for x in ('not supported', 'unsupported', 'not found', 'method not allowed')):
             return 'unsupported', status_code, detail
+        # Vision probe: an image-capability refusal usually surfaces as a 4xx
+        # naming images (not a generic routing error).  Do not treat 429/5xx or
+        # a bare 400 as "no vision" — it may be throttling or a bad payload.
+        if kind == 'vision' and status_code in (400, 415, 422):
+            if any(x in haystack for x in ('image', 'vision', 'multimodal', 'picture', 'attachment', 'image_url', 'not a vision')):
+                return 'unsupported', status_code, detail
         return 'error', status_code, detail
     if kind == 'streaming':
         return ('supported' if 'data:' in raw or '[done]' in raw.lower() else 'error'), status_code, detail
@@ -579,7 +795,7 @@ def _capability_probe_sync(base_url: str, api_key: str, model: str, kind: str) -
 def _responses_probe_sync(base_url: str, api_key: str, model: str) -> tuple[str, int | None, str, str]:
     endpoint = responses_probe_url(base_url)
     request_body = json.dumps({'model': model, 'input': 'Reply with exactly OK.',
-                               'max_output_tokens': 8}, ensure_ascii=False).encode('utf-8')
+                               'max_output_tokens': 32}, ensure_ascii=False).encode('utf-8')
     request = urllib.request.Request(endpoint, data=request_body, method='POST', headers={
         'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json',
         'Accept': 'application/json', 'User-Agent': 'flex-router-capability-probe/1.0',
@@ -602,8 +818,14 @@ def _responses_probe_sync(base_url: str, api_key: str, model: str) -> tuple[str,
         detail = _probe_detail(payload)
     return classify_responses_probe(status_code, payload, detail), status_code, detail, endpoint
 
-async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict]:
-    """Probe one Channel and return safe observations keyed by capability."""
+async def probe_channel_capabilities(channel, providers: dict, kinds=None) -> dict[str, dict]:
+    """Probe one Channel and return safe observations keyed by capability.
+
+    ``kinds`` limits the probe to specific capabilities (used by the idle
+    retry loop to re-probe only the ones still unconfirmed, saving RPM).
+    """
+    all_kinds = ('chat', 'streaming', 'tools', 'json', 'reasoning', 'vision', 'responses')
+    kinds = [k for k in all_kinds if (kinds is None or k in kinds)]
     checked_at = int(time.time())
     try:
         base, key = channel_credentials(channel, providers)
@@ -611,12 +833,23 @@ async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict
         detail = _probe_detail(exc)
         return {kind: {'status': 'error', 'checked_at': checked_at, 'http_status': None,
                        'latency_ms': 0, 'detail': detail}
-                for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning', 'responses')}
+                for kind in kinds}
     model = channel.litellm_model.rsplit('/', 1)[-1]
     observations: dict[str, dict] = {}
-    for kind in ('chat', 'streaming', 'tools', 'json', 'reasoning'):
+    for kind in [k for k in kinds if k != 'responses']:
         started = time.monotonic()
         status, http_status, detail = await asyncio.to_thread(_capability_probe_sync, base, key, model, kind)
+        # A single 429 often reflects a momentary window, not missing support:
+        # retry once with a short backoff so a rate-limited probe does not
+        # permanently leave the capability unconfirmed.
+        if status == 'error' and http_status == 429:
+            await asyncio.sleep(3)
+            status2, http_status2, detail2 = await asyncio.to_thread(_capability_probe_sync, base, key, model, kind)
+            observations[kind] = {'status': status2, 'checked_at': checked_at,
+                                  'http_status': http_status2,
+                                  'latency_ms': int((time.monotonic() - started) * 1000),
+                                  'detail': detail2, 'retried_429': True}
+            continue
         observations[kind] = {'status': status, 'checked_at': checked_at,
                               'http_status': http_status,
                               'latency_ms': int((time.monotonic() - started) * 1000),
@@ -624,20 +857,28 @@ async def probe_channel_capabilities(channel, providers: dict) -> dict[str, dict
     # Responses is a separate API protocol rather than a model feature, but
     # it is included in the same post-creation probe so a Channel is complete
     # immediately after it is added.
-    started = time.monotonic()
-    status, http_status, detail, endpoint = await asyncio.to_thread(
-        _responses_probe_sync, base, key, model)
-    observations['responses'] = {'status': status, 'checked_at': checked_at,
-                                 'http_status': http_status, 'endpoint': endpoint,
-                                 'latency_ms': int((time.monotonic() - started) * 1000),
-                                 'detail': detail}
+    if 'responses' in kinds:
+        started = time.monotonic()
+        status, http_status, detail, endpoint = await asyncio.to_thread(
+            _responses_probe_sync, base, key, model)
+        observations['responses'] = {'status': status, 'checked_at': checked_at,
+                                     'http_status': http_status, 'endpoint': endpoint,
+                                     'latency_ms': int((time.monotonic() - started) * 1000),
+                                     'detail': detail}
     return observations
 # B类瞬时限流：每次真实 429 后按 2^n 退避，直到本请求的类型上限。
-TPM_BACKOFF_BASE=4
-RPM_BACKOFF_BASE=8
+# TPM 是 60 秒 token 窗口，实测恢复 p50≈58s：首轮 4s 的重试几乎必然再次 429
+# （历史数据里 77% 的退避等待是无效的）。首轮改为 30s，再用 ±20% 抖动避免并发
+# 请求同步重试形成二次冲击。
+TPM_BACKOFF_BASE=int(os.getenv('FLEX_TPM_BACKOFF_BASE','30'))
+RPM_BACKOFF_BASE=int(os.getenv('FLEX_RPM_BACKOFF_BASE','8'))
 # 单请求的累计退避上限（秒），setup.conf 可覆盖。
 QUEUE_TPM_SECONDS=int(os.getenv('FLEX_QUEUE_TPM','60'))
 QUEUE_RPM_SECONDS=int(os.getenv('FLEX_QUEUE_RPM','300'))
+# 运行时从上游报错学到的通道输出上限（"max_tokens exceeds the limit of N"）。
+# configuration 的 max_output_tokens 优先；这里存放的是未被配置时按经验补齐的
+# 结论，供 compatibility() 预先拒绝超过该通道能力的请求。
+learned_max_output_tokens: dict[str,int] = {}
 # 仅在流式请求尚未收到任何可转发 SSE 事件时使用；Hermes 保留 30 分钟总超时。
 # Runner Hedge defaults are derived from the number of configured Channels.
 # Three Channels: 6m -> second Channel, 9m -> third Channel, 12m hard stop.
@@ -820,12 +1061,38 @@ def requirements(body,stream):
 def input_tokens(body,model):
     try:return litellm.token_counter(model=model,messages=body.get('messages',[]),tools=body.get('tools'))
     except Exception:return max(1,len(json.dumps({'messages':body.get('messages',[]),'tools':body.get('tools')},ensure_ascii=False))//4)
-def compatibility(reserve,ch,body,stream):
+def tpm_pacing_ok(state,pool,ch,prompt_tokens):
+    """Prefer Channels that will not immediately collide with their TPM.
+
+    Returns False only when a *credible* learned safe TPM exists and the
+    60-second token window plus this request's prompt would exceed it.  With no
+    credible measurement the Channel is always allowed, so pacing can never
+    fail a request on its own.
+    """
+    learned=state.learned_limit(pool,ch.id)
+    if not learned:return True
+    safe_tpm=learned.get('safe_tpm'); confidence=learned.get('confidence') or 0
+    if not safe_tpm or safe_tpm<1024 or confidence<5:return True
+    recent=state.window_metrics(pool,ch.id,60)['tokens'] or 0
+    return recent+prompt_tokens<=safe_tpm*0.9
+def requested_output_tokens(body,reserve):
+    """The client's requested output ceiling (max_tokens/max_completion_tokens)."""
+    value=body.get('max_completion_tokens',body.get('max_tokens',reserve))
+    return value if isinstance(value,int) and value>=0 else reserve
+def channel_output_cap(ch):
+    """Configured cap first, then the persisted runtime-learned cap."""
+    return ch.max_output_tokens or learned_max_output_tokens.get(ch.id)
+def compatibility(reserve,ch,body,stream,prompt_tokens=None):
     needed=requirements(body,stream); missing=needed-set(ch.capabilities)
     if missing:return False,'missing_capabilities:'+','.join(sorted(missing)),None
-    prompt=input_tokens(body,ch.litellm_model); output=body.get('max_completion_tokens',body.get('max_tokens',reserve))
-    if not isinstance(output,int) or output<0:output=reserve
-    total=prompt+output
+    prompt=prompt_tokens if prompt_tokens is not None else input_tokens(body,ch.litellm_model)
+    requested=requested_output_tokens(body,reserve)
+    # 输出上限不再作为“不兼容”条件：客户端给的是上限而不是硬需求，超过通道
+    # 能力时应夹取发送（见 call_upstream），只有上下文窗口装不下才判不兼容。
+    # 这里用夹取后的有效输出做窗口校验，避免把本可服务的请求误判为超窗。
+    cap=channel_output_cap(ch)
+    effective=min(requested,cap) if cap else requested
+    total=prompt+effective
     if total>ch.context_window_tokens:return False,f'context_exceeded:{total}>{ch.context_window_tokens}',total
     return True,None,total
 def create_app(config_path:str|Path):
@@ -846,7 +1113,7 @@ def create_app(config_path:str|Path):
     if override_path.exists():
         try: override_on=bool(int(read_setup().get('FLEX_OVERRIDE','1')))
         except: override_on=True
-    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.capability_probe_tasks=set(); app.state.capability_probe_channels=set(); app.state.config_write_lock=asyncio.Lock(); app.state.first_activity_watch={}; app.state.active_restart_signals={}; app.state.restart_draining=False; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD
+    config=load_config(config_path,override=override_on); os.environ['FLEX_OVERRIDE']='1' if override_on else '0'; templates_dir=config_path_resolved.parent.parent/'templates'; litellm.drop_params=True; scheduler=RoundRobinScheduler(); state=StateStore(os.getenv('FLEX_STATE_DB','data/flex.db')); learned_max_output_tokens.update(state.output_caps()); instance_id=uuid.uuid4().hex; recovered_traces=state.cancel_interrupted_traces(); state.backfill_error_statistics(); app=FastAPI(title='Flex LLM Router',version='0.2.1'); app.state.probe_tasks=set(); app.state.capability_probe_tasks=set(); app.state.capability_probe_channels=set(); app.state.config_write_lock=asyncio.Lock(); app.state.first_activity_watch={}; app.state.active_restart_signals={}; app.state.restart_draining=False; app.state.watchdog_tasks=set(); app.state.instance_id=instance_id; app.state.started_at=time.time(); app.state.recovered_traces=recovered_traces; app.state.build=ROUTER_BUILD; app.state.last_external_call=time.time()
     # DEBUG 日志开关: setup.conf 的 FLEX_DEBUG 优先, 缺省看环境变量, 默认关
     state.debug_enabled = read_setup().get('FLEX_DEBUG', os.getenv('FLEX_DEBUG','0'))=='1'
     capture_setup=read_setup()
@@ -858,10 +1125,14 @@ def create_app(config_path:str|Path):
     # 重复在途请求观察：默认关；开启后仅记录完全相同请求的重叠，不影响任何路由或上游调用。
     state.duplicate_observer_enabled = read_setup().get('FLEX_DUPLICATE_OBSERVER','0')=='1'
     # 排队上限: setup.conf 的 FLEX_QUEUE_TPM / FLEX_QUEUE_RPM 覆盖默认(60/300)
-    global QUEUE_TPM_SECONDS, QUEUE_RPM_SECONDS, UPSTREAM_RESPONSE_TIMEOUT, UPSTREAM_FIRST_CHUNK_TIMEOUT, SESSION_AFFINITY_IDLE_SECONDS, PROTOCOL_AFFINITY_IDLE_SECONDS
+    global QUEUE_TPM_SECONDS, QUEUE_RPM_SECONDS, TPM_BACKOFF_BASE, RPM_BACKOFF_BASE, UPSTREAM_RESPONSE_TIMEOUT, UPSTREAM_FIRST_CHUNK_TIMEOUT, SESSION_AFFINITY_IDLE_SECONDS, PROTOCOL_AFFINITY_IDLE_SECONDS
     try: QUEUE_TPM_SECONDS=int(read_setup().get('FLEX_QUEUE_TPM', os.getenv('FLEX_QUEUE_TPM','60')))
     except ValueError: pass
     try: QUEUE_RPM_SECONDS=int(read_setup().get('FLEX_QUEUE_RPM', os.getenv('FLEX_QUEUE_RPM','300')))
+    except ValueError: pass
+    try: TPM_BACKOFF_BASE=max(1,int(read_setup().get('FLEX_TPM_BACKOFF_BASE', os.getenv('FLEX_TPM_BACKOFF_BASE','30'))))
+    except ValueError: pass
+    try: RPM_BACKOFF_BASE=max(1,int(read_setup().get('FLEX_RPM_BACKOFF_BASE', os.getenv('FLEX_RPM_BACKOFF_BASE','8'))))
     except ValueError: pass
     try: UPSTREAM_RESPONSE_TIMEOUT=max(1,int(read_setup().get('FLEX_UPSTREAM_RESPONSE_TIMEOUT', os.getenv('FLEX_UPSTREAM_RESPONSE_TIMEOUT','180'))))
     except ValueError: pass
@@ -1129,6 +1400,13 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':pool.tiers.get(ch_id),
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'chn_content_policy_fallback':ch.chn_content_policy_fallback,
+                                 'max_output_tokens':ch.max_output_tokens,
+                                 'learned_max_output_tokens':learned_max_output_tokens.get(ch.id),
+                                 'effective_max_output_tokens':channel_output_cap(ch),
+                                 'context_window_source':ch.context_window_source,
+                                 'max_output_tokens_source':ch.max_output_tokens_source,
+                                 'limits_verified_at':ch.limits_verified_at,
+                                 'quota_429_policy':ch.quota_429_policy.model_dump() if ch.quota_429_policy else None,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
@@ -1158,9 +1436,17 @@ def create_app(config_path:str|Path):
                                  'base_url':base_url,'tier':None,'mounted_in':mounted,
                                  'enabled':ch.enabled,'externally_exposed':ch.externally_exposed,
                                  'chn_content_policy_fallback':ch.chn_content_policy_fallback,
+                                 'max_output_tokens':ch.max_output_tokens,
+                                 'learned_max_output_tokens':learned_max_output_tokens.get(ch.id),
+                                 'effective_max_output_tokens':channel_output_cap(ch),
+                                 'context_window_source':ch.context_window_source,
+                                 'max_output_tokens_source':ch.max_output_tokens_source,
+                                 'limits_verified_at':ch.limits_verified_at,
+                                 'quota_429_policy':ch.quota_429_policy.model_dump() if ch.quota_429_policy else None,
                                  'context_window_tokens':ch.context_window_tokens,
                                  'capabilities':list(ch.capabilities),
                                  'protocol_support':dict(ch.protocol_support),
+                                 'last_test':state.last_test(ch.id,ch.id),
                                  'last_used_at':state.last_used_at(ch.id)})
         # 连接: 逐个解析出目标类型与真实通道, 供 CONFIG 页"拷贝给其他系统"区块展示
         connections=[]
@@ -1240,13 +1526,13 @@ def create_app(config_path:str|Path):
         logger.warning('config saved backup=%s (hot-applied)',backup)
         return backup
 
-    async def run_channel_capability_probe(channel_id: str):
+    async def run_channel_capability_probe(channel_id: str, kinds=None):
         """Probe a newly-created Channel and hot-apply safe observations."""
         channel = config.channels.get(channel_id)
         if channel is None:
             return
         try:
-            observations = await probe_channel_capabilities(channel, config.providers)
+            observations = await probe_channel_capabilities(channel, config.providers, kinds=kinds)
             # A successful /models response is the authoritative source for
             # input/output limits when the Provider exposes them.
             metadata = await asyncio.to_thread(fetch_provider_model_metadata, channel, config.providers)
@@ -1255,7 +1541,22 @@ def create_app(config_path:str|Path):
                 channels = mapping.setdefault('channels', {})
                 current = dict(channels.get(channel_id) or {})
                 support = dict(current.get('protocol_support') or {})
-                support.update(observations)
+                # 暂态失败（429/超时/5xx/网络）不得覆盖已确认的结论：
+                # 一项能力若此前已 supported/unsupported，探测撞限流只记录诊断，
+                # 绝不把绿/红退化成橙色 error。仅当该项从无结论或本来就是 error
+                # 时才写入 error（供 idle 重探循环继续跟踪）。
+                for name, obs in observations.items():
+                    status = obs.get('status')
+                    prev = support.get(name) or {}
+                    if status == 'error' and prev.get('status') in ('supported', 'unsupported'):
+                        diag = dict(obs)
+                        diag['status'] = prev['status']          # 保留已确认结论
+                        diag['last_error'] = obs.get('detail', '')
+                        diag['last_error_http'] = obs.get('http_status')
+                        diag['retried_429'] = bool(obs.get('retried_429', False))
+                        support[name] = diag
+                    else:
+                        support[name] = obs
                 current['protocol_support'] = support
                 capabilities = list(current.get('capabilities') or [])
                 for name, result in observations.items():
@@ -1264,8 +1565,45 @@ def create_app(config_path:str|Path):
                     elif result.get('status') == 'unsupported' and name in capabilities:
                         capabilities.remove(name)
                 current['capabilities'] = capabilities
-                if metadata.get('max_input_tokens'):
-                    current['context_window_tokens'] = int(metadata['max_input_tokens'])
+                # Provider /models 是上游对窗口/输出上限的权威声明（sensenova
+                # 等会返回 context_length / max_output_length）。元数据存在时覆盖
+                # 本地默认值；否则保留手工/实测值。
+                provider_ctx=(metadata.get('context_length') or metadata.get('context_window')
+                              or metadata.get('max_input_tokens'))
+                provider_out=(metadata.get('max_output_length') or metadata.get('max_output_tokens')
+                              or metadata.get('max_tokens'))
+                if provider_ctx:
+                    # 窗口是硬约束，元数据（context_length）比本地默认值可信，覆盖。
+                    current['context_window_tokens'] = int(provider_ctx)
+                    current['context_window_source'] = 'metadata'
+                    current['limits_verified_at'] = time.time()
+                if provider_out and not current.get('max_output_tokens'):
+                    # max_output_length 常是“建议默认值”，而 API 实际可接受更大
+                    # （实测 sensenova 接受 384000 但元数据只写 65536）。因此只在
+                    # 通道还没有实测/配置值时用它兜底。
+                    current['max_output_tokens'] = int(provider_out)
+                    current['max_output_tokens_source'] = 'metadata'
+                    current['limits_verified_at'] = time.time()
+                # 输出上限的主动探测：只在“配置为空且没有学习值”时做一次，
+                # 成功后立即落盘/入库，之后不再重复探测（额度敏感通道也只花一次）。
+                if not current.get('max_output_tokens') and not state.output_cap(channel_id):
+                    try:
+                        probe_base,probe_key=channel_credentials(channel,config.providers)
+                    except Exception:
+                        probe_base=probe_key=''
+                    if probe_base and probe_key:
+                        measured,evidence=await asyncio.to_thread(
+                            _probe_output_limit_sync,probe_base,probe_key,
+                            channel.litellm_model.rsplit('/',1)[-1],
+                            int(current.get('context_window_tokens') or 1000000))
+                        if measured:
+                            current['max_output_tokens']=int(measured)
+                            current['max_output_tokens_source']='measured'
+                            current['limits_verified_at']=time.time()
+                            state.learn_output_cap(channel_id,int(measured),evidence)
+                            logger.info('output limit probed channel=%s cap=%s',channel_id,measured)
+                        else:
+                            logger.info('output limit probe inconclusive channel=%s reason=%s',channel_id,evidence[:120])
                 channels[channel_id] = current
                 # Probe persistence is best-effort; a transient failure must
                 # not take down the Router or roll back the Channel creation.
@@ -1274,11 +1612,11 @@ def create_app(config_path:str|Path):
         except Exception as exc:
             logger.warning('channel capability probe failed channel=%s error=%s', channel_id, _probe_detail(exc))
 
-    def schedule_channel_capability_probe(channel_id: str):
+    def schedule_channel_capability_probe(channel_id: str, kinds=None):
         if channel_id in app.state.capability_probe_channels:
             return None
         app.state.capability_probe_channels.add(channel_id)
-        task = asyncio.create_task(run_channel_capability_probe(channel_id))
+        task = asyncio.create_task(run_channel_capability_probe(channel_id, kinds=kinds))
         app.state.capability_probe_tasks.add(task)
         def done(completed):
             app.state.capability_probe_tasks.discard(completed)
@@ -1288,6 +1626,23 @@ def create_app(config_path:str|Path):
 
     async def structured_config_error(exc):
         raise HTTPException(400,f'invalid config edit: {exc}') from exc
+
+    @app.post('/api/ui/alert')
+    async def ui_alert(request:Request):
+        """记录前端 #backend-notice 告警条展示的具体错误（供刷新后回溯）。
+
+        前端在任一 fetch 返回 >=500 或连接失败时调用，把触发的错误编号、
+        请求路径、时间点持久化到后端日志；即使页面随后整页刷新，也能从
+        logs/flex-router.log 里回溯到那次告警的真实内容。
+        """
+        try:
+            body=await request.json()
+        except Exception:
+            body={}
+        code=body.get('code') or '未知'
+        path=body.get('path') or request.headers.get('referer') or '-'
+        logger.warning('UI_ALERT 前端告警条: 错误编号=%s 触发请求=%s referer=%s', code, path, request.headers.get('referer') or '-')
+        return {'status':'ok'}
 
     @app.get('/api/config/editor')
     async def config_editor():
@@ -1367,6 +1722,63 @@ def create_app(config_path:str|Path):
         except Exception as exc: await structured_config_error(exc)
         return {'status':'saved','runner':name,'backup':str(backup)}
 
+    @app.delete('/api/config/runners/{name}')
+    async def delete_runner(name:str):
+        """Delete a Runner and its channel membership.
+
+        Only the Runner is removed; its Channels remain defined globally and
+        can still be used by other Runners.  A Runner referenced by a ``link``
+        (e.g. ``links.main``) cannot be deleted until the link points away,
+        otherwise the external entry point would dangle.
+        """
+        if name not in config.runners:
+            raise HTTPException(404,'unknown runner')
+        refs=[lnk for lnk,target in config.links.items() if target==name or target==config.runners[name].public_model]
+        if refs:
+            raise HTTPException(409,'runner is referenced by link(s): '+', '.join(refs)+'; remove the link first')
+        mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
+        runners=mapping.get('runners') or {}
+        if name not in runners:
+            raise HTTPException(409,'runner not present in persisted config')
+        del runners[name]
+        try: backup=persist_config_mapping(mapping)
+        except Exception as exc: await structured_config_error(exc)
+        logger.warning('runner deleted: %s (backup=%s)', name, backup)
+        return {'status':'deleted','runner':name,'backup':str(backup)}
+
+    @app.post('/api/config/channels/test-all')
+    async def config_channels_test_all():
+        """One-click self-test for every defined Channel (serial).
+
+        Each Channel is probed one at a time to avoid hammering a shared
+        upstream (a parallel sweep would trip the very RPM/TPM limits the
+        test is meant to reveal).  Per-Channel failures are collected, never
+        raised: the response carries per-Channel status plus a summary.
+        """
+        results=[]
+        ok=0; failed=0
+        for ch_id,ch in config.channels.items():
+            attempt=state.start(ch_id,ch.id,ch.litellm_model,input_tokens=5); started=time.monotonic()
+            try:
+                base,key=channel_credentials(ch,config.providers)
+                await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,
+                                          messages=[{'role':'user','content':'Reply with exactly OK.'}],
+                                          max_tokens=256,**channel_request_kwargs(ch))
+                latency=int((time.monotonic()-started)*1000); state.finish(attempt,'success',None,latency)
+                state.record_test(ch_id,ch.id,'success',None,latency,'')
+                results.append({'id':ch.id,'provider':ch.provider,'status':'ok','latency_ms':latency,
+                                'error_type':None,'error_detail':''})
+                ok+=1
+            except Exception as exc:
+                typ=error_type(exc); detail=error_detail(exc); latency=int((time.monotonic()-started)*1000)
+                state.finish(attempt,'failure',typ,latency,error_detail=detail,error_code=error_code(exc))
+                state.record_test(ch_id,ch.id,'failure',typ,latency,detail)
+                results.append({'id':ch.id,'provider':ch.provider,'status':'fail','latency_ms':latency,
+                                'error_type':typ,'error_detail':detail})
+                failed+=1
+        return {'results':results,'summary':{'total':len(results),'ok':ok,'failed':failed}}
+
+
     @app.post('/api/config/channels/{channel_id}')
     async def edit_channel(channel_id:str, request:Request):
         if channel_id not in config.channels: raise HTTPException(404,'unknown channel')
@@ -1374,9 +1786,9 @@ def create_app(config_path:str|Path):
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{}); current=dict(channels[channel_id])
         allowed=('provider','litellm_model','public_model','enabled','externally_exposed',
-                 'chn_content_policy_fallback',
+                 'chn_content_policy_fallback','max_output_tokens','quota_429_policy',
                  'context_window_tokens','capabilities','supported_params','protocol_support',
-                 'limits','retry_policy')
+                 'limits','retry_policy','extra_body')
         for key in allowed:
             if key in body: current[key]=body[key]
         # A disabled Channel can never remain directly exposed, even when an
@@ -1437,6 +1849,8 @@ def create_app(config_path:str|Path):
               'chn_content_policy_fallback':bool(body.get('chn_content_policy_fallback',False)),
               'externally_exposed':bool(body.get('externally_exposed',True)),
               'enabled':bool(body.get('enabled',True))}
+        max_output=body.get('max_output_tokens')
+        if isinstance(max_output,int) and max_output>0: item['max_output_tokens']=max_output
         channels[channel_id]=item
         try: backup=persist_config_mapping(mapping)
         except Exception as exc: await structured_config_error(exc)
@@ -1469,7 +1883,7 @@ def create_app(config_path:str|Path):
             if channel_id in channels:
                 raise HTTPException(409,f'channel id conflict: {channel_id}')
             alias=str(item.get('alias') or item.get('public_model') or channel_id).strip()
-            channels[channel_id]={
+            entry_dict={
                 'id':channel_id,'provider':provider,'litellm_model':litellm_model,
                 'public_model':alias,'context_window_tokens':int(item.get('context_window_tokens') or 1000000),
                 'capabilities':item.get('capabilities') or ['chat','streaming'],
@@ -1478,6 +1892,9 @@ def create_app(config_path:str|Path):
                 'externally_exposed':bool(item.get('externally_exposed',True)),
                 'enabled':bool(item.get('enabled',True)),
             }
+            max_output=item.get('max_output_tokens')
+            if isinstance(max_output,int) and max_output>0: entry_dict['max_output_tokens']=max_output
+            channels[channel_id]=entry_dict
             existing_pairs.add((provider,litellm_model)); created.append(channel_id)
         if not created: return {'status':'unchanged','created':[]}
         try: backup=persist_config_mapping(mapping)
@@ -1508,7 +1925,7 @@ def create_app(config_path:str|Path):
             base,key=channel_credentials(ch,config.providers)
             await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,
                                       messages=[{'role':'user','content':'Reply with exactly OK.'}],
-                                      max_tokens=8,**channel_request_kwargs(ch))
+                                      max_tokens=256,**channel_request_kwargs(ch))
         except Exception as exc:
             typ=error_type(exc); detail=error_detail(exc); latency=int((time.monotonic()-started)*1000)
             state.finish(attempt,'failure',typ,latency,error_detail=detail,error_code=error_code(exc))
@@ -1539,7 +1956,7 @@ def create_app(config_path:str|Path):
             base,key=channel_credentials(ch,config.providers)
             endpoint=responses_probe_url(base)
             model=ch.litellm_model.rsplit('/',1)[-1]
-            request_body=json.dumps({'model':model,'input':'Reply with exactly OK.','max_output_tokens':8},ensure_ascii=False).encode('utf-8')
+            request_body=json.dumps({'model':model,'input':'Reply with exactly OK.','max_output_tokens':32},ensure_ascii=False).encode('utf-8')
             req=urllib.request.Request(endpoint,data=request_body,method='POST',headers={
                 'Authorization':f'Bearer {key}',
                 'Content-Type':'application/json',
@@ -1566,6 +1983,17 @@ def create_app(config_path:str|Path):
         latency=int((time.monotonic()-started)*1000)
         observation={'status':status,'checked_at':checked_at,'http_status':status_code,
                      'endpoint':endpoint,'latency_ms':latency,'detail':detail}
+        # 暂态失败：限流(429/RPM/TPM)、上游超时、连接失败、无响应。这类"失败"不代表
+        # 协议不支持，只是当下通不过；不应覆盖上一次的探测结论，只提示用户。
+        transient = (status == 'error' and (
+            status_code == 429 or _probe_detail_has(status_code, payload, detail,
+                'rpm', 'tpm', 'rate limit', 'throttling', '429', 'too many', 'limit exceeded',
+                'timeout', 'timed out', 'read timed out', 'connection', 'refused', 'unreachable',
+                'no response', 'server has no response', '504')))
+        if transient:
+            return {'channel':channel_id,'protocol':'responses','status':'error',
+                    'transient':True,'reason':'暂态失败（限流/超时/连接问题），保留原探测结果',
+                    'observation':observation,'backup':None}
         mapping=yaml.safe_load(config_path_resolved.read_text(encoding='utf-8')) or {}
         channels=mapping.setdefault('channels',{})
         current=dict(channels.get(channel_id) or {})
@@ -1868,6 +2296,64 @@ def create_app(config_path:str|Path):
     async def runner_list():
         return {'data':config.runner_models()}
 
+    @app.get('/api/dashboard')
+    async def dashboard_data(hours:int=24):
+        """First-section data: recently called Runners, sorted by 1-hour calls.
+
+        A Runner appears only when one of its member Channels was actually
+        called (any outcome) inside the 24-hour window; the grouping key is the
+        real ``pool`` of the attempt, so a Runner that merely *shares* a Channel
+        with the called one does not show up.  Direct (non-Runner) Channel calls
+        are shown under the Channel's own name.
+        """
+        now=time.time(); since24=now-max(1,min(hours,168))*3600; since1=now-3600
+        stats=state.dashboard_stats(since24,since1)
+        long_cooldown=int(read_setup().get('FLEX_DASHBOARD_LONG_COOLDOWN','1800'))
+        def status_of(enabled,cooling,n1,ok1):
+            if not enabled:
+                return {'color':'gray','label':'已停用'}
+            if cooling and cooling['until']-now>long_cooldown:
+                return {'color':'gray','label':'下线（冷却至 '+clock(cooling['until'])+'）'}
+            if n1<=0:
+                return {'color':'gray','label':'1 小时无调用'}
+            ratio=ok1/n1
+            if ratio>=0.9:
+                return {'color':'green','label':f'可用 {ratio:.0%}'}
+            if ratio>=0.3:
+                return {'color':'yellow','label':f'受限 {ratio:.0%}（429/错误）'}
+            return {'color':'red','label':f'低可用 {ratio:.0%}'}
+        groups=[]
+        for name,runner in config.runners.items():
+            rows=[]
+            for ch_id in runner.channels:
+                ch=config.channels.get(ch_id)
+                if ch is None: continue
+                st=stats.get((name,ch_id),{})
+                cooling=state.cooldown_state(name,ch_id)
+                enabled=state.is_enabled(name,ch_id)
+                rows.append({'id':ch_id,'provider':ch.provider,'model':ch.litellm_model,
+                             'enabled':enabled,'calls_1h':st.get('n1',0),'calls_24h':st.get('n24',0),
+                             'last_used_at':st.get('last'),
+                             'context_window_tokens':ch.context_window_tokens,
+                             'max_output_tokens':ch.max_output_tokens,
+                             'learned_max_output_tokens':learned_max_output_tokens.get(ch_id),
+                             'effective_max_output_tokens':channel_output_cap(ch),
+                             'status':status_of(enabled,cooling,st.get('n1',0),st.get('ok1',0)),
+                             'cooldown_until':cooling['until'] if cooling else None})
+            if not rows: continue
+            calls24=sum(r['calls_24h'] for r in rows)
+            if calls24<=0: continue
+            groups.append({'name':name,'public_model':runner.public_model,
+                           'calls_1h':sum(r['calls_1h'] for r in rows),'calls_24h':calls24,
+                           'last_used_at':max([r['last_used_at'] or 0 for r in rows],default=0) or None,
+                           'recent':state.runner_recent_tone(name,20),
+                           'channels':rows})
+        # ``direct:*`` attempts are internal probe/self-test activity whose
+        # trace_id never appears in request_traces; they are not user-visible
+        # Runner or Channel calls and must not be shown here.
+        groups.sort(key=lambda g:(-g['calls_1h'],-(g['last_used_at'] or 0)))
+        return {'generated_at':now,'hours':hours,'runners':groups}
+
     @app.get('/api/runners/{name}/channels')
     async def runner_channels(name:str):
         internal,runner,direct=pool_for(name)
@@ -1974,14 +2460,19 @@ def create_app(config_path:str|Path):
         if scope not in ('all','quota','cooldown'):raise HTTPException(400,'scope must be all, quota, or cooldown')
         internal,pool,direct=pool_for(name)
         if pool is None and direct is None:raise HTTPException(404,'unknown pool')
-        state.reset(channel_id,channel_id,scope); logger.warning('pool=%s channel=%s reset scope=%s',internal,channel_id,scope)
+        # 运行态键必须与实际选路使用的 key 一致：Runner 内用 Runner 名，
+        # 直连通道用 'direct:<id>'；此前误用 channel_id 当 pool，导致 Reset
+        # 和 Disable 静默无效。
+        state_key=internal if pool is not None else f'direct:{direct.id}'
+        state.reset(state_key,channel_id,scope); logger.warning('pool=%s channel=%s reset scope=%s',state_key,channel_id,scope)
         return {'pool':name,'channel':channel_id,'reset':scope}
     @app.post('/api/runners/{name}/channels/{channel_id}/enabled')
     @app.post('/api/pools/{name}/channels/{channel_id}/enabled')
     async def channel_enabled(name:str,channel_id:str,value:bool):
         internal,pool,direct=pool_for(name)
         if pool is None and direct is None:raise HTTPException(404,'unknown pool')
-        state.set_enabled(channel_id,channel_id,value); logger.warning('pool=%s channel=%s enabled=%s',internal,channel_id,value)
+        state_key=internal if pool is not None else f'direct:{direct.id}'
+        state.set_enabled(state_key,channel_id,value); logger.warning('pool=%s channel=%s enabled=%s',state_key,channel_id,value)
         return {'pool':name,'channel':channel_id,'enabled':value}
     @app.post('/api/runners/{name}/channels/{channel_id}/test')
     @app.post('/api/pools/{name}/channels/{channel_id}/test')
@@ -1993,7 +2484,7 @@ def create_app(config_path:str|Path):
         attempt=state.start(channel_id,ch.id,ch.litellm_model,input_tokens=5); started=time.monotonic()
         try:
             base,key=channel_credentials(ch, config.providers)
-            await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,messages=[{'role':'user','content':'Reply with exactly OK.'}],max_tokens=8,**channel_request_kwargs(ch))
+            await litellm.acompletion(model=ch.litellm_model,api_base=base,api_key=key,messages=[{'role':'user','content':'Reply with exactly OK.'}],max_tokens=256,**channel_request_kwargs(ch))
         except Exception as e:
             typ=error_type(e); detail=error_detail(e); latency=int((time.monotonic()-started)*1000); state.finish(attempt,'failure',typ,latency,error_detail=detail,error_code=error_code(e)); state.record_test(internal,ch.id,'failure',typ,latency,detail)
             if typ in ('rpm_limit','quota_exhausted'):state.observe_429(channel_id,ch.id,detail,limits=ch.limits)
@@ -2027,6 +2518,7 @@ def create_app(config_path:str|Path):
             raise HTTPException(503,{'error':{'type':'router_restarting','detail':'Router is restarting; retry this request shortly.'}})
         body=await request.json(); name=body.pop('model',None); stream=bool(body.pop('stream',False)); internal,pool,direct=pool_for(name)
         rid='r-'+uuid.uuid4().hex
+        app.state.last_external_call=time.time()  # 标记最后一次外部调用，空闲探测据此暂停
         req_started=time.monotonic()  # 请求起点(排队等待计时用, 早于通道选择)
         if pool is None and direct is None:raise HTTPException(404,f'unknown model: {name}')
         if not isinstance(body.get('messages'),list):raise HTTPException(400,"request field 'messages' is required")
@@ -2107,19 +2599,41 @@ def create_app(config_path:str|Path):
                 state.trace_finish(rid,'failed',http_status=502,error_type='content_policy_blocked',error_detail=detail,latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(502,{'error_type':'content_policy_blocked','error_detail':detail})
             # 每次选路只保留本轮拒绝原因；不能把上一轮的 busy 重复拼进调用轨迹。
-            available=[]; rejected=[]
+            available=[]; rejected=[]; prompt_by_channel={}; full_capacity=[]
+            requested_output=requested_output_tokens(body,reserve)
             for c in request_channels:
                 # 配额、引擎异常和 RPM/TPM 限流的原请求必须回到发生异常
                 # 的同一 Channel 做验证；不能被调度器静默换走。
                 validation_channel=quota_retry_channel or engine_retry_channel or five_hour_retry_channel or limit_retry_channel
                 if validation_channel is not None and c.id!=validation_channel:continue
                 if not state.is_enabled(key,c.id) or c.id in tried:continue
-                ok,reason,total=compatibility(reserve,c,body,stream)
+                prompt_tokens=input_tokens(body,c.litellm_model); prompt_by_channel[c.id]=prompt_tokens
+                ok,reason,total=compatibility(reserve,c,body,stream,prompt_tokens)
                 if not ok:
                     rejected.append({'channel':c.id,'reason':reason}); continue
                 eligible,reason=state.eligible(key,c.id,c.limits,total or 0,ignore_five_hour_quota=(c.id==five_hour_retry_channel))
-                if eligible:available.append(c)
+                if eligible:
+                    available.append(c)
+                    cap=channel_output_cap(c)
+                    if cap is None or requested_output<=cap: full_capacity.append(c)
                 else:rejected.append({'channel':c.id,'reason':reason})
+            # 输出预算偏好：优先选“能完整满足请求 max_tokens”的通道；只有没有任何
+            # 通道满足时才退而用夹取（call_upstream 会把 max_tokens 夹到通道上限），
+            # 这样既不会把大预算请求误判为不可用，也不会牺牲本可完整满足的通道。
+            if full_capacity and len(full_capacity)<len(available):
+                skipped=[c.id for c in available if c not in full_capacity]
+                state.trace_event(rid,'output_capacity_preferred',detail=f'优先可完整满足 max_tokens={requested_output} 的通道；暂不选 {", ".join(skipped)}（需夹取）')
+                available=full_capacity
+            # TPM 预判（偏好而非硬拦截）：历史数据表明 429 主要来自“最近 60 秒
+            # token 量 + 本次大上下文”超过上游 TPM。若学习到了可信的安全 TPM，
+            # 就优先避开当前会撞线的通道；仅当所有通道都接近阈值时保持 best-effort
+            # 发送，绝不因预判本身把请求判死。
+            if len(available)>1:
+                paced=[c for c in available if tpm_pacing_ok(state,key,c,prompt_by_channel.get(c.id,0))]
+                if paced and len(paced)<len(available):
+                    skipped=[c.id for c in available if c not in paced]
+                    state.trace_event(rid,'tpm_pacing_skip',detail=f'按学习安全 TPM 暂避接近上限的通道：{", ".join(skipped)}；优先 {", ".join(c.id for c in paced)}')
+                    available=paced
             if not available:
                 # B类时间窗类拒绝(rpm/tpm/learned_*)且请求开始未超排队上限: 排队等待窗口恢复, 不立即503.
                 reasons={r.get('reason') for r in rejected}
@@ -2169,6 +2683,20 @@ def create_app(config_path:str|Path):
                         await asyncio.sleep(min(15,max(0,QUEUE_RPM_SECONDS-waited)))
                         continue  # 重走选通道循环
                 detail={'error':f'no eligible channel for {name}','last_error':last,'rejected':rejected}
+                # 若唯一不可用原因是通道 429 策略封禁，把语义正确的 429 返回
+                # 给调用方，并附上解封时刻，而不是伪装成 503 服务不可用。
+                policy_blocked=[r for r in rejected if r.get('reason') in ('quota_daily','policy_cooldown')]
+                if policy_blocked and all(r.get('reason') in ('quota_daily','policy_cooldown') for r in rejected):
+                    cooling=[(r['channel'],state.cooldown_state(key,r['channel'])) for r in policy_blocked]
+                    until=max((c[1]['until'] for c in cooling if c[1]),default=None)
+                    blocked_detail={'error_type':policy_blocked[0]['reason'],'last_error':last,
+                                    'blocked':[{'channel':c,'until':cool['until'] if cool else None,
+                                                'remaining_seconds':int(cool['until']-time.time()) if cool else None}
+                                               for c,cool in cooling],
+                                    'message':f'上游 429 后在通道策略封禁期内；{name} 暂无可接受该请求的通道。'}
+                    state.trace_event(rid,'quota_policy_blocked_all',http_status=429,detail=json.dumps(blocked_detail,ensure_ascii=False)[:400])
+                    state.trace_finish(rid,'failed',http_status=429,error_type=policy_blocked[0]['reason'],error_detail=json.dumps(blocked_detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
+                    raise HTTPException(429,blocked_detail)
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
             sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages'],affinity.get('protocol_idle_seconds')) if affinity.get('enabled') else None
@@ -2191,13 +2719,25 @@ def create_app(config_path:str|Path):
                                                  'handoff_hedges':{},'handoff_hedge_stages':set(),'stream_consumer_started':False}
             def stop_first_activity_watch():
                 app.state.first_activity_watch.pop(rid,None)
+            clamped_targets=set()
             async def call_upstream(target):
                 target_base,target_key=channel_credentials(target,config.providers)
+                target_body=body
+                target_cap=channel_output_cap(target)
+                if target_cap:
+                    for field in ('max_completion_tokens','max_tokens'):
+                        value=body.get(field)
+                        if isinstance(value,int) and value>target_cap:
+                            target_body=dict(body); target_body[field]=target_cap
+                            if target.id not in clamped_targets:
+                                clamped_targets.add(target.id)
+                                state.trace_event(rid,'output_clamped',target.id,detail=f'{field}={value} 超过通道上限 {target_cap}；按 {target_cap} 发送（客户端给的是输出上限，不是硬需求）')
+                            break
                 state.trace_event(rid,'upstream_task_started',target.id,detail=f'LiteLLM call started; response timeout {UPSTREAM_RESPONSE_TIMEOUT}s')
                 started_at=time.monotonic()
                 try:
                     response=await await_bounded(
-                        litellm.acompletion(**body,model=target.litellm_model,api_base=target_base,api_key=target_key,stream=stream,**channel_request_kwargs(target)),
+                        litellm.acompletion(**target_body,model=target.litellm_model,api_base=target_base,api_key=target_key,stream=stream,**channel_request_kwargs(target)),
                         UPSTREAM_RESPONSE_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
@@ -2594,6 +3134,33 @@ def create_app(config_path:str|Path):
                     if typ!='quota_exhausted':state.trace_event(rid,'limit_observed',ch.id,error_code(e),f'{typ} received from upstream; cooldown '+(f"set until {clock(cooling['until'])} ({cooling['reason']})" if cooling else 'not set yet; retry/fallback policy continues'))
                     if typ in ('rpm_limit','tpm_limit'):
                         state.trace_event(rid,'limit_retry_started',ch.id,error_code(e),f'{typ} entered first-stage retry; this request remains pinned to the triggering Channel until retry escalation')
+                    # 通道级 429 策略（可配置/可扩展）：不同上游的 429 语义不同。
+                    # 例如 AMD 的“每日 1 积分”要封到次日重置，而瞬时限流只需短退避。
+                    # 策略命中时：把该通道封禁到策略计算的时刻，本请求立即换兄弟通道，
+                    # 而不是每 10 分钟复验同一个已死通道。
+                    policy_block=quota_429_block(ch,ch.quota_429_policy,detail,typ)
+                    if policy_block is not None:
+                        reason,seconds=policy_block
+                        state.cooldown(key,ch.id,seconds,reason)
+                        if ch.quota_429_policy.scope=='channel':
+                            # 每日额度按 API key 计：所有挂载该通道的 Runner 一起封禁。
+                            for other_key,other_runner in config.runners.items():
+                                if ch.id in other_runner.channels:state.cooldown(other_key,ch.id,seconds,reason)
+                        until=time.time()+seconds
+                        label=f'（{ch.quota_429_policy.label}）' if ch.quota_429_policy.label else ''
+                        blocked_detail=(f'{typ} 命中通道 429 策略 {ch.quota_429_policy.mode}/scope={ch.quota_429_policy.scope}：'
+                                        f'{ch.id}{label} 封禁至 {clock(until)}（剩余 {remaining_clock(seconds)}）'
+                                        f'，本请求转下一可用通道。上游原文：{detail[:200]}')
+                        state.trace_event(rid,'quota_policy_blocked',ch.id,error_code(e) or 429,detail=blocked_detail)
+                        retry_steps.pop(typ,None); limit_retry_channel=None
+                        tried.add(ch.id); retries=0
+                        remaining=[c for c in request_channels if c.id!=ch.id and c.id not in tried and state.is_enabled(key,c.id)]
+                        if not remaining:
+                            code=error_code(e) or 429
+                            state.trace_finish(rid,'failed',ch.id,code,typ,blocked_detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                            raise HTTPException(code,{'channel':ch.id,'error_type':typ,'error_detail':blocked_detail,
+                                                      'cooldown_until':until,'policy':ch.quota_429_policy.model_dump()}) from e
+                        continue
                 if typ=='content_policy_blocked':
                     detail_policy=f'上游错误明确表示内容政策限制；按全局 CHN Content Policy Fallback 顺序处理：{detail}'
                     state.trace_event(rid,'content_policy_blocked',ch.id,error_code(e) or 400,detail=detail_policy)
@@ -2610,6 +3177,22 @@ def create_app(config_path:str|Path):
                             continue
                     state.trace_finish(rid,'failed',ch.id,502,'content_policy_blocked',detail_policy,latency_ms=int((time.monotonic()-req_started)*1000))
                     raise HTTPException(502,{'channel':ch.id,'error_type':'content_policy_blocked','error_detail':detail_policy}) from e
+                # 通道级硬性上限（输出预算 / 上下文超限）：是“该通道能力不足”，
+                # 不是“请求格式错误”。先学习/记录上限，再标记本通道已试，让下一
+                # 轮选路落到能承载的兄弟通道 —— 与 content_policy Fallback 同一
+                # 套机制；没有兄弟通道时保留原始错误返回调用方。
+                if typ in ('output_limit_exceeded','context_exceeded'):
+                    if typ=='output_limit_exceeded':
+                        limit_hint=output_limit_from_detail(detail)
+                        if limit_hint:
+                            learned_max_output_tokens[ch.id]=limit_hint
+                            state.learn_output_cap(ch.id,limit_hint,detail)
+                            state.trace_event(rid,'output_limit_learned',ch.id,detail=f'记录 {ch.id} 输出预算上限={limit_hint}；后续超限请求按该上限处理')
+                    remaining=[c for c in request_channels if c.id!=ch.id and c.id not in tried]
+                    if remaining:
+                        tried.add(ch.id); retries=0
+                        state.trace_fallback(rid,f'{ch.id} returned {typ}: {detail[:160]}; selecting next eligible Channel ({", ".join(c.id for c in remaining[:4])})')
+                        continue
                 logger.warning('req=%s channel=%s failed error=%s detail=%s',name,ch.id,typ,detail)
                 if typ=='quota_exhausted':
                     # “allocated quota exceeded”在低频下可能只是上游的瞬时/子额度异常。
@@ -2645,6 +3228,25 @@ def create_app(config_path:str|Path):
                     cost_aware = isinstance(sel,dict) and sel.get('strategy')=='cost_aware'
                     limit_retry_count = max(0,int(rp.max_retries or 0))
                     exhausted_action=rpm_limit_exhausted_action(sel)
+                    # 429 退避期间不再回头打已限流的通道：只要还有其它可立即
+                    # 使用的兄弟通道，就直接切换过去。该通道已写入 busy 冷却，
+                    # 其它请求同样会绕开它。仅当通道显式配置 quota_429_policy
+                    # mode='retry' 时才保留“钉在原通道重试”的旧语义。
+                    pin_to_channel = bool(ch.quota_429_policy and ch.quota_429_policy.mode=='retry')
+                    if not pin_to_channel:
+                        siblings=[]
+                        for candidate in request_channels:
+                            if candidate.id==ch.id or candidate.id in tried: continue
+                            if not state.is_enabled(key,candidate.id): continue
+                            ok_c,reason_c,total_c=compatibility(reserve,candidate,body,stream)
+                            if not ok_c: continue
+                            ok_e,reason_e=state.eligible(key,candidate.id,candidate.limits,total_c or 0)
+                            if ok_e: siblings.append(candidate)
+                        if siblings:
+                            state.cooldown(key,ch.id,max(5,int(base)),'busy')
+                            tried.add(ch.id); limit_retry_channel=None; retry_steps.pop(typ,None); retries=0
+                            state.trace_fallback(rid,f'{ch.id} returned {typ}; switching to {siblings[0].id} instead of retrying a cooling Channel')
+                            continue
                     if step >= limit_retry_count and (typ,ch.id) not in limit_escalated:
                         limit_escalated.add((typ,ch.id))
                         state.trace_event(rid,'limit_escalated',ch.id,detail=f'{typ} retry budget exhausted ({limit_retry_count}); second-stage action={exhausted_action}')
@@ -2662,11 +3264,14 @@ def create_app(config_path:str|Path):
                     waited=time.monotonic()-req_started
                     remaining=cap-waited
                     if remaining > 2:
-                        wait=min(base*(2**step),remaining); retry_steps[typ]=step+1
+                        backoff=min(base*(2**step),remaining)
+                        # ±20% 抖动：并发请求各自错开，避免同一时刻再次齐发。
+                        wait=min(max(1.0,backoff*random.uniform(0.8,1.2)),remaining)
+                        retry_steps[typ]=step+1
                         # 将本轮指数等待写成通道冷却；仅其他请求可退让到
                         # 备用 Channel，本请求由 limit_retry_channel 固定原通道。
                         state.cooldown(key,ch.id,wait,'busy')
-                        state.trace_event(rid,'retry_wait',ch.id,detail=f'{typ}; 指数退避第 {step+1} 次，等待 {wait:.0f}s（累计上限 {cap}s）')
+                        state.trace_event(rid,'retry_wait',ch.id,detail=f'{typ}; 指数退避第 {step+1} 次，等待 {wait:.0f}s（基准 {backoff:.0f}s，累计上限 {cap}s）')
                         continue
                 elif typ in rp.retry_on and retries < rp.max_retries:
                     wait = min(rp.backoff['base_seconds'] * (2 ** retries if rp.backoff.get('exponential') else 1), rp.backoff['max_seconds'])
@@ -3330,10 +3935,80 @@ def create_app(config_path:str|Path):
             except Exception as exc:  # 探测循环自身不应拖垮进程
                 logger.error('probe loop error: %s', exc)
 
+    async def _capability_retry_loop():
+        """空闲时自动重探橙色(error)能力，直到它们变绿(supported)或变红(unsupported)。
+
+        规则（整机级别）：
+        - 系统连续 30 分钟没有外部调用后，才开始重探；
+        - 之后每 10 分钟重探一次；
+        - 一旦出现外部调用，立即停止重探（不干扰真实流量），
+          直到再次空闲满 30 分钟。
+        只重探 protocol_support 中 status=='error' 的项，不触碰已确认的结论。
+        """
+        idle_start_seconds = int(os.getenv('FLEX_CAP_RETRY_IDLE_SECONDS', '1800'))   # 30 分钟
+        retry_interval_seconds = int(os.getenv('FLEX_CAP_RETRY_INTERVAL', '600'))    # 10 分钟
+        tick_seconds = int(os.getenv('FLEX_CAP_RETRY_TICK', '60'))
+        next_run_at = 0.0
+        was_idle = False
+        while True:
+            await asyncio.sleep(tick_seconds)
+            try:
+                now = time.time()
+                last_call = getattr(app.state, 'last_external_call', 0.0)
+                # 有外部调用就停止：重置计时，等再次空闲满阈值。
+                if now - last_call < idle_start_seconds:
+                    if was_idle:
+                        logger.info('cap_retry paused: external call resumed, last_external_call_delta=%.0fs', now - last_call)
+                        was_idle = False
+                    next_run_at = 0.0
+                    continue
+                if now < next_run_at:
+                    continue
+                if not was_idle:
+                    logger.info('cap_retry engaged: idle >= %.0fs, retry interval %.0fs', idle_start_seconds, retry_interval_seconds)
+                    was_idle = True
+                next_run_at = now + retry_interval_seconds
+                probed = 0
+                for ch_id, ch in list(config.channels.items()):
+                    if not ch.enabled:
+                        continue
+                    errors = [k for k, v in (dict(ch.protocol_support) if isinstance(ch.protocol_support, dict) else {}).items()
+                              if isinstance(v, dict) and v.get('status') == 'error']
+                    if not errors:
+                        continue
+                    if ch_id in app.state.capability_probe_channels:
+                        continue
+                    # 只重探橙色项。能力探测是整体重跑，但结果只会更新这些项
+                    # —— supported/unsupported 的项在上一次已定论，重跑无损（同源判定）。
+                    task = schedule_channel_capability_probe(ch_id, kinds=errors)
+                    if task is not None:
+                        probed += 1
+                        logger.info('cap_retry channel=%s scheduling probe, orange=%s', ch_id, ','.join(errors))
+                        # 探测完成后记录各项新状态，便于确认橙色是否消除或定论。
+                        async def log_probe_result(cid=ch_id, task=task):
+                            try:
+                                await task
+                            except Exception:
+                                pass
+                            ch_now = config.channels.get(cid)
+                            ps = dict(ch_now.protocol_support) if ch_now and isinstance(ch_now.protocol_support, dict) else {}
+                            states = {k: v.get('status') for k, v in ps.items() if isinstance(v, dict)}
+                            still = [k for k, v in states.items() if v == 'error']
+                            logger.info('cap_retry channel=%s probe done, states=%s, remaining_orange=%s',
+                                        cid, states, ','.join(still) or 'none')
+                        cap_task = asyncio.ensure_future(log_probe_result())
+                        app.state.probe_tasks.add(cap_task); cap_task.add_done_callback(app.state.probe_tasks.discard)
+                if probed:
+                    logger.info('cap_retry round done probed=%d', probed)
+            except Exception as exc:  # 重探循环自身不应拖垮进程
+                logger.error('capability retry loop error: %s', exc)
+
     @app.on_event('startup')
     async def _start_probe_loop():
         t = asyncio.create_task(_probe_loop())
         app.state.probe_tasks.add(t); t.add_done_callback(app.state.probe_tasks.discard)
+        cap_retry = asyncio.create_task(_capability_retry_loop())
+        app.state.probe_tasks.add(cap_retry); cap_retry.add_done_callback(app.state.probe_tasks.discard)
         watchdog = asyncio.create_task(_first_activity_watchdog())
         app.state.watchdog_tasks.add(watchdog); watchdog.add_done_callback(app.state.watchdog_tasks.discard)
 

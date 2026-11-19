@@ -1,142 +1,155 @@
 <h1>Flex LLM Router</h1>
-<small>Local-only administration · refreshes every 5 seconds</small>
+<small>Local-only administration · 最近 24 小时调用概览（按小时粒度，每 60 秒刷新）</small>
 <small id="notice"></small>
-<div class="tabs">
-  <button class="tab active" data-tab="active">当天有访问</button>
-  <button class="tab" data-tab="all">全部</button>
+<div class="pulse-wrap">
+  <div class="pulse-bar">
+    <span class="pulse-edge" id="pulse-start">—</span>
+    <div id="pulse-lights" class="pulse-lights"></div>
+    <span class="pulse-edge" id="pulse-now">—</span>
+  </div>
+  <div class="pulse-legend">
+    <span><i class="dot green"></i>成功</span>
+    <span><i class="dot yellow"></i>重试后成功</span>
+    <span><i class="dot orange"></i>跨 Channel</span>
+    <span><i class="dot red"></i>失败</span>
+  </div>
 </div>
 <div id="app">Loading…</div>
 <style>
 body{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
 table{font-size:12px;width:100%;table-layout:fixed;border-collapse:collapse}
 #app h2{font-size:15px;margin:18px 0 6px}
-.tabs{margin:10px 0}
-.tab{font:inherit;padding:4px 14px;border:1px solid #c4ccd8;background:#fff;color:#18212f;cursor:pointer;border-radius:6px;margin-right:6px}
-.tab.active{background:#2764a8;color:#fff;border-color:#2764a8}
+td,th{padding:4px 8px;border-bottom:1px solid #e3e8ef;word-break:break-word;overflow:hidden;vertical-align:top}
+code{font-size:11px}
+/* 第一部分：RUNNER / CHANNEL / 状态 / 最后访问 */
+#app table{width:100%;table-layout:fixed}
+#app table col.c-runner{width:26%}
+#app table col.c-channel{width:46%}
+#app table col.c-status{width:16%}
+#app table col.c-last{width:12%}
+.runner-name{font-weight:600;font-size:13px}
+.runner-sub{font-size:10px;color:#889;margin-top:2px}
+.ch-name{font-size:12px}
+.ch-model{font-size:10px;color:#889;margin-top:2px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.green{background:#12b76a}
+.dot.yellow{background:#f79009}
+.dot.red{background:#f04438}
+.dot.gray{background:#98a2b3}
+.status-label{font-size:12px}
+.status-sub{font-size:10px;color:#889;margin-top:2px}
+.empty{color:#889;padding:6px 0}
+/* 顶部状态灯条（右上） */
+.pulse-wrap{display:flex;align-items:center;gap:10px;margin:10px 0;padding:7px 10px;border:1px solid #e3e8ef;border-radius:6px;background:#fbfcfe}
+.pulse-bar{display:flex;align-items:center;gap:8px;flex:1}
+.pulse-edge{font-size:11px;color:#697587;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pulse-lights{display:flex;gap:2px;flex-wrap:nowrap;overflow:hidden;flex:0 0 auto}
+.pulse-light{width:9px;height:14px;border:0;border-radius:2px;padding:0;cursor:pointer;flex:0 0 auto}
+.pulse-light.blank{background:#e2e7ed;cursor:default}
+.pulse-light.first{background:#76aa86}
+.pulse-light.retry{background:#d5ae58}
+.pulse-light.cross{background:#d88943}
+.pulse-light.failed{background:#d64545}
+.pulse-light:hover:not(.blank){outline:2px solid #8aa5c2;outline-offset:1px}
+.pulse-legend{display:flex;gap:10px;margin-left:auto;white-space:nowrap;font-size:10px;color:#667}
+.pulse-legend .dot{width:8px;height:8px;margin-right:4px}
+.dot.orange{background:#d88943}
+/* 每 Runner 的状态灯行 */
+.runner-lights{display:flex;gap:2px;margin-top:6px}
+.runner-lights .pl{width:7px;height:11px;border-radius:1px}
+.pl.first{background:#76aa86}.pl.retry{background:#d5ae58}.pl.cross{background:#d88943}.pl.failed{background:#d64545}
+/* 底部 Recent / Error 表 */
+#bottom table{margin:8px 0 18px}
+#bottom th{text-align:left}
 .errrow td{background:#fff5f5;font-size:12px}
 .errrow td.bad{color:#b42318;font-weight:600}
-td,th{padding:3px 8px;border-bottom:1px solid #e3e8ef;word-break:break-word;overflow:hidden}
-code{font-size:11px}
-button[data-kind]{font:inherit;font-size:10px;padding:1px 4px;margin-right:3px;cursor:pointer}
-.acts{white-space:nowrap}
-/* 第一部分 channel 表固定列宽，保证跨 pool 对齐；Actions 留足空间 */
-#app table{margin-bottom:10px}
-#app table tr> :nth-child(1){width:22%}
-#app table tr> :nth-child(2){width:8%}
-#app table tr> :nth-child(3){width:11%}
-#app table tr> :nth-child(4){width:6%}
-#app table tr> :nth-child(5){width:5%}
-#app table tr> :nth-child(6){width:4%}
-#app table tr> :nth-child(7){width:5%}
-#app table tr> :nth-child(8){width:6%}
-#app table tr> :nth-child(9){width:8%}
-#app table tr> :nth-child(10){width:25%}
-/* 底部 Recent / Error 表也用统一宽度 */
-#bottom table{margin:8px 0 18px}
 </style>
 <script>
 const q=s=>document.querySelector(s),
 show=x=>x==null?'—':x,
 when=x=>x?new Date(x*1000).toLocaleString():'—',
 rel=ts=>{ if(!ts)return '—'; const s=Math.floor(Date.now()/1000-ts); if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; if(s<86400)return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago'; },
-test=x=>x?x.outcome
-  +(x.error_type?' ('+x.error_type+(x.error_detail?' — '+x.error_detail:'').slice(0,120)+')':'')
-  +' · '+show(x.latency_ms)+' ms · '+when(x.tested_at):'—',
-testShort=x=>{
-  if(!x)return '—';
-  const line1=x.outcome+(x.error_type?' ('+x.error_type+')':'');
-  const line2=rel(x.tested_at)+(x.latency_ms!=null?' · '+x.latency_ms+'ms':'');
-  return `<div class="${x.outcome=='success'?'ok':'bad'}" style="font-weight:600">${line1}</div><div style="font-size:10px;color:#889">${line2}</div>`;
-},
-fmtCtx=x=>x==null?'—':(x>=1000000?(x/1000000)+'M':(x>=1000?(x/1000)+'K':x));
-let curTab='active';
-q('.tabs').addEventListener('click',e=>{
-  const b=e.target.closest('.tab'); if(!b)return;
-  curTab=b.dataset.tab;
-  q('.tabs').querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t===b));
-  renderTab();
-});
-let _runners=[];
-async function load(){
-  const runners=await fetch('/api/runners').then(r=>r.json());
-  _runners=[];
-  for(const runner of runners.data){
-    const n=runner.id,
-      d=await fetch('/api/runners/'+encodeURIComponent(n)+'/channels').then(r=>r.json());
-    _runners.push({name:n,channels:d.channels});
+esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
+fmtN=n=>n==null?'—':(n>=1000000?(n/1000000).toFixed(1).replace(/\.0$/,'')+'M':n>=1000?Math.round(n/1000)+'K':String(n));
+
+function statusCell(ch){
+  const st=ch.status||{color:'gray',label:'—'};
+  const title=ch.cooldown_until?('冷却至 '+when(ch.cooldown_until)):'';
+  return `<td title="${esc(title)}"><span class="dot ${st.color}"></span><span class="status-label">${esc(st.label)}</span>${
+    ch.cooldown_until?`<div class="status-sub">解封 ${esc(when(ch.cooldown_until))}</div>`:''}</td>`;
+}
+
+function renderRunners(groups){
+  if(!groups.length){ q('#app').innerHTML='<p class="empty">最近 24 小时没有 Runner / Channel 被调用。</p>'; return; }
+  let rows='';
+  for(const g of groups){
+    const chs=g.channels||[];
+    chs.forEach((ch,i)=>{
+      const runnerCell=i===0
+        ? `<td rowspan="${chs.length}"><div class="runner-name">${esc(g.public_model||g.name)}</div>`+
+          `<div class="runner-sub">1 小时 ${g.calls_1h} 次 · 24 小时 ${g.calls_24h} 次</div>`+
+          `<div class="runner-lights">${(g.recent||[]).map(tone=>`<span class="pl ${tone}" title="最近调用：${tone}"></span>`).join('')}</div></td>`
+        : '';
+      rows+=`<tr>${runnerCell}`+
+        `<td><div class="ch-name"><span class="dot ${esc(ch.status&&ch.status.color||'gray')}"></span><code>${esc(ch.id)}</code></div>`+
+        `<div class="ch-model">${esc(ch.provider||'')} · ${esc(ch.model||'')}`+
+        ` · ctx ${fmtN(ch.context_window_tokens)} · out ${ch.effective_max_output_tokens?fmtN(ch.effective_max_output_tokens):'不限'}`+
+        (ch.learned_max_output_tokens&&!ch.max_output_tokens?'（学习）':'')+`</div></td>`+
+        statusCell(ch)+
+        `<td title="${esc(when(ch.last_used_at))}">${esc(rel(ch.last_used_at))}</td>`+
+        `</tr>`;
+    });
   }
-  renderTab();
+  q('#app').innerHTML=`<h2>最近被调用的 Runner（按最近 1 小时调用次数排序）</h2>`+
+    `<table><colgroup><col class="c-runner"><col class="c-channel"><col class="c-status"><col class="c-last"></colgroup>`+
+    `<tr><th>Runner</th><th>Provider / Channel</th><th>状态</th><th>最后访问</th></tr>${rows}</table>`;
+}
+
+function renderPulse(groups){
+  // 顶部右侧：取所有 Runner 最近调用，按时间倒序最多 40 个灯。
+  const all=[];
+  for(const g of groups){
+    (g.recent||[]).forEach((tone,i)=>{ all.push({tone,ts:(g.last_used_at||0)-i}); });
+  }
+  all.sort((a,b)=>b.ts-a.ts);
+  const recent=all.slice(0,40);
+  const lights=q('#pulse-lights');
+  // 第一个灯（左端）= 最旧调用，显示绝对时间；
+  // 最后一盏灯（右端）后面紧跟最新调用，显示相对时间（如 "3 分钟前"）。
+  const first=recent[recent.length-1],last=recent[0];
+  q('#pulse-start').textContent=first?when(first.ts):'—';
+  q('#pulse-now').textContent=last?(rel(last.ts)+' · '+when(last.ts)):'—';
+  lights.innerHTML=Array.from({length:40},(_,i)=>{
+    const t=recent[i];
+    if(!t)return '<i class="pulse-light blank"></i>';
+    const label=t.tone==='first'?'成功':t.tone==='retry'?'重试后成功':t.tone==='cross'?'跨 Channel 成功':'失败';
+    return `<i class="pulse-light ${t.tone}" title="${when(t.ts)} · ${label}"></i>`;
+  }).join('');
+}
+
+async function loadBottom(){
   const recent=await fetch('/api/requests?limit=12').then(r=>r.json());
-  let out='';
-  out+=`<h2>Recent attempts</h2><table>`+
+  let out=`<h2>Recent attempts</h2><table>`+
     `<tr><th>Time</th><th>Runner</th><th>Channel</th><th>Result</th><th>TTFT</th><th>Latency</th></tr>`+
-    `${recent.data.map(x=>`<tr><td>${when(x.started)}</td><td>${x.pool}</td><td>${x.channel}</td><td class="${x.outcome!='success'?'bad':''}">${x.outcome}${x.error_type?' ('+x.error_type+')':''}</td><td>${show(x.ttft_ms)} ms</td><td>${show(x.latency_ms)} ms</td></tr>`).join('')}`+
+    `${recent.data.map(x=>`<tr><td>${when(x.started)}</td><td>${esc(x.pool)}</td><td>${esc(x.channel)}</td><td class="${x.outcome!='success'?'bad':''}">${x.outcome}${x.error_type?' ('+x.error_type+')':''}</td><td>${show(x.ttft_ms)} ms</td><td>${show(x.latency_ms)} ms</td></tr>`).join('')}`+
     `</table>`;
   const errs=await fetch('/api/errors?limit=20').then(r=>r.json());
   out+=`<h2>Error log (429 / failures)</h2><table>`+
     `<tr><th>Time</th><th>Runner</th><th>Channel</th><th>Code</th><th>Type</th><th>Detail</th><th>Latency</th></tr>`+
-    `${errs.data.length?errs.data.map(x=>`<tr class="errrow"><td>${when(x.started)}</td><td>${x.pool}</td><td>${x.channel}</td><td class="bad">${show(x.error_code)}</td><td class="bad">${x.error_type||'error'}</td><td style="max-width:480px;white-space:pre-wrap;word-break:break-word">${show(x.error_detail)}</td><td>${show(x.latency_ms)} ms</td></tr>`).join(''):'<tr><td colspan="7">— no errors —</td></tr>'}`+
+    `${errs.data.length?errs.data.map(x=>`<tr class="errrow"><td>${when(x.started)}</td><td>${esc(x.pool)}</td><td>${esc(x.channel)}</td><td class="bad">${show(x.error_code)}</td><td class="bad">${x.error_type||'error'}</td><td style="max-width:480px;white-space:pre-wrap;word-break:break-word">${show(x.error_detail)}</td><td>${show(x.latency_ms)} ms</td></tr>`).join(''):'<tr><td colspan="7">— no errors —</td></tr>'}`+
     `</table>`;
   q('#bottom').innerHTML=out;
 }
-function renderTab(){
-  let out='';
-  _runners.forEach(({name,channels})=>{
-    if(curTab==='active' && !(channels.some(c=>(c.calls_today||0)>0))) return;
-    if(!channels.length){out+=`<h2>${name}</h2><div style="color:#889;padding:4px 0">（无渠道）</div>`;return;}
-    const rows=channels.map(c=>{
-      const learned=c.learned_limits?('safe_rpm='+show(c.learned_limits.safe_rpm)+' safe_tpm='+show(c.learned_limits.safe_tpm)+' conf='+show(c.learned_limits.confidence)+' 429s='+show(c.learned_limits.success_since_429)):'none',
-        ev=c.learned_limits&&c.learned_limits.last_429_evidence?(()=>{try{return JSON.parse(c.learned_limits.last_429_evidence)}catch(e){return null}})():null,
-        evTxt=ev?('req='+ev.requests+' tok='+show(ev.tokens)+' release='+when(ev.next_release_at)):'—',
-        l429=c.learned_limits&&c.learned_limits.last_429_at?(' · last429='+c.learned_limits.last_429_kind+' @ '+when(c.learned_limits.last_429_at)+' ['+evTxt+']'):'',
-        detail=`<tr class="detail"><td colspan="9">`+
-          `<b>Capabilities:</b> ${show(c.capabilities&&c.capabilities.length?c.capabilities.join(', '):'—')}`+
-          `<br><b>Context window:</b> ${fmtCtx(c.context_window_tokens)} tokens · <b>Learned limits:</b> ${learned}${l429}`+
-          `<br><b>Tokens/min:</b> ${show(c.tokens_last_minute)} · <b>Quota release:</b> ${when(c.next_quota_release_at)} · <b>Today calls:</b> ${show(c.calls_today)}</td></tr>`;
-      return `<tr class="main">`+
-        `<td class="tgl" data-runner="${name}" data-channel="${c.id}">▸ ${c.id}</td>`+
-        `<td>${show(c.provider)}</td>`+
-        `<td><code>${c.model}</code></td>`+
-        `<td class="${c.enabled?'ok':'bad'}">${c.enabled}</td>`+
-        `<td>${c.calls_last_minute}${c.rpm?'/'+c.rpm:''}</td>`+
-        `<td>${c.calls_last_5_hours}${c.requests_per_5_hours?'/'+c.requests_per_5_hours:''}</td>`+
-        `<td>${show(c.cooldown_reason)}<br><small>${when(c.cooldown_until)}</small></td>`+
-        `<td title="${c.last_test?when(c.last_test.tested_at):'—'}">${testShort(c.last_test)}</td>`+
-        `<td class="acts">`+
-          `<button data-kind="test" data-runner="${name}" data-channel="${c.id}">Test</button>`+
-          `<button data-kind="enabled" data-runner="${name}" data-channel="${c.id}" data-value="${!c.enabled}">${c.enabled?'Disable':'Enable'}</button>`+
-          `<button data-kind="reset" data-runner="${name}" data-channel="${c.id}">Reset</button>`+
-        `</td>`+
-        `</tr>${detail}`;
-    }).join('');
-    out+=`<h2>${name}</h2>`+
-      `<table>`+
-        `<tr><th>Channel</th><th>Prov</th><th>Model</th><th>Enab</th><th>1m</th><th>5h</th><th>Cool</th><th>Last test</th><th>Actions</th></tr>`+
-        `${rows}`+
-      `</table>`;
-  });
-  q('#app').innerHTML=out;
-  q('#app').querySelectorAll('tr.main').forEach(tr=>{
-    const tgl=tr.querySelector('.tgl');
-    tgl.onclick=()=>{
-      const d=tr.nextElementSibling;
-      const open=d.style.display!=='none';
-      d.style.display=open?'none':'';
-      tgl.textContent=(open?'▸':'▾')+' '+tgl.dataset.channel;
-    };
-  });
-  q('#app').querySelectorAll('tr.detail').forEach(d=>d.style.display='none');
+
+async function load(){
+  try{
+    const d=await fetch('/api/dashboard').then(r=>r.json());
+    renderPulse(d.runners||[]);
+    renderRunners(d.runners||[]);
+  }catch(e){ q('#app').innerHTML='<p class="empty">加载失败：'+esc(e.message)+'</p>'; }
+  await loadBottom();
 }
-q('#app').addEventListener('click',e=>{
-  const b=e.target.closest('button[data-kind]'); if(!b)return;
-  const suffix=b.dataset.kind==='enabled'?'enabled?value='+b.dataset.value:b.dataset.kind==='reset'?'reset?scope=all':'test';
-  q('#notice').textContent=b.dataset.kind==='test'?' Testing '+b.dataset.channel+'…':'';
-  fetch('/api/runners/'+encodeURIComponent(b.dataset.runner)+'/channels/'+encodeURIComponent(b.dataset.channel)+'/'+suffix,{method:'POST'}).then(async r=>({ok:r.ok,status:r.status,v:await r.json()})).then(({ok,status,v})=>{
-    q('#notice').textContent=b.dataset.kind==='test'?(ok?' Test succeeded in '+v.latency_ms+' ms':' Test failed: '+(v.detail?.error_type||status)):'';
-    load();
-  });
-});
 load();
-setInterval(load,5000);
+setInterval(load,60000);
 </script>
 <div id="bottom"></div>

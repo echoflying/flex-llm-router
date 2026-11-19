@@ -12,3 +12,5 @@ __pycache__/
 config/*.backup.*
 .mac-flex-stage-sync/
 .runner-v11-backup/
+.recovery-backup/
+config/*.bak.*

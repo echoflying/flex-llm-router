@@ -1,5 +1,5 @@
 """Tests for StateStore with the new flat Channel structure (no Model/PoolRef)."""
-from flex_llm_router.config import Channel, Limits, Routing
+from flex_llm_router.config import Channel, Limits
 from flex_llm_router.state import StateStore, canonical_error_type
 from flex_llm_router.app import compatibility
 import time
@@ -7,10 +7,9 @@ import time
 
 def _make_channel(id='a', **kwargs):
     limits = Limits(**kwargs.get('limits', {}))
-    routing = Routing(**kwargs.get('routing', {}))
     return Channel(id=id, enabled=True, provider='prov',
                    litellm_model='openai/x', public_model='test/x', context_window_tokens=1000000,
-                   capabilities=['chat'], limits=limits, routing=routing)
+                   capabilities=['chat'], limits=limits)
 
 
 def test_public_error_names_keep_tpm_distinct_and_normalize_legacy_rpm():
@@ -78,7 +77,7 @@ def test_last_channel_test_is_exposed(tmp_path):
     c = _make_channel('a')
     s = StateStore(tmp_path / 's.db')
     s.record_test('p', 'a', 'success', latency=12)
-    result = s.channels_state('p', 'a', c.limits, c.routing, 1000000, ['chat'], 'openai/x')
+    result = s.channels_state('p', 'a', c.limits, c.context_window_tokens, ['chat'], 'openai/x')
     assert result['last_test']['outcome'] == 'success'
 
 

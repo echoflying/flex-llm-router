@@ -716,6 +716,12 @@ class StateStore:
             def _blend(previous,sample,floor):
                 if sample is None:return previous
                 if previous is None or previous<floor:return sample
+                if sample>previous:
+                    # 新样本显示更高容量：直接向样本收敛，避免旧的偏低 EWMA 值
+                    # 因截断把估算卡死在低位（int(prev*.7+sample*.3) 在小值时
+                    # 常被取整压回 prev，导致 safe_rpm/safe_tpm 长期上不去）。
+                    return max(floor,sample)
+                # 样本走低：温和向下平滑，避免容量估算骤降。
                 return max(floor,int(previous*.7+sample*.3))
             if old:
                 safe_rpm=_blend(old['safe_rpm'],safe_rpm,1)

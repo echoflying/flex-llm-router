@@ -3761,6 +3761,36 @@ def create_app(config_path:str|Path):
                                 yield f"data: {json.dumps(chunk,ensure_ascii=False)}\n\n"
                             break
                         except Exception as exc:
+                            # 连接层瞬态截断（TransferEncodingError / Connection error /
+                            # server_error）：上游在首个 SSE 前就掐断响应体（如 Content-Length
+                            # 不符）。只要还没有任何 token 发回客户端（chunks_seen==0），请求就
+                            # 是“尚未开始输出”，此时换到 Runner 里其它可用兄弟通道重发是安全的。
+                            stream_typ=error_type(exc)
+                            if stream_typ in ('server_error','connection_error','timeout') and chunks_seen==0:
+                                # 只在确实存在可用兄弟通道时才重试，否则直接让原错误抛出。
+                                sibling=next((candidate for candidate in available
+                                              if candidate.id not in tried and candidate.id!=ch.id
+                                              and candidate.enabled and state.is_enabled(key,candidate.id)
+                                              and state.eligible(key,candidate.id,candidate.limits)[0]),None)
+                                if sibling is not None:
+                                    state.finish(active_attempt,'failure',stream_typ,int((time.monotonic()-active_started)*1000),error_detail=error_detail(exc),error_code=error_code(exc))
+                                    state.trace_fallback(rid,f'{ch.id} 流式中段 {stream_typ}: {error_detail(exc)[:120]}; 首个 SSE 前截断，改发兄弟通道 {sibling.id}')
+                                    tried.add(ch.id)
+                                    new_attempt=state.start(key,sibling.id,sibling.litellm_model,input_tokens=input_tokens(body,sibling.litellm_model),trace_id=rid)
+                                    new_started=time.monotonic(); state.trace_attempt(rid,sibling.id); state.trace_event(rid,'stream_fallback_request',sibling.id,detail=f'{stream_typ}: 首个 SSE 前截断，在兄弟通道重发同一请求')
+                                    try:
+                                        new_response=await call_upstream(sibling)
+                                        new_iterator,new_first,_,_,_,_=await first_event(new_response,new_attempt,new_started,'stream fallback',sibling)
+                                    except Exception as fallback_exc:
+                                        state.finish(new_attempt,'failure',error_type(fallback_exc),int((time.monotonic()-new_started)*1000),error_detail=error_detail(fallback_exc),error_code=error_code(fallback_exc))
+                                        state.trace_event(rid,'stream_fallback_error',sibling.id,error_code(fallback_exc),detail=f'{error_type(fallback_exc)}: {error_detail(fallback_exc)}')
+                                        raise fallback_exc
+                                    await close_upstream(response)
+                                    response=new_iterator; iterator=new_iterator; first_item=new_first; ch=sibling; active_attempt=new_attempt; active_started=new_started; base,key_=channel_credentials(ch,config.providers)
+                                    if affinity.get('enabled'):
+                                        state.remember_affinity(key,body['messages'],ch.id,affinity['idle_seconds'],affinity.get('minimum_messages',2))
+                                        state.trace_event(rid,'session_affinity_provisional',ch.id,detail='Stream fallback Channel produced first SSE; provisional affinity updated')
+                                    continue
                             # A provider may return a response object and then
                             # reject the first SSE request with a protocol 400.
                             # It is still safe to retry because no downstream

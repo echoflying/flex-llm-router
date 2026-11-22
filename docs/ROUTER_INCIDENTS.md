@@ -201,6 +201,8 @@
   这不是冷却丢失，而是上游由「快速拒绝」退化为「静默挂起」的窗口。
 - 同窗 `sensenova-flash-plus`（刻意单通道，唯一成员 agnes）01:01:03 / 01:01:46 各 1 条
   `no_eligible_channel`，累计该 Runner 停摆中；恢复需等 17:03:37。按刻意单通道清单，只计数不重复建议。
+- 01:00–02:00 窗口 `sensenova-flash-plus` 再 2 条 `failed|quota_daily`（02:00 复核 `states`：agnes 仍封至 17:03:37）。
+  同因：唯一成员 agnes 被 `until_reset` 封禁，属刻意单通道设计，**只计数**。封禁期间该 Runner 的失败=预期。
 - 2026-11-22 18:25–18:39 `mix-lite` 4 条 `stale_no_terminal`：客户端均为 `pi/1.5.2 (linux; node/v22.21.1)`，
   事件链显示「客户端断开 → `finally` 兜底补写 `cancelled`」，**兜底机制正常工作**，非 Router 缺陷
   （修复前这 4 条会永久 `running`）。其中 2 条 `handler_response_ready after 93798ms` —— 首 SSE 等到 93–94s

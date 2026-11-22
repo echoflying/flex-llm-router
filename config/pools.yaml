@@ -27,6 +27,12 @@ providers:
   aliyun-qwen:
     base_url_env: DASHSCOPE_API_BASE
     api_key_env: DASHSCOPE_API_KEY
+  nvidia-build:
+    # NVIDIA Build (NIM API) — free tier: unlimited calls, 40 RPM limit
+    # Docs: https://build.nvidia.com
+    # Models: deepseek-ai/deepseek-v3.2, moonshotai/kimi-k2.5, etc.
+    base_url_env: NVIDIA_BUILD_API_BASE
+    api_key_env: NVIDIA_BUILD_API_KEY
 channels:
   sensenova-deepseek-v4-flash:
     id: sensenova-deepseek-v4-flash
@@ -1037,9 +1043,9 @@ channels:
           16}, "prompt_tokens": 10, "prompt_tokens_details": {"cached_to'
       vision:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 206
+        latency_ms: 181
         detail: '{"error": {"code": "1210", "message": "messages.content.type 参数非法，取值范围
           [''text'']"}}'
     provider_type: openai_compatible
@@ -1268,58 +1274,58 @@ channels:
         retried_429: false
       chat:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 249
+        latency_ms: 239
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-cc85793f-3da2-9061-b0da-f2d59086d494",
-          "request_id": "cc85793f-3da2-9061-b0da-f2d59086d494"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-3ce7673a-78e1-9e8d-985e-277e454d6aaa",
+          "request_id": "3ce7673a-78e1-9e8d-985e-277e454d6aaa"}'
       streaming:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 477
+        latency_ms: 483
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-d9db8aec-dc25-950c-ae1a-c2e39e953ff3",
-          "request_id": "d9db8aec-dc25-950c-ae1a-c2e39e953ff3"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-adab3772-5b58-9794-aa13-762db19e43de",
+          "request_id": "adab3772-5b58-9794-aa13-762db19e43de"}'
       tools:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 359
+        latency_ms: 365
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-a2476d35-e00d-9f92-b5f9-0c0b55d330ba",
-          "request_id": "a2476d35-e00d-9f92-b5f9-0c0b55d330ba"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-5c0f498d-9755-9f1e-b6e4-4a21aad9de56",
+          "request_id": "5c0f498d-9755-9f1e-b6e4-4a21aad9de56"}'
       json:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 332
+        latency_ms: 306
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-bbf00244-5d4c-9077-a7a5-434b95d23c3d",
-          "request_id": "bbf00244-5d4c-9077-a7a5-434b95d23c3d"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-bc59ad31-ae5d-9fc8-b401-4ec02623c60a",
+          "request_id": "bc59ad31-ae5d-9fc8-b401-4ec02623c60a"}'
       reasoning:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 207
+        latency_ms: 209
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-467dda4b-0fba-9ff0-a90b-3c6bf06e22e0",
-          "request_id": "467dda4b-0fba-9ff0-a90b-3c6bf06e22e0"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-4cf3b181-0f3c-9d08-9481-aa4d5ba86f5d",
+          "request_id": "4cf3b181-0f3c-9d08-9481-aa4d5ba86f5d"}'
       vision:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 222
+        latency_ms: 219
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-443ad6bd-b640-90c4-823c-3bc449957432",
-          "request_id": "443ad6bd-b640-90c4-823c-3bc449957432"}'
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-26e5faa6-b4cf-9572-bc37-6a39ba125ef6",
+          "request_id": "26e5faa6-b4cf-9572-bc37-6a39ba125ef6"}'
     provider_type: openai_compatible
   deepseek-official-deepseek-flash:
     id: deepseek-official-deepseek-flash
@@ -1494,17 +1500,17 @@ channels:
         retried_429: false
       vision:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
-        latency_ms: 204
+        latency_ms: 197
         detail: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
       responses:
         status: error
-        checked_at: 1795106595
+        checked_at: 1795307730
         http_status: 400
         endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 521
+        latency_ms: 147
         detail: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
     chn_content_policy_fallback: false
@@ -1814,6 +1820,51 @@ channels:
     enabled: true
     context_window_source: metadata
     limits_verified_at: 1795049512.9616451
+  # NVIDIA Build (NIM) free tier channels — 40 RPM, no cost
+  # Register at https://build.nvidia.com, get API key (nvapi-xxxx)
+  nvidia-deepseek-v3.2:
+    id: nvidia-deepseek-v3.2
+    provider: nvidia-build
+    litellm_model: deepseek-ai/deepseek-v3.2
+    public_model: nvidia-deepseek-v3.2
+    context_window_tokens: 131072
+    max_output_tokens: 16384
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+  nvidia-kimi-k2.5:
+    id: nvidia-kimi-k2.5
+    provider: nvidia-build
+    litellm_model: moonshotai/kimi-k2.5
+    public_model: nvidia-kimi-k2.5
+    context_window_tokens: 1048576
+    max_output_tokens: 131072
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - vision
+  nvidia-glm-5.1:
+    id: nvidia-glm-5.1
+    provider: nvidia-build
+    litellm_model: THUDM/glm-5-1
+    public_model: nvidia-glm-5.1
+    context_window_tokens: 131072
+    max_output_tokens: 16384
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
 protocol_error_rules:
 - id: reasoning_content_required
   http_status: 400
@@ -1976,6 +2027,28 @@ runners:
       sensenova-glm-5-3: 0
     selection:
       strategy: round_robin
+  # NVIDIA Build (NIM) free tier pool — 40 RPM, no cost
+  # Add this to other pools as fallback when primary channels are rate-limited
+  nvidia-nim-free:
+    public_model: nvidia-nim-free
+    channels:
+    - nvidia-deepseek-v3.2
+    - nvidia-kimi-k2.5
+    - nvidia-glm-5.1
+    tiers:
+      nvidia-deepseek-v3.2: 0
+      nvidia-kimi-k2.5: 0
+      nvidia-glm-5.1: 0
+    selection:
+      strategy: round_robin
+    selection:
+      fallback:
+        order: cost_ascending
+        trigger:
+        - quota_exhausted
+        - busy_persistent
+        - failure
+        max_fallback_tiers: 1
 links:
   main: mix-deepseek-v4-flash
   sensenova-only: sensenova-deepseek-v4-flash

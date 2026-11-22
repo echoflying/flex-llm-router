@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-11-22 事件：`context_exceeded` 导致"no eligible channel"误判
+
+### 现象
+- 时间：2026-11-22 09:35 左右
+- 返回给客户端的错误：
+  ```json
+  {"detail":{"error":"no eligible channel for mix-lite","last_error":"no_eligible_channel",
+  "rejected":[{"channel":"agnes-flash","reason":"context_exceeded:527460>524288"},
+              {"channel":"sensenova-flash-lite","reason":"context_exceeded:527460>262144"}]}}
+  ```
+- 实际输入 token 约 527k，超过两个 channel 的上下文窗口（512k 与 256k）。
+
+### 关键证据
+- 错误来自 `compatibility()` 检查：路由在发起上游调用前就拒绝了请求。
+- 但 `channels` 表里记录的 `context_window_tokens`（524288 / 262144）与 channel 实际支持的上限**不一致**——可能是历史遗留配置或不同版本 LiteLLM model spec 的差异。
+- 客户端收到的是"无可用 channel"，而不是明确的"上下文超限"提示，导致难以区分是配额耗尽还是输入过大。
+
+### 根因分析
+1. **对外广播 vs 实际调用策略不一致**：`compatibility()` 用 `ch.context_window_tokens` 做硬拦截，但该字段不一定等于上游真实可接受的上限（某些 channel 可能通过 LiteLLM 的 `model` 参数隐式支持更大窗口）。
+2. **错误语义模糊**：`context_exceeded` 被归类成 `no_eligible_channel`，调用方无法知道是"真的没 channel 可用"还是"我的输入太大了"。
+
+### 待处置（不由小时巡检自动处理，需人工决策）
+- [ ] 确认各 channel 的真实上下文窗口（查 LiteLLM model spec 或实测）。
+- [ ] 决定策略：
+  - A) 把 `context_window_tokens` 修正为准确值；
+  - B) 放行大上下文请求交给上游报错（让上游返回明确的 context limit 错误）；
+  - C) 在 router 层给出更精确的错误码（如新增 `context_too_large` error_type）。
+- [ ] 更新 `docs/ROUTER_INCIDENTS.md` 最终处置结论。
+
+### 关联改动
+- 本次发现促使我们把 `context_exceeded` 加入**已知模式库**还是**待排查清单**，取决于上述决策。
+
+---
+
 ## 2026-09-03 事件 A：trace `r-da58cdd82ad547caa59a5aaa5563909d` 挂住（流式消费者阶段）
 
 ### 现象

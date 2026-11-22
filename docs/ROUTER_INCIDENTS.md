@@ -198,3 +198,5 @@
   （修复前这 4 条会永久 `running`）。其中 2 条 `handler_response_ready after 93798ms` —— 首 SSE 等到 93–94s
   （期间命中 60s pre-response hedge），已超出该客户端约 90s 超时，客户端先断。
   观察项：首字延迟 90s+ 会撞客户端超时，若需改善可下调 `FLEX_HEDGE_FIRST_SECONDS`（当前 60）。
+- 2026-11-22 23:11:53 / 23:14:04 `sensenova-deepseek-v4-flash` 再 2 条 `no_eligible_channel`（`last_error: rpm_limit`）。
+  **该池今日累计 15 条**，全部为「SenseNova 单通道 + 上游 rpm/tpm」的设计取舍，无需再逐条登记。

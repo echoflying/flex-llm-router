@@ -200,3 +200,14 @@
   观察项：首字延迟 90s+ 会撞客户端超时，若需改善可下调 `FLEX_HEDGE_FIRST_SECONDS`（当前 60）。
 - 2026-11-22 23:11:53 / 23:14:04 `sensenova-deepseek-v4-flash` 再 2 条 `no_eligible_channel`（`last_error: rpm_limit`）。
   **该池今日累计 15 条**，全部为「SenseNova 单通道 + 上游 rpm/tpm」的设计取舍，无需再逐条登记。
+
+## 已确认的「刻意单通道 Runner」清单（巡检不再建议加成员）
+
+以下 Runner 是**有意**只挂一条通道，单通道在通道限流时整池报错属预期行为，**不要**再建议加 tier-1 成员：
+
+| Runner | 唯一成员 | 确认时间 |
+|---|---|---|
+| `sensenova-only` | `sensenova-deepseek-flash` | 2026-11-22（由 `links.sensenova-only` 语义决定） |
+| `sensenova-flash-plus` | `agnes-flash` | 2026-11-22（用户明确：本身就是单 Channel Runner） |
+
+巡检规则：对上述 Runner 只统计失败、不重复提「加 fallback」建议。

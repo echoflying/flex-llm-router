@@ -162,3 +162,24 @@
 
 依据 `using-large-models` 对额度轴的分类：RPM/TPM 与「每日积分额度」是独立的一轴，
 本次两条链路分别踩了「每分钟预算被打满」和「每日额度耗尽」，均属上游行为，非 Router 缺陷。
+
+### 2026-11-22 13:00 巡检追加：agnes-flash 免费层日额度耗尽，单通道池整池停摆 14h
+
+- **现象**：12:54 起 `sensenova-flash-plus` 池持续返回 429 `quota_daily`（近 1 小时 18 条，末条 13:03）。
+- **上游原文**（free tier）：
+  `You have used up today's text quota and are now limited to 1 request every 3 minutes. Try again after 04:03:23.`
+  另一变体：`You've reached the API rate limit for free users. Upgrade to a Token Plan ...`（注意此变体**不匹配**当前
+  `quota_429_policy.match` 的两条正则，属潜在漏配）。
+- **Router 处理**：`quota_429_policy.mode=until_reset, reset_hint=error_text` 解析出重置时刻，写入
+  `states: agnes-flash / quota_daily / until=2026-11-23 04:03:23`（约 14h），行为正确。
+- **影响面**：
+  | 池 / 入口 | 是否仍可用 |
+  |---|---|
+  | `sensenova-flash-plus`（唯一成员 agnes） | ❌ 整池停摆至次日 04:03 |
+  | `hermes-backend` link（直接指向 agnes-flash channel） | ❌ 无 fallback，同步停摆 |
+  | `mix-lite`、`M2-deepseek-v4-flash`、`agnes-flash` 池 | ⚠️ 降级到第二通道 |
+- **建议（待决策）**：
+  1. 给 `sensenova-flash-plus` 增加 tier-1 兜底（如 `sensenova-flash-lite`）；
+  2. `hermes-backend` 改为指向多通道池，避免单通道直接绑定；
+  3. 把 `You've reached the API rate limit for free users` 加入 agnes 的 `quota_429_policy.match`，
+     否则该变体会落到 `rpm_limit` 短冷却，导致恢复后继续撞墙。

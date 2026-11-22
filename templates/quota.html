@@ -1,0 +1,95 @@
+<h1>配额 / 用量仪表盘</h1>
+<small>各 Channel 的运行状态、预估配额与今日/昨日实际调用（每 60 秒刷新）</small>
+<small id="notice"></small>
+<div id="app">Loading…</div>
+<style>
+body{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+table{font-size:12px;width:100%;table-layout:fixed;border-collapse:collapse}
+td,th{padding:4px 8px;border-bottom:1px solid #e3e8ef;word-break:break-word;overflow:hidden;vertical-align:top}
+code{font-size:11px}
+h2{font-size:15px;margin:16px 0 6px}
+.muted{color:#889;font-size:11px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.green{background:#12b76a}.dot.yellow{background:#f79009}.dot.red{background:#f04438}.dot.gray{background:#98a2b3}
+/* 配额柱 */
+.bar{position:relative;background:#eef2f6;border:1px solid #e3e8ef;border-radius:4px;height:12px;overflow:hidden;min-width:80px}
+.bar>i{display:block;height:100%;background:#2764a8}
+.bar.ok>i{background:#12b76a}.bar.warn>i{background:#f79009}.bar.over>i{background:#f04438}
+.bar .cap{position:absolute;top:0;bottom:0;width:1px;background:#18212f}
+/* 表格列宽 */
+col.c-state{width:9%}col.c-channel{width:24%}col.c-quota{width:26%}col.c-today{width:13%}col.c-yest{width:13%}col.c-live{width:15%}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.empty{color:#889;padding:6px 0}
+.kv{font-size:11px;color:#556;margin-top:1px}
+td b{font-weight:600}
+</style>
+<script>
+const q=s=>document.querySelector(s),
+fmt=n=>{ if(n==null)return '—'; if(Math.abs(n)>=1e6)return (n/1e6).toFixed(1)+'M'; if(Math.abs(n)>=1e3)return (n/1e3).toFixed(n>=1e5?0:1)+'k'; return String(n); },
+when=x=>x?new Date(x*1000).toLocaleString():'—',
+esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function dot(running){
+  if(running==='已停用')return '<span class="dot gray"></span>';
+  if(running==='冷却中')return '<span class="dot red"></span>';
+  return '<span class="dot green"></span>';
+}
+function bar(pct,over){
+  if(pct==null)return '<span class="muted">未设上限</span>';
+  const cls=pct>100?'over':(pct>=80?'warn':'ok');
+  const w=Math.min(100,pct);
+  return `<div class="bar ${cls}" title="已用 ${fmt(pct)}%"><i style="width:${w}%"></i></div><div class="kv num">${fmt(pct)}%</div>`;
+}
+function quotaCell(ch){
+  const lim=ch.limits||{},lr=ch.learned||{},used=ch.used||{};
+  let parts=[];
+  if(lim.rpm)parts.push(`RPM ${lim.rpm}`);
+  if(lim.tpm)parts.push(`TPM ${fmt(lim.tpm)}`);
+  if(lim.max_requests_per_window)parts.push(`5h≤${lim.max_requests_per_window}次`);
+  const conf=lr.confidence>0;
+  return `<td><b>${esc(ch.id)}</b><div class="kv">${esc(ch.provider||'')} · ${esc(ch.model||'')}</div>
+    <div class="kv">${parts.length?esc(parts.join(' · ')):'<span class="muted">未显式配置</span>'}</div>
+    <div class="kv">${conf?`学习到 rpm${lr.safe_rpm} / tpm${fmt(lr.safe_tpm)}（${lr.confidence}样本${lr.last_429_kind?' · '+esc(lr.last_429_kind):''}）`:'<span class="muted">无学习数据</span>'}</div></td>`;
+}
+function windowBar(ch){
+  const u=ch.used||{};
+  if(u.window_cap==null)return `<td><span class="muted">5h 窗口无上限</span><div class="kv num">已用 ${u.window_used||0} 次</div></td>`;
+  return `<td>${bar(u.window_pct)}<div class="kv num">${u.window_used||0} / ${u.window_cap} 次</div></td>`;
+}
+function render(d){
+  const chs=d.channels||[],t=d.total_today||{},y=d.total_yesterday||{};
+  if(!chs.length){ q('#app').innerHTML='<p class="empty">无 Channel 数据。</p>'; return; }
+  let rows='';
+  for(const ch of chs){
+    const td=ch.today||{},yd=ch.yesterday||{},u=ch.used||{};
+    const ttl=ch.cooldown_until?`冷却至 ${when(ch.cooldown_until)}${ch.cooldown_reason?(' · '+esc(ch.cooldown_reason)):''}`:'';
+    rows+=`<tr>
+      <td title="${esc(ttl)}">${dot(ch.running)}<span>${esc(ch.running)}</span></td>
+      ${quotaCell(ch)}
+      ${windowBar(ch)}
+      <td><div class="num"><b>${td.requests||0}</b> 次</div>
+        <div class="num">${fmt(td.tokens||0)} tok</div>
+        <div class="kv num">✓${td.success||0} ✗${td.failed||0} −${td.cancelled||0}</div></td>
+      <td><div class="num"><b>${yd.requests||0}</b> 次</div>
+        <div class="num">${fmt(yd.tokens||0)} tok</div>
+        <div class="kv num">✓${yd.success||0} ✗${yd.failed||0} −${yd.cancelled||0}</div></td>
+      <td><div class="num"><b>${u.live24_requests||0}</b> 次</div>
+        <div class="num">${fmt(u.live24_tokens||0)} tok</div></td>
+    </tr>`;
+  }
+  q('#app').innerHTML=
+    `<h2>今日 ${d.today} · 总计</h2>
+     <div class="kv">请求 <b>${t.requests||0}</b> 次 · Token <b>${fmt(t.tokens||0)}</b> · 成功 <b>${t.success||0}</b> · 失败 <b>${t.failed||0}</b> · 取消 <b>${t.cancelled||0}</b>
+     （昨日：${y.requests||0} 次 / ${fmt(y.tokens||0)} tok）</div>
+     <table><colgroup><col class="c-state"><col class="c-channel"><col class="c-quota"><col class="c-today"><col class="c-yest"><col class="c-live"></colgroup>
+     <tr><th>状态</th><th>Channel</th><th>配额（预估）</th><th>今日实际</th><th>昨日</th><th>近24h实时</th></tr>${rows}</table>`;
+}
+async function load(){
+  try{
+    const d=await fetch('/api/quota').then(r=>r.json());
+    render(d);
+  }catch(e){ q('#app').innerHTML='<p class="empty">加载失败：'+esc(e.message)+'</p>'; }
+}
+load();
+setInterval(load,60000);
+</script>

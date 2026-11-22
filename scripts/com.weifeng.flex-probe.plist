@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.weifeng.flex-probe</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/weifeng/projects/flex-llm-router/scripts/probe_router.sh</string>
+    </array>
+    <!-- Every 60 seconds — fast enough to catch crashes within a minute, slow enough to avoid log spam -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <!-- Run once on load so we don't wait a full interval before first check -->
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Keep the probe itself alive; do NOT use KeepAlive=true with StartInterval (conflicting semantics) -->
+    <key>StandardOutPath</key>
+    <string>/Users/weifeng/projects/flex-llm-router/logs/probe.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/weifeng/projects/flex-llm-router/logs/probe.err.log</string>
+</dict>
+</plist>

@@ -1030,6 +1030,15 @@ def hedge_plan_for(pool_name,channels,selected,pool=None,input_tokens_count=None
     is_large=large_enabled and input_tokens_count is not None and input_tokens_count >= large_threshold
     configured=(pool.selection.get('hedge',{}) if pool is not None and isinstance(pool.selection,dict) else {})
     stages=configured.get('stages',[]) if isinstance(configured,dict) else []
+    # A Hedge target must be able to host the request.  If we know the prompt
+    # size, drop Channels whose context window can't fit it — otherwise a
+    # large request fails over to a sibling that only rejects it (e.g.
+    # sensenova-flash-lite 拒绝超过其 262144 窗口的 386k 请求).
+    by_id={channel.id:channel for channel in channels}
+    def fits(channel):
+        if input_tokens_count is None:return True
+        ctx=getattr(channel,'context_window_tokens',None)
+        return ctx is None or ctx>=input_tokens_count
     if stages and not is_large:
         known={channel.id for channel in channels}
         plan=[]
@@ -1037,13 +1046,14 @@ def hedge_plan_for(pool_name,channels,selected,pool=None,input_tokens_count=None
             if not isinstance(stage,dict):continue
             try:due=max(0,int(stage.get('after_seconds',0)))
             except (TypeError,ValueError):continue
-            targets=tuple(str(target) for target in (stage.get('channels') or ()) if str(target) in known)
+            targets=tuple(str(target) for target in (stage.get('channels') or ())
+                          if str(target) in known and fits(by_id[str(target)]))
             if due and targets:plan.append((due,targets))
         if plan:return tuple(plan)
     # Automatic policy is intentionally based only on Runner membership and
     # order, never on provider/model names. The initially selected Channel is
     # the request's model0; subsequent configured Channels are model1/model2.
-    ordered=[selected]+[channel for channel in channels if channel.id!=selected.id]
+    ordered=[selected]+[channel for channel in channels if channel.id!=selected.id and fits(channel)]
     if len(ordered)>=3:
         delays=large_delays if is_large else (360,540)
         return ((delays[0],(ordered[1].id,)),(delays[1],(ordered[2].id,)))
@@ -1341,6 +1351,9 @@ def create_app(config_path:str|Path):
     @app.get('/statistics',response_class=HTMLResponse)
     async def statistics_page():
         return render('statistics.html','Flex LLM Router · 调用统计')
+    @app.get('/quota',response_class=HTMLResponse)
+    async def quota_page():
+        return render('quota.html','Flex LLM Router · 配额仪表盘')
     @app.get('/help',response_class=HTMLResponse)
     async def help_page():
         return render('help.html','Flex Router · 策略说明')
@@ -2378,6 +2391,87 @@ def create_app(config_path:str|Path):
                 'activity_cache':{'source':order['source'],'computed_at':order['computed_at'],
                                   'max_age_seconds':order['max_age_seconds']},
                 'runners':groups}
+
+    @app.get('/api/quota')
+    async def quota_dashboard():
+        """Per-Channel quota & usage dashboard.
+
+        A Channel can be a member of several Runners, so every usage figure here
+        is aggregated **across all pools** for that Channel: provider quotas are
+        billed per account, not per Runner.
+
+        For each configured Channel (config order):
+          running - config-enabled, and whether it currently sits in cooldown;
+          limits  - explicitly configured rpm/tpm/5h-window cap (``None`` = unset);
+          learned - safe rpm/tpm the Router inferred from observed 429s, plus the
+                    confidence sample count and the last limit kind seen;
+          used    - calls/tokens actually consumed in the 5h sliding window, today,
+                    yesterday, and the live last-24h figure.
+        """
+        now=time.time(); today=time.strftime('%Y-%m-%d',time.localtime(now))
+        yesterday=time.strftime('%Y-%m-%d',time.localtime(now-86400))
+        with state.lock:
+            today_rows={r['channel']:dict(r) for r in state.db.execute(
+                "SELECT channel,SUM(requests) AS requests,SUM(success) AS success,SUM(failed) AS failed,"
+                "SUM(cancelled) AS cancelled,SUM(total_tokens) AS tokens "
+                "FROM daily_request_analytics WHERE day=? GROUP BY channel",(today,))}
+            yest_rows={r['channel']:dict(r) for r in state.db.execute(
+                "SELECT channel,SUM(requests) AS requests,SUM(success) AS success,SUM(failed) AS failed,"
+                "SUM(cancelled) AS cancelled,SUM(total_tokens) AS tokens "
+                "FROM daily_request_analytics WHERE day=? GROUP BY channel",(yesterday,))}
+            # Cooldowns span pools; collect them once.
+            cooled={}
+            for r in state.db.execute("SELECT channel,until,reason FROM states WHERE until IS NOT NULL AND until>?",(now,)):
+                prev=cooled.get(r['channel'])
+                if prev is None or r['until']>prev['until']:
+                    cooled[r['channel']]={'until':r['until'],'reason':r['reason']}
+        channels=[]
+        for cid,ch in config.channels.items():
+            limits=ch.limits
+            window=limits.window_seconds if limits else 18000
+            window_cap=limits.max_requests_per_window if limits else None
+            # Cross-pool usage inside the sliding quota window.
+            with state.lock:
+                used_window=state.db.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE channel=? AND started>=?",(cid,now-window)).fetchone()[0]
+                live24=state.db.execute(
+                    "SELECT COUNT(*) AS requests,COALESCE(SUM(total_tokens),SUM(input_tokens),0) AS tokens "
+                    "FROM attempts WHERE channel=? AND started>=?",(cid,now-86400)).fetchone()
+                # Highest-confidence learned limit row for this Channel (any pool).
+                learned_row=state.db.execute(
+                    "SELECT safe_rpm,safe_tpm,confidence,last_429_kind FROM learned_limits "
+                    "WHERE channel=? ORDER BY confidence DESC LIMIT 1",(cid,)).fetchone()
+            cool=cooled.get(cid)
+            if not ch.enabled:
+                running='已停用'
+            elif cool:
+                running='冷却中'
+            else:
+                running='运行中'
+            empty={'requests':0,'success':0,'failed':0,'cancelled':0,'tokens':0}
+            t=today_rows.get(cid) or empty; y=yest_rows.get(cid) or empty
+            channels.append({
+                'id':cid,'provider':ch.provider,'model':ch.litellm_model,'enabled':ch.enabled,
+                'running':running,
+                'cooldown_until':float(cool['until']) if cool else None,
+                'cooldown_reason':cool['reason'] if cool else None,
+                'limits':{'rpm':limits.rpm if limits else None,'tpm':limits.tpm if limits else None,
+                          'window_seconds':window,'max_requests_per_window':window_cap},
+                'learned':{'safe_rpm':learned_row['safe_rpm'] if learned_row else None,
+                           'safe_tpm':learned_row['safe_tpm'] if learned_row else None,
+                           'confidence':(learned_row['confidence'] or 0) if learned_row else 0,
+                           'last_429_kind':learned_row['last_429_kind'] if learned_row else None},
+                'used':{'window_used':used_window,'window_cap':window_cap,
+                        'window_pct':(100.0*used_window/window_cap) if window_cap else None,
+                        'live24_requests':live24['requests'] or 0,'live24_tokens':live24['tokens'] or 0},
+                'today':{k:(t[k] or 0) for k in ('requests','success','failed','cancelled','tokens')},
+                'yesterday':{k:(y[k] or 0) for k in ('requests','success','failed','cancelled','tokens')},
+            })
+        total_today={k:sum(c['today'][k] for c in channels) for k in ('requests','success','failed','cancelled','tokens')}
+        total_yest={k:sum(c['yesterday'][k] for c in channels) for k in ('requests','success','failed','cancelled','tokens')}
+        return {'generated_at':now,'today':today,'yesterday':yesterday,
+                'total_today':total_today,'total_yesterday':total_yest,
+                'channels':channels}
 
     @app.get('/api/runners/{name}/channels')
     async def runner_channels(name:str):
@@ -3904,6 +3998,24 @@ def create_app(config_path:str|Path):
                         stream_idle_guard_task.cancel()
                     if 'watchdog_task' in locals() and not watchdog_task.done():
                         watchdog_task.cancel()
+                    # A response body can be torn down without passing through
+                    # any ``except`` branch: an async-generator ``aclose()``
+                    # arrives as ``GeneratorExit`` (a BaseException) and the ASGI
+                    # layer may simply drop the body task.  Because the watchdog
+                    # record is popped just above, that used to leave the Trace
+                    # ``running`` forever with nothing left to time it out.
+                    # Reconstruct the honest terminal state instead.
+                    try:
+                        if state.trace_status(rid)=='running':
+                            detail=('Stream body closed without a terminal outcome '
+                                    '(client abort or generator finalisation); '
+                                    'Router closed the Trace from its cleanup path.')
+                            state.finish(active_attempt,'cancelled','stale_no_terminal',
+                                         latency=int((time.monotonic()-active_started)*1000),error_detail=detail)
+                            state.trace_finish(rid,'cancelled',ch.id,error_type='stale_no_terminal',
+                                               error_detail=detail,latency_ms=int((time.monotonic()-req_started)*1000))
+                    except Exception:
+                        logger.exception('stream cleanup could not finalise trace=%s',rid)
             state.trace_event(rid,'handler_response_built',ch.id,detail='StreamingResponse constructed; returning to ASGI layer')
             return DisconnectAwareStreamingResponse(events(),on_call=lambda: state.trace_event(rid,'asgi_response_call',ch.id,detail='ASGI entered the streaming response wrapper'),
                 on_stream=lambda: state.trace_event(rid,'asgi_stream_task_started',ch.id,detail='ASGI body-producer task started'),on_disconnect=disconnect_notice.set,timeout_event=downstream_timeout_event,restart_event=restart_event,on_finished=unregister_restart_signal,timeout_detail='No upstream SSE activity before Router safety deadline; request closed.',media_type='text/event-stream',headers={'Cache-Control':'no-cache','Connection':'keep-alive','X-Accel-Buffering':'no'})
@@ -4097,6 +4209,26 @@ def create_app(config_path:str|Path):
             except Exception as exc:  # 重探循环自身不应拖垮进程
                 logger.error('capability retry loop error: %s', exc)
 
+    async def _stale_trace_sweeper():
+        """Last-resort guarantee that no Trace stays ``running`` unsupervised.
+
+        Normal request paths and the stream cleanup fallback both write a
+        terminal state, but an ASGI body can still be torn down without running
+        any ``except`` branch, and a process crash can orphan a row.  Without
+        this sweep the admin UI and the monitor report would keep showing such a
+        request as "hung" for hours even though nothing is working on it.
+        """
+        grace=int(os.getenv('FLEX_STALE_TRACE_GRACE','1800'))
+        interval=max(30,int(os.getenv('FLEX_STALE_TRACE_INTERVAL','120')))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                closed=state.sweep_stale_traces(grace)
+                if closed:
+                    logger.warning('stale trace sweeper closed %d running trace(s) older than %ds',closed,grace)
+            except Exception as exc:  # 清扫循环自身不应拖垮进程
+                logger.error('stale trace sweeper error: %s', exc)
+
     @app.on_event('startup')
     async def _start_probe_loop():
         t = asyncio.create_task(_probe_loop())
@@ -4105,5 +4237,7 @@ def create_app(config_path:str|Path):
         app.state.probe_tasks.add(cap_retry); cap_retry.add_done_callback(app.state.probe_tasks.discard)
         watchdog = asyncio.create_task(_first_activity_watchdog())
         app.state.watchdog_tasks.add(watchdog); watchdog.add_done_callback(app.state.watchdog_tasks.discard)
+        sweeper = asyncio.create_task(_stale_trace_sweeper())
+        app.state.watchdog_tasks.add(sweeper); sweeper.add_done_callback(app.state.watchdog_tasks.discard)
 
     return app

@@ -336,6 +336,16 @@ class StateStore:
                 (day,trace['pool'] or 'unclassified',channel,error,1,1,int(not success),int(success),int(recovery is not None),float(recovery or 0)))
         self.db.execute('INSERT INTO analytics_rollup_marks(trace_id,rolled_at) VALUES(?,?)',(trace_id,completed))
 
+    def trace_status(self,trace_id):
+        """Return the persisted status of one Trace, or ``None`` when unknown.
+
+        Cleanup paths need this to decide whether a terminal state was already
+        written; it must stay cheap because it runs on every stream teardown.
+        """
+        with self.lock:
+            row=self.db.execute('SELECT status FROM request_traces WHERE trace_id=?',(trace_id,)).fetchone()
+            return row['status'] if row else None
+
     def cancel_interrupted_traces(self):
         """A process restart cannot resume an in-memory request; close stale running traces honestly."""
         with self.lock,self.db:
@@ -343,8 +353,43 @@ class StateStore:
             for row in rows:
                 trace_id=row['trace_id']; now=time.time()
                 self.db.execute("UPDATE request_traces SET updated=?,status='cancelled',error_type='router_restarted',error_detail='Router restarted while this request was in progress' WHERE trace_id=?",(now,trace_id))
+                self.db.execute("UPDATE attempts SET outcome='cancelled',error_type='router_restarted' WHERE trace_id=? AND outcome='started'",(trace_id,))
                 self.db.execute("INSERT INTO trace_events(trace_id,ts,event,detail) VALUES(?,?,?,?)",(trace_id,now,'cancelled','Router restarted while request was in progress'))
             return len(rows)
+
+    def sweep_stale_traces(self,grace_seconds=1800,now=None):
+        """Close ``running`` Traces that nothing supervises any more.
+
+        The request paths and the stream cleanup fallback both write a terminal
+        state, but a Trace can still be orphaned (an ASGI body torn down without
+        running any ``except`` branch, a lost in-memory watchdog record, or a
+        crash window).  Such rows would otherwise stay ``running`` forever and
+        pollute the dashboard and the monitor report.  Only Traces whose last
+        persisted activity is older than ``grace_seconds`` are touched, so a
+        genuinely live request is never swept.
+        """
+        now=now or time.time(); cutoff=now-max(60,int(grace_seconds))
+        with self.lock:
+            rows=[dict(row) for row in self.db.execute(
+                "SELECT trace_id,started,final_channel FROM request_traces "
+                "WHERE status='running' AND updated<?",(cutoff,))]
+        closed=0
+        for row in rows:
+            trace_id=row['trace_id']
+            with self.lock:
+                last=self.db.execute('SELECT channel FROM attempts WHERE trace_id=? ORDER BY id DESC LIMIT 1',(trace_id,)).fetchone()
+            channel=row.get('final_channel') or (last['channel'] if last else None)
+            started=row.get('started') or now
+            detail=('No terminal state was written and no watchdog still supervises '
+                    'this request; Router reconstructed a cancelled outcome.')
+            with self.lock,self.db:
+                self.db.execute("UPDATE attempts SET outcome='cancelled',error_type='stale_no_terminal' "
+                                "WHERE trace_id=? AND outcome='started'",(trace_id,))
+            self.trace_finish(trace_id,'cancelled',channel,error_type='stale_no_terminal',
+                              error_detail=detail,latency_ms=int(max(0,now-started)*1000))
+            self.trace_event(trace_id,'stale_trace_swept',channel,detail=detail)
+            closed+=1
+        return closed
     def traces(self,status=None,limit=100):
         with self.lock:
             # The list view needs only a prompt-free Channel count to distinguish

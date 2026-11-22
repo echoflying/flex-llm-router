@@ -2710,6 +2710,11 @@ def create_app(config_path:str|Path):
         # request must not silently change provider/model semantics.
         limit_retry_channel=None
         policy_fallback_active=False; policy_fallback_tried=set(); policy_fallback_channels=[]
+        # 通道级 429 策略（每日配额/次日重置）封掉的通道不会被写进本轮 rejected
+        # （选路循环每轮都重建 rejected），但调用方看到的“无可用通道”真相就是它：
+        # 大窗兜底通道被配额封禁后，剩下的通道窗口不够，才是本次失败的根因。
+        # 这里单独累计，随最终拒绝详情一起返回，避免把它误报成纯上下文超窗。
+        policy_block_reasons={}
         # Becomes ``protocol`` only when this request leaves its original
         # Channel because a configured protocol-compatibility rule matched.
         affinity_kind='normal'
@@ -2838,9 +2843,20 @@ def create_app(config_path:str|Path):
                     except Exception:
                         total=0
                     window=max((ch.context_window_tokens for ch in request_channels if ch.context_window_tokens),default=0)
+                    blocked=[{'channel':b['channel'],'reason':b['reason'],'until':b.get('until'),
+                              'remaining_seconds':max(0,int(b['until']-time.time())) if b.get('until') else None}
+                             for b in policy_block_reasons.values()]
+                    blocked_list=[{'channel':b['channel'],'reason':'quota_policy_blocked:'+str(b['reason']),
+                                  'until':b.get('until')} for b in policy_block_reasons.values()]
+                    if blocked:
+                        blocked_names=', '.join('{}（{}，至 {}）'.format(b['channel'],b['reason'],clock(b.get('until')))
+                                                for b in policy_block_reasons.values())
+                        ctx_message=(f'请求 {total} token 超出 {name} 的上下文窗口 {window}；当前能承载该请求的通道全部不可用：'
+                                     f'{blocked_names}。先对对话执行 Compact（压缩）后重试，或等待上述通道冷却结束。')
+                    else:
+                        ctx_message=f'请求 {total} token 超出 {name} 的上下文窗口 {window}；请先对对话执行 Compact（压缩）后重试。'
                     ctx_detail={'error_type':'context_exceeded','request_tokens':total,'max_context_window':window,
-                                'message':f'请求 {total} token 超出 {name} 的上下文窗口 {window}；请先对对话执行 Compact（压缩）后重试。',
-                                'rejected':rejected}
+                                'message':ctx_message,'policy_blocked':blocked,'rejected':rejected+blocked_list}
                     state.trace_event(rid,'context_exceeded_rejected',http_status=400,detail=json.dumps(ctx_detail,ensure_ascii=False)[:400])
                     state.trace_finish(rid,'failed',http_status=400,error_type='context_exceeded',error_detail=json.dumps(ctx_detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                     raise HTTPException(400,ctx_detail)
@@ -3319,6 +3335,9 @@ def create_app(config_path:str|Path):
                         state.trace_event(rid,'quota_policy_blocked',ch.id,error_code(e) or 429,detail=blocked_detail)
                         retry_steps.pop(typ,None); limit_retry_channel=None
                         tried.add(ch.id); retries=0
+                        policy_block_reasons[ch.id]={'channel':ch.id,'reason':reason,'until':until,
+                                                    'policy_mode':ch.quota_429_policy.mode,'policy_scope':ch.quota_429_policy.scope,
+                                                    'upstream':detail[:200]}
                         remaining=[c for c in request_channels if c.id!=ch.id and c.id not in tried and state.is_enabled(key,c.id)]
                         if not remaining:
                             code=error_code(e) or 429

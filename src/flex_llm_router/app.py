@@ -2441,11 +2441,23 @@ def create_app(config_path:str|Path):
                 learned_row=state.db.execute(
                     "SELECT safe_rpm,safe_tpm,confidence,last_429_kind FROM learned_limits "
                     "WHERE channel=? ORDER BY confidence DESC LIMIT 1",(cid,)).fetchone()
+                # Latest health check result
+                latest_test=state.db.execute(
+                    "SELECT outcome,error_type,tested_at FROM channel_tests WHERE channel=? ORDER BY tested_at DESC LIMIT 1",(cid,)).fetchone()
             cool=cooled.get(cid)
+            # Determine running status based on both cooldown and latest health check
             if not ch.enabled:
                 running='已停用'
             elif cool:
                 running='冷却中'
+            elif latest_test and latest_test['outcome']=='failure':
+                err=latest_test['error_type'] or ''
+                if 'rate' in err or '429' in err:
+                    running='限流中'
+                elif 'auth' in err or '401' in err or '403' in err or 'NotFound' in err:
+                    running='配置错误'
+                else:
+                    running='异常'
             else:
                 running='运行中'
             empty={'requests':0,'success':0,'failed':0,'cancelled':0,'tokens':0}

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, hmac, json, math, os, secrets, sqlite3, statistics, time
+import hashlib, hmac, json, math, os, secrets, sqlite3, statistics, time, calendar
 from pathlib import Path
 from threading import RLock
 
@@ -977,6 +977,51 @@ class StateStore:
         """Count attempts for this channel since local midnight today."""
         now=time.time(); local=time.localtime(now); midnight=time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1))
         with self.lock:return self.db.execute('SELECT COUNT(*) FROM attempts WHERE channel=? AND started>=?',(ch_id,midnight)).fetchone()[0]
+    def daily_usage(self,ch_id,reset='local_midnight',now=None):
+        """Cross-pool consumption of one Channel since its own day boundary.
+
+        Provider quotas bill per account, so a Channel mounted in several
+        Runners must be accounted once — the day key, not the pool, is the
+        accounting unit.  Figures come from the daily analytics rollup rather
+        than raw attempts: the rollup writes one row per completed request, so
+        the retries a single request makes inside one trace are already
+        deduped, which is the honest measure of what the upstream actually
+        emitted for the day.
+
+        ``reset`` picks the boundary the Channel rolls on: ``local_midnight``
+        (default) or ``utc_midnight`` — some free tiers roll on UTC.  Returns
+        measured tokens/calls plus the epoch at which the counter zeroes, so a
+        caller can show "resets in 3h12m" without re-deriving it.
+        """
+        now=now or time.time()
+        lt=time.gmtime(now) if reset=='utc_midnight' else time.localtime(now)
+        day=time.strftime('%Y-%m-%d',lt)
+        if reset=='utc_midnight':
+            base=calendar.timegm((lt.tm_year,lt.tm_mon,lt.tm_mday,0,0,0,0,0,0))
+            reset_at=base+86400
+        else:
+            base=time.mktime((lt.tm_year,lt.tm_mon,lt.tm_mday,0,0,0,0,0,-1))
+            reset_at=time.mktime((lt.tm_year,lt.tm_mon,lt.tm_mday+1,0,0,0,0,0,-1))
+        with self.lock:
+            row=self.db.execute('SELECT COALESCE(SUM(total_tokens),0) AS tokens,'
+                                 'COALESCE(SUM(requests),0) AS calls '
+                                 'FROM daily_request_analytics WHERE day=? AND channel=?',(day,ch_id)).fetchone()
+        return {'day':day,'reset':reset,'tokens':int(row['tokens']),'calls':int(row['calls']),
+                'reset_at':reset_at,'seconds_to_reset':max(0,int(reset_at-now))}
+    def last_test_any(self,ch_id):
+        """Latest self-test for a Channel across every pool mounting it.
+
+        Health is a property of the upstream, not of the Runner, so a Runner
+        that wants to rank Channels by freshness must not be told to look under
+        its own pool key only.  Per-pool ``last_test`` stays authoritative for
+        the UI; this is the cross-pool view scheduling needs.
+        """
+        with self.lock:
+            t=self.db.execute('SELECT tested_at,outcome,error_type,latency_ms,error_detail '
+                               'FROM channel_tests WHERE channel=? ORDER BY tested_at DESC LIMIT 1',(ch_id,)).fetchone()
+        if not t: return None
+        d=dict(t); d['error_type']=canonical_error_type(d.get('error_type'))
+        return d
     def channels_state(self,pool,ch_id,limits,context_window_tokens,capabilities,provided_model_name,retry_policy=None,provider=None):
         """Build channel state dict for dashboard. Use ch_id directly."""
         now=time.time(); n=self.db.execute('SELECT COUNT(*) FROM attempts WHERE channel=? AND started>=?',(ch_id,now-60)).fetchone()[0]

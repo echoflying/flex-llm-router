@@ -1113,6 +1113,53 @@ def tpm_pacing_ok(state,pool,ch,prompt_tokens):
     if not safe_tpm or safe_tpm<1024 or confidence<5:return True
     recent=state.window_metrics(pool,ch.id,60)['tokens'] or 0
     return recent+prompt_tokens<=safe_tpm*0.9
+def budget_view(state,ch,now=None):
+    """One Channel's declared daily allowance against what the Router measured.
+
+    Declaration and measurement answer different questions, so both come back
+    raw and only the remaining fraction is derived:
+
+      ratio None  no dimension declared -> no cap known, ranking-neutral
+      ratio 0.0   some declared dimension is spent -> schedule last
+      ratio 0..1  share of today's declared allowance still available
+                  (1.0 untouched, 0.0 exhausted)
+
+    The *binding* dimension wins: a Channel that has used half its tokens but
+    every one of its calls reports the call ratio, because that is what will
+    actually refuse the next request.  Consumption is cross-pool (provider
+    quotas bill per account), and it resets on the Channel's own day boundary,
+    so a UTC-rolling free tier and a Beijing-rolling credit pool never fight
+    over one midnight.
+    """
+    budget=ch.daily_budget; reset=budget.reset if budget is not None else 'local_midnight'
+    usage=state.daily_usage(ch.id,reset=reset,now=now)
+    entry={'day':usage['day'],'reset':reset,'reset_at':usage['reset_at'],
+           'seconds_to_reset':usage['seconds_to_reset'],'tokens_used':usage['tokens'],
+           'calls_used':usage['calls'],'healthy':None,'ratio':None,
+           'tokens_remaining':None,'calls_remaining':None,'label':getattr(budget,'label','')}
+    if budget is None or (budget.tokens is None and budget.calls is None):
+        # 无声明: 只回观测值, 不参与预算排序.
+        return entry
+    if budget.tokens is not None:
+        entry['tokens_budget']=budget.tokens
+        entry['tokens_remaining']=max(0,budget.tokens-usage['tokens'])
+    if budget.calls is not None:
+        entry['calls_budget']=budget.calls
+        entry['calls_remaining']=max(0,budget.calls-usage['calls'])
+    ratios=[]
+    if budget.tokens is not None:ratios.append(usage['tokens']/budget.tokens)
+    if budget.calls is not None:ratios.append(usage['calls']/budget.calls)
+    # 剩余比例 = 1 - 最紧维度(已消耗占比最高的那个) —— 一个维度耗尽即整体视为耗尽.
+    entry['ratio']=max(0.0,min(1.0,1.0-max(ratios)))
+    return entry
+def budget_views(state,channels):
+    """``{channel_id: budget_view}`` for budget-aware selection (and the fleet API).
+
+    ``healthy`` stays ``None`` here: self-test verdicts are looked up by the
+    caller that already has the state handle, so the verdict that reaches
+    ranking is one Channel's own and never the last Channel in the list.
+    """
+    return {ch.id:budget_view(state,ch) for ch in channels}
 def requested_output_tokens(body,reserve):
     """The client's requested output ceiling (max_tokens/max_completion_tokens)."""
     value=body.get('max_completion_tokens',body.get('max_tokens',reserve))
@@ -1560,7 +1607,9 @@ def create_app(config_path:str|Path):
             raise ValueError('missing environment variable(s) in .env: '+', '.join(missing_env)+
                              '. Please set them in your .env file. Referenced by: '+'; '.join(missing_refs))
         if raw_text is None:
-            raw_text=yaml.safe_dump(mapping,sort_keys=False,allow_unicode=True)
+            # width 放宽到 1e6: 避免把 probe detail 长字符串折叠成多行, 让
+            # config 保存后的 git diff 只反映语义变化而不是排版变化.
+            raw_text=yaml.safe_dump(mapping,sort_keys=False,allow_unicode=True,width=1_000_000)
         backup=backup_config_file(config_path_resolved, keep=10)
         config_path_resolved.write_text(raw_text,encoding='utf-8')
         config=cfg
@@ -2333,6 +2382,90 @@ def create_app(config_path:str|Path):
             return {'provider':provider_name,'refreshed':True,'source':'upstream',
                     'available':False,'error':detail,'data':[]}
 
+    @app.get('/api/bulk-lite')
+    async def bulk_advice(size:str='small'):
+        """按任务体量推荐该调哪个 model, 调用方不必认识资源池内部.
+
+        GET /api/bulk-lite?size=small|medium|large
+        返回可直接填进 /v1/chat/completions 的 ``model`` 字段, 外加两个窗口:
+        ``context_window`` 是对外广告的 max, ``usable_window`` 是当前真实可用
+        (剔除冷却/停用/自检失败成员). 分档阈值由路由声明, 换 Runner 成员不破坏契约.
+        """
+        if size not in BULK_SIZE_HINTS:
+            raise HTTPException(400,'size must be one of: '+', '.join(BULK_SIZE_HINTS))
+        now=time.time()
+        picked=pick_runner_for_size(config,state,size,now)
+        if picked is None:
+            raise HTTPException(503,'no runner can serve this request right now')
+        name,runner,advertised,usable,usable_ids,effective=picked
+        members=[fleet_channel_view(config,state,config.channels[c]) for c in usable_ids if c in config.channels]
+        # 推荐成员: 直接复用选路器的 budget_aware 排序, 保证「API 说什么会用」和
+        # 「真发出去会用」是同一条规则 —— 两套逻辑各自演化就一定会对不上.
+        eligible=[config.channels[c] for c in usable_ids if c in config.channels]
+        budgets=budget_views(state,eligible)
+        for cand in eligible:
+            t=state.last_test_any(cand.id)
+            if t is not None: budgets[cand.id]['healthy']=(t['outcome']=='success')
+        recommended=None
+        try:
+            recommended=scheduler.select(name,eligible,None,runner.selection,tiers=runner.tiers,budgets=budgets).id
+        except LookupError:
+            recommended=None
+        recommended_view=next((m for m in members if m['id']==recommended),None)
+        why=[]
+        if advertised!=usable:
+            why.append('大窗成员当前不可用，广告窗口 {:,} 不等于真实可用窗口 {:,}'.format(advertised,usable))
+        if recommended_view is not None:
+            ratio=recommended_view['daily_budget']['ratio']
+            if ratio is None: why.append('推荐成员无日预算声明，按顺序优先')
+            elif ratio>=0.9: why.append('推荐成员日预算基本未消耗（剩余 {:.0%}）'.format(ratio))
+            elif ratio>0: why.append('推荐成员日预算剩余 {:.0%}'.format(ratio))
+            else: why.append('推荐成员日预算已耗尽，仍为唯一可用成员')
+        return {'object':'bulk_advice','generated_at':time.strftime('%Y-%m-%dT%H:%M:%S',time.localtime()),
+                'size':size,'size_hint':BULK_SIZE_HINTS[size],
+                'model':runner.public_model,'runner':name,
+                'context_window':advertised,'usable_window':usable,'effective_window':effective,
+                'members':members,'recommended_channel':recommended,'why':'；'.join(why) if why else '全部成员可用',
+                'sizes':{k:{'max_input_tokens':v['max_input_tokens'],'description':v['description']}
+                          for k,v in BULK_SIZE_HINTS.items()}}
+    @app.get('/api/fleet-status')
+    async def fleet_status():
+        """全部源的整体状态, 供 agent 选路前一次性读取.
+
+        GET /api/fleet-status
+        包含三部分: ``fleet``(汇总计数与今日剩余日预算)、``runners``(每个 Runner
+        的广告窗口 vs 真实可用窗口 + 成员状态)、``channels``(每通道的封禁/学习
+        限流/自检/日预算)。不产生任何主动探测: 只读本地已积累的事实.
+        """
+        now=time.time()
+        channels=[fleet_channel_view(config,state,ch,now) for ch in config.channels.values()]
+        runners=[]
+        budget_tokens_declared=0; budget_tokens_left=0
+        for name,runner in config.runners.items():
+            advertised,usable,usable_ids=runner_usable_window(config,state,name,runner,now)
+            runners.append({'name':name,'public_model':runner.public_model,
+                            'strategy':(runner.selection or {}).get('strategy','round_robin'),
+                            'advertised_window':advertised,'usable_window':usable,
+                            'usable_channels':usable_ids,'member_count':len(runner.channels),
+                            'tiers':dict(runner.tiers)})
+        for view in channels:
+            b=view['daily_budget']
+            if b.get('tokens_budget') is not None:
+                budget_tokens_declared+=b['tokens_budget']
+                budget_tokens_left+=b['tokens_remaining']
+        return {'object':'fleet_status','generated_at':time.strftime('%Y-%m-%dT%H:%M:%S',time.localtime()),
+                'router_version':app.version,'now_local':clock(now),
+                'fleet':{'channels_total':len(channels),
+                         'channels_enabled':sum(1 for v in channels if v['enabled']),
+                         'channels_cooldown':sum(1 for v in channels if v['cooldown']),
+                         'channels_selftest_failed':sum(1 for v in channels if v['last_test'] and v['last_test']['outcome']!='success'),
+                         'runners_total':len(runners),
+                         'runners_usable':sum(1 for r in runners if r['usable_channels']),
+                         'daily_budget_tokens_declared':budget_tokens_declared,
+                         'daily_budget_tokens_remaining':budget_tokens_left,
+                         'daily_budget_tokens_consumed':max(0,budget_tokens_declared-budget_tokens_left)},
+                'runners':runners,'channels':channels}
+
     @app.get('/api/runners')
     async def runner_list():
         return {'data':config.runner_models()}
@@ -2872,8 +3005,14 @@ def create_app(config_path:str|Path):
                     raise HTTPException(400,ctx_detail)
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
+            # budget_aware 排序用的每日预算视图: 声明额度与今日实测消耗合并.
+            # 只在选路时用一次, 不写任何 DB —— 排他封禁仍由 quota_429_policy 负责.
+            pool_budgets=budget_views(state,available)
+            for _cand in available:
+                _t=state.last_test_any(_cand.id)
+                if _t is not None: pool_budgets[_cand.id]['healthy']=(_t['outcome']=='success')
             sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages'],affinity.get('protocol_idle_seconds')) if affinity.get('enabled') else None
-            ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None)); request_input_tokens=input_tokens(body,ch.litellm_model); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=request_input_tokens,trace_id=rid); started=time.monotonic()
+            ch=next((candidate for candidate in available if candidate.id==sticky),None) or (available[0] if policy_fallback_active else scheduler.select(key,available,state,sel,tiers=pool.tiers if pool is not None else None,tokens=prompt_by_channel.get(available[0].id) if available else None,budgets=pool_budgets)); request_input_tokens=input_tokens(body,ch.litellm_model); attempt=state.start(key,ch.id,ch.litellm_model,input_tokens=request_input_tokens,trace_id=rid); started=time.monotonic()
             state.trace_event(rid,'channel_selected',ch.id,detail='session affinity hit' if sticky==ch.id else 'scheduler selected channel')
             state.trace_attempt(rid,ch.id)
             initial_hedges_started=0
@@ -4298,3 +4437,117 @@ def create_app(config_path:str|Path):
         app.state.watchdog_tasks.add(sweeper); sweeper.add_done_callback(app.state.watchdog_tasks.discard)
 
     return app
+
+def pools_mounting(config,ch_id):
+   """Every pool key whose selection path can actually reach this Channel.
+
+   Cooldowns and learned limits are keyed by (pool, channel), so any view that
+   claims to describe a Channel has to look under *every* key it is mounted
+   under — otherwise a Channel blocked in one Runner looks healthy because the
+   one key inspected happened to be clear.
+   """
+   keys={name for name,runner in config.runners.items() if ch_id in runner.channels}
+   if ch_id in config.channels: keys.add('direct:'+ch_id)
+   return sorted(keys)
+def channel_cooldown(config,state,ch_id,now=None):
+   """Longest active cooldown across every pool the Channel is mounted in."""
+   now=now or time.time(); best=None
+   for pool_key in pools_mounting(config,ch_id):
+       entry=state.cooldown_state(pool_key,ch_id)
+       until=(entry or {}).get('until')
+       if until and until>now and (best is None or until>best['until']):
+           best={'until':until,'reason':entry.get('reason'),'pool':pool_key}
+   return best
+def channel_learned(config,state,ch_id):
+   """Highest-confidence learned limits across every pool mounting the Channel."""
+   best=None
+   for pool_key in pools_mounting(config,ch_id):
+       learned=state.learned_limit(pool_key,ch_id)
+       if learned and learned.get('confidence') and (best is None or learned['confidence']>best['confidence']):
+           best=learned
+   return best
+def fleet_channel_view(config,state,ch,now=None):
+   """One Channel described for an external consumer: capability, limits,
+   the block standing in its way right now, what it spent today, and the last
+   verdict the Router itself got from it.  This is the unit both fleet APIs
+   are built from, so "healthy" and "usable" mean the same thing everywhere.
+   """
+   now=now or time.time()
+   budget=budget_view(state,ch,now)
+   tested=state.last_test_any(ch.id)
+   budget['healthy']=(tested['outcome']=='success') if tested else None
+   block=channel_cooldown(config,state,ch.id,now)
+   learned=channel_learned(config,state,ch.id)
+   return {
+       'id':ch.id,'enabled':ch.enabled,'provider':ch.provider,'model':ch.litellm_model,
+       'public_model':ch.public_model,'runners':pools_mounting(config,ch.id),
+       'context_window_tokens':ch.context_window_tokens,
+       'max_output_tokens':channel_output_cap(ch),
+       'capabilities':list(ch.capabilities),
+       'supported_params':list(ch.supported_params),
+       'cooldown':({'until':block['until'],'reason':block.get('reason'),'pool':block['pool'],
+                    'seconds_left':max(0,int(block['until']-now)),
+                    'until_local':clock(block['until'])} if block else None),
+       'learned':({'rpm':learned.get('safe_rpm'),'tpm':learned.get('safe_tpm'),
+                   'confidence':learned.get('confidence'),'kind':learned.get('last_429_kind')}
+                  if learned else None),
+       'last_test':({'outcome':tested['outcome'],'error_type':tested.get('error_type'),
+                     'at':tested['tested_at']} if tested else None),
+       'daily_budget':budget,
+       'declared_limits':({'rpm':ch.limits.rpm,'tpm':ch.limits.tpm} if ch.limits else None),
+   }
+def runner_usable_window(config,state,name,runner,now=None):
+   """(advertised window, usable window, usable member ids) for one Runner.
+
+   The advertised window is the max over members — what /v1/models reports.
+   The usable window is the max over members that are switched on, not in
+   cooldown, and whose latest self-test is not a failure: the number an
+   external caller can actually bank on *right now*.  The two diverge exactly
+   when the big-window member is the one that is blocked, which is the
+   situation that produced the 2026-11-22 12:00 deadlock, so both are always
+   reported together rather than letting a caller learn it the hard way.
+   """
+   now=now or time.time(); advertised=0; usable=0; usable_ids=[]
+   for ch_id in runner.channels:
+       ch=config.channels.get(ch_id)
+       if ch is None: continue
+       advertised=max(advertised,ch.context_window_tokens)
+       if not state.is_enabled(name,ch_id): continue
+       if channel_cooldown(config,state,ch_id,now): continue
+       tested=state.last_test_any(ch_id)
+       if tested and tested['outcome']!='success': continue
+       if ch.context_window_tokens>usable: usable=ch.context_window_tokens
+       usable_ids.append(ch_id)
+   return advertised,usable,usable_ids
+# 任务体量分档: 路由自声明, 与任何 Runner 的成员无关, 换成员不破坏调用方契约.
+BULK_SIZE_HINTS={
+    'small':{'max_input_tokens':16384,'description':'短问答/抽取/改写, 输入 <16K token'},
+    'medium':{'max_input_tokens':131072,'description':'中等长度处理, 16K~128K token'},
+    'large':{'max_input_tokens':None,'description':'>128K token, 必须大窗通道'},
+}
+def pick_runner_for_size(config,state,size,now=None):
+    """Smallest Runner that can serve this size, bulk-lite first.
+
+    Preference order is deliberate: a dedicated harvesting Runner beats a
+    general one for the same size, because harvesting exists to spend an
+    allowance that would otherwise be left on the table.  A general Runner is
+    only returned when no harvesting Runner's members can carry the size.
+    """
+    hint=BULK_SIZE_HINTS[size]
+    need=hint['max_input_tokens']
+    ranked=[]
+    for name,runner in config.runners.items():
+        if not runner.channels: continue
+        advertised,usable,usable_ids=runner_usable_window(config,state,name,runner,now)
+        if not usable_ids: continue
+        effective=usable if usable>0 else advertised
+        ranked.append((name,runner,advertised,usable,usable_ids,effective))
+    if not ranked: return None
+    def fits(item):
+        return item[5] is None or need is None or item[5]>=need
+    harvest=[item for item in ranked if item[0].startswith('bulk-')]
+    for group in (harvest,[item for item in ranked if not item[0].startswith('bulk-')]):
+        fitting=[item for item in group if fits(item)]
+        if fitting:
+            return sorted(fitting,key=lambda item:(0 if fits(item) else 1,-item[5]))[0]
+    return sorted(ranked,key=lambda item:-item[5])[0]

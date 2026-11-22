@@ -115,6 +115,44 @@ class Quota429Policy(BaseModel):
         return value
 
 
+class DailyBudget(BaseModel):
+    """Declared daily allowance for a Channel that emits a fixed amount of
+    tokens per day: free tiers, per-day credits, points-as-quota upstreams.
+
+    ``tokens`` and ``calls`` are *declarations*, not measured limits.  They
+    exist so a budget-aware Runner can rank Channels by remaining allowance
+    instead of learning it the expensive way — by sending the request that
+    trips the 429.  Either may be omitted; consumption is always measured from
+    the daily analytics rollup, so an omitted budget means "no cap known",
+    never "unlimited".
+
+    ``reset`` fixes where the day boundary sits:
+      - ``local_midnight``  next local 00:00 (default; Beijing on this host);
+      - ``utc_midnight``    next UTC 00:00 (some free tiers roll on UTC).
+
+    Exhaustion is deliberately **soft**: the budget only changes scheduling
+    preference.  The hard cut still comes from ``quota_429_policy`` when the
+    upstream actually refuses, so a conservatively wrong declaration can never
+    wedge the pool shut — and an upstream 429 can never be masked by a budget
+    that was declared too generously.
+    """
+
+    tokens: int | None = Field(default=None, ge=1)
+    calls: int | None = Field(default=None, ge=1)
+    reset: str = Field(default='local_midnight')
+    label: str = ''
+    # Provenance, mirroring context_window_source: docs|probe|history|override.
+    source: str = ''
+    verified_at: float | None = None
+
+    @field_validator('reset')
+    @classmethod
+    def known_reset(cls, value):
+        if value not in ('local_midnight', 'utc_midnight'):
+            raise ValueError('daily_budget.reset must be local_midnight or utc_midnight')
+        return value
+
+
 class Channel(BaseModel):
     """A Channel is a specific provider/model instance with capabilities and limits."""
     id: str
@@ -143,6 +181,10 @@ class Channel(BaseModel):
     # and re-validate the same Channel).  A daily-allowance upstream such as
     # AMD only needs ``mode: until_reset`` here.
     quota_429_policy: Quota429Policy | None = None
+    # Declared daily allowance, for Channels whose quota is a fixed daily
+    # volume rather than a rate (free tiers, daily credits).  Drives
+    # budget-aware Runner scheduling; see DailyBudget.
+    daily_budget: DailyBudget | None = None
     provider: str  # references providers.xxx
     litellm_model: str
     public_model: str  # 对外 model 名(外部系统填这个). 必填, 不配报错.

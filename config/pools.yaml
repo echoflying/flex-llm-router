@@ -64,6 +64,12 @@ channels:
         latency_ms: 241
         status: unsupported
     provider: AMD
+    daily_budget:
+      calls: 400
+      label: "每日 1 积分（11-22 实测 1 积分≈52M prompt/115 调用）；此处按 14 天实测日峰值声明下限"
+      reset: local_midnight
+      source: history
+      tokens: 20000
     public_model: AMD-deepseek-v4-flash
     quota_429_policy:
       applies_to:
@@ -217,6 +223,12 @@ channels:
         status: supported
     provider: agnes-official
     provider_type: agnes
+    daily_budget:
+      calls: 800
+      label: "每日文本配额（节流 1 次/3 分钟）；14 天实测日峰值 667,380 token / 700 调用"
+      reset: local_midnight
+      source: history
+      tokens: 700000
     public_model: agnes-flash
     quota_429_policy:
       label: Agnes 今日文本配额用完（按报错中的 Try again after 时刻封禁，否则次日 0 点）
@@ -438,6 +450,12 @@ channels:
         latency_ms: 926
         status: supported
     provider: deepseek-official
+    daily_budget:
+      calls: 400
+      label: "按天结算；14 天实测日峰值 522,528 token / 333 调用"
+      reset: local_midnight
+      source: history
+      tokens: 550000
     public_model: deepseek-official-deepseek-flash
   deepseek-official-deepseek-v4-flash:
     capabilities:
@@ -916,6 +934,12 @@ channels:
         retried_429: true
         status: supported
     provider: sensenova
+    daily_budget:
+      calls: 900
+      label: "按天结算；14 天实测日峰值 115,931 token / 853 调用"
+      reset: local_midnight
+      source: history
+      tokens: 150000
     public_model: sensenova-deepseek-flash
   sensenova-deepseek-v4-flash:
     capabilities:
@@ -1000,6 +1024,12 @@ channels:
         status: supported
     provider: sensenova
     provider_type: openai_compatible
+    daily_budget:
+      calls: 700
+      label: "按天结算；14 天实测日峰值 15,207 token / 607 调用"
+      reset: local_midnight
+      source: history
+      tokens: 20000
     public_model: sensenova-deepseek-v4-flash
     quota_429_policy:
       cooldown_seconds: 21600
@@ -1094,6 +1124,12 @@ channels:
         status: supported
     provider: sensenova
     provider_type: openai_compatible
+    daily_budget:
+      calls: 1300
+      label: "按天结算；14 天实测日峰值 543,893 token / 1,214 调用"
+      reset: local_midnight
+      source: history
+      tokens: 600000
     public_model: sensenova-flash-lite
     retry_policy:
       backoff:
@@ -1798,4 +1834,29 @@ runners:
       strategy: round_robin
     tiers:
       zhipu-glm-4.7-flash: 0
+  bulk-lite:
+    # 收纳「每日定量额度」的源: 免费额度/每日积分/按天结算的上游.
+    # 选路 budget_aware: 按剩余日预算比例调度, 不按顺序轮询.
+    # 复杂度约束由调用方声明(选这个 pool 即声明是简单任务), 路由不拦截.
+    channels:
+    - AMD-deepseek-v4-flash
+    - agnes-flash
+    - deepseek-official-deepseek-flash
+    - nvidia-glm-5.3-flash
+    - nvidia-minimax-m3.1-flash
+    - sensenova-deepseek-flash
+    - sensenova-deepseek-v4-flash
+    - sensenova-flash-lite
+    public_model: bulk-lite
+    selection:
+      strategy: budget_aware
+    tiers:
+      AMD-deepseek-v4-flash: 0
+      agnes-flash: 0
+      deepseek-official-deepseek-flash: 0
+      nvidia-glm-5.3-flash: 0
+      nvidia-minimax-m3.1-flash: 0
+      sensenova-deepseek-flash: 0
+      sensenova-deepseek-v4-flash: 0
+      sensenova-flash-lite: 0
 version: 1

@@ -183,3 +183,8 @@
   2. `hermes-backend` 改为指向多通道池，避免单通道直接绑定；
   3. 把 `You've reached the API rate limit for free users` 加入 agnes 的 `quota_429_policy.match`，
      否则该变体会落到 `rpm_limit` 短冷却，导致恢复后继续撞墙。
+
+### 复发登记（仅追加，不新建事件）
+- 2026-11-22 13:53:41 `sensenova-deepseek-v4-flash` 再 1 条 `no_eligible_channel`(503)，根因同 12:36 条目（单通道池 + 上游 rpm/tpm），累计该池 503：12:09–12:26 六条、13:25 一条、13:53 一条。
+- 2026-11-22 13:52:55 同池 1 条 `stale_no_terminal`：`finally` 兜底正常收尾（客户端中断导致），非缺陷。
+- `agnes-flash` 日额度降级持续：每 3 分钟一次 429 → Router 写入约 3 分钟 `quota_daily` 冷却后重试，循环往复；近 1 小时 agnes 成功 6 / 失败 4，通道处于「降级可用」而非「停摆」。

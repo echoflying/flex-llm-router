@@ -30,9 +30,18 @@ ZOMBIE_COUNT_WARN=5
 ZOMBIE_COUNT_CRIT=10
 
 ts() { date "+%Y-%m-%d %H:%M:%S"; }
-log()  { printf '[%s] %s\n' "$(ts)" "$*" | tee -a "$LOG"; }
+# launchd points this agent's stdout at $LOG, which is the very file the script
+# appends to — writing log lines to stdout made every line appear twice.  Keep
+# stdout silent unless a human is watching a terminal; always append to the file.
+say()  { if [ -t 1 ]; then printf '%s\n' "$*"; fi; return 0; }
+log()  { local line; line="[$(ts)] $*"; printf '%s\n' "$line" >> "$LOG"; say "$line"; }
 warn() { log "WARN : $*"; }
-crit() { log "CRIT : $*" >&2 | tee -a "$ERR_LOG"; }
+crit() {
+    local line; line="[$(ts)] CRIT : $*"
+    printf '%s\n' "$line" >> "$LOG"
+    printf '%s\n' "$line" >> "$ERR_LOG"
+    say "$line"
+}
 
 # --- helper: port listening? --------------------------------------------------
 port_listening() {

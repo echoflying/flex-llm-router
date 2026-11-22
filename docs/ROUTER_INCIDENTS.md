@@ -193,6 +193,14 @@
   单通道并非疏漏，因此「SenseNova 限流即 503」属设计取舍，不应静默加异厂商 fallback 破坏 link 语义。
   若需韧性，应新建独立的多通道 Runner（如 `deepseek-mix`），而不是改这个池。
 - `agnes-flash` 自 14:27:39 之后未再写入新冷却，本小时 6 成功 / 2 失败，降级中仍可用。
+- 2026-11-23 00:57–01:00:40 `agnes-flash` **形态变化**：不再是「3 分钟 1 次的快速 429」，而是
+  **挂起 90s 后超时**（00:58:39、00:59:00、01:00:23 三条 `upstream_response_timeout`），
+  首个 429 原文（`You have used up today's text quota and are now limited to 1 request`）
+  直到 **01:00:40** 才落地。`until_reset` 据此封禁 4 个池至 17:03:37（已验证持久化于 `states`）。
+  结论：**1 小时内的巡检若落在 00:58–01:00:40 之间会看到「无冷却、但 agnes 请求全部挂起」**，
+  这不是冷却丢失，而是上游由「快速拒绝」退化为「静默挂起」的窗口。
+- 同窗 `sensenova-flash-plus`（刻意单通道，唯一成员 agnes）01:01:03 / 01:01:46 各 1 条
+  `no_eligible_channel`，累计该 Runner 停摆中；恢复需等 17:03:37。按刻意单通道清单，只计数不重复建议。
 - 2026-11-22 18:25–18:39 `mix-lite` 4 条 `stale_no_terminal`：客户端均为 `pi/1.5.2 (linux; node/v22.21.1)`，
   事件链显示「客户端断开 → `finally` 兜底补写 `cancelled`」，**兜底机制正常工作**，非 Router 缺陷
   （修复前这 4 条会永久 `running`）。其中 2 条 `handler_response_ready after 93798ms` —— 首 SSE 等到 93–94s

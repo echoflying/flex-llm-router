@@ -128,3 +128,37 @@
 - `/v1/models` 已列出 `doubao-seed-2.0-lite`。
 
 ---
+
+---
+
+## 2026-11-22 12:36 巡检：单通道池率限即 503（no_eligible_channel）
+
+### 现象
+近 1 小时 `request_traces` 中 `no_eligible_channel` 8 条（HTTP 503），分两组：
+
+| 池 | 条数 | 拒绝原因 |
+|---|---|---|
+| `sensenova-deepseek-v4-flash` | 6 | 唯一成员 `sensenova-deepseek-flash` 处于 rpm_limit / tpm_limit |
+| `mix-lite` | 2 | `agnes-flash` 与 `sensenova-flash-lite` 同时 quota_daily |
+
+### 根因
+1. `sensenova-deepseek-v4-flash` 是**单通道池**（`channels: [sensenova-deepseek-flash]`，无 fallback tier）。
+   该通道一旦进入 RPM/TPM 冷却，池内无任何可退通道，Router 只能返回 503。
+   单通道本身不是 bug，但把「上游瞬时率限」直接放大成「用户可见 503」，是容量配置问题。
+2. `mix-lite` 两个成员同时 `quota_daily`（每日配额），属于成员配额同步耗尽，无第三个兜底。
+
+### 关联发现（非本事件，记录备查）
+- `AMD-deepseek-v4-flash` 的日额度极小：错误原文为
+  `Daily usage limit exceeded: at most 1 pt per day (Beijing time) for this key`
+  以及 `maximum $1 per 24 hours for this OneClick user`。
+  历史上该类告警 1243 次。Router 已正确处理：`states` 表写入
+  `quota_daily` 冷却至当日 23:59:59，不再反复打上游。该通道不适合作为主力通道。
+
+### 处置建议（待人工决策，未擅自改配置）
+- A) 给 `sensenova-deepseek-v4-flash` 池增加一个 tier-1 兜底通道（如 `AMD-deepseek-v4-flash`
+  或新接入的 `nvidia-*`），把 503 降级为「换通道成功」；
+- B) 给 `mix-lite` 增加第三个成员；
+- C) 保持现状，接受率限期间返回 503（当前行为语义正确，只是不够韧）。
+
+依据 `using-large-models` 对额度轴的分类：RPM/TPM 与「每日积分额度」是独立的一轴，
+本次两条链路分别踩了「每分钟预算被打满」和「每日额度耗尽」，均属上游行为，非 Router 缺陷。

@@ -441,6 +441,14 @@ def parse_reset_epoch(text:str)->float|None:
     time without an offset is interpreted as local wall-clock time.  Only
     future instants are accepted so a stale example in help text cannot pin a
     Channel in the past.
+
+    Offset-less clocks deserve care: upstreams that emit UTC clock times
+    (Agnes writes ``Try again after 04:03:24`` while ``time.time_gmtime`` is
+    04:00) would be misread as local time, roll forward a whole day, and pin a
+    Channel for a multiple of the real backoff — an 8-hour block on a
+    three-minute throttle.  When the local reading lands far in the future
+    while the same wall clock read as UTC lands just ahead, the UTC reading is
+    the one that fits the stated throttle, so prefer it.
     """
     if not text:return None
     now=time.time()
@@ -454,6 +462,8 @@ def parse_reset_epoch(text:str)->float|None:
                                int(clock_match.group(3) or 0))
         epoch=time.mktime(base.timetuple())
         if epoch<=now+60:epoch=time.mktime((base+datetime.timedelta(days=1)).timetuple())
+        utc_epoch=calendar.timegm(base.timetuple())
+        if epoch-now>6*3600 and now<utc_epoch<=now+6*3600:epoch=utc_epoch
         return epoch
     for m in _RESET_TS_RE.finditer(text):
         try:

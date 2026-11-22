@@ -1834,6 +1834,7 @@ channels:
 links:
   hermes-backend: agnes-flash
   main: mix-deepseek-v4-flash
+  nvidia-nim: nvidia-nim
   sensenova-only: sensenova-deepseek-v4-flash
 protocol_error_rules:
 - clear_session_affinity: true
@@ -1960,6 +1961,18 @@ runners:
     tiers:
       agnes-flash: 0
       sensenova-flash-lite: 0
+  nvidia-nim:
+    channels:
+    - nvidia-deepseek-v3.2
+    - nvidia-kimi-k2.5
+    - nvidia-glm-5.1
+    public_model: nvidia-nim
+    selection:
+      strategy: round_robin
+    tiers:
+      nvidia-deepseek-v3.2: 0
+      nvidia-glm-5.1: 0
+      nvidia-kimi-k2.5: 0
   nvidia-nim-free:
     channels:
     - nvidia-deepseek-v3.2

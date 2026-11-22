@@ -463,8 +463,11 @@ class FlexConfig(BaseModel):
 
         Advertises the Runner's usable capabilities so clients can size
         max_tokens / compaction thresholds up front:
-        * ``context_window`` = minimum across member Channels (conservative:
-          the client's compaction threshold must fit every Channel).
+        * ``context_window`` = maximum across member Channels: the largest
+          request the Runner can serve, via its biggest-capacity sibling.
+          Requests that exceed it are rejected with a clear context-exceeded
+          error (so the caller should compact), never hard-sent to a Channel
+          that cannot fit it.
         * ``max_output_tokens`` = maximum across member Channels: an oversized
           request is served by the biggest-capacity sibling, and when no
           sibling can satisfy it the Router clamps max_tokens to the chosen
@@ -481,9 +484,10 @@ class FlexConfig(BaseModel):
                 windows.append(ch.context_window_tokens)
                 if ch.max_output_tokens: caps.append(ch.max_output_tokens)
             if windows:
-                # 上下文窗口取最小值：客户端的压缩/裁剪阈值必须在任何成员
-                # 通道上都装得下，保守值最安全。
-                entry['context_window']=min(windows)
+                # 上下文窗口取最大值：广告的是 Runner 能服务的最大请求（走最大容量的
+                # 兄弟通道）。超过此值的请求在选路层被拒(见 compatibility context_exceeded)，
+                # 由调用方自行 Compact，绝不硬发给装不下的通道。
+                entry['context_window']=max(windows)
             if caps:
                 # 输出上限取最大值：请求超限时，选路层的 output_limit_exceeded
                 # 预检会把接不住的通道排除、落到能承载的兄弟通道。若取最小，

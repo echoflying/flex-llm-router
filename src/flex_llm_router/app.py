@@ -2816,6 +2816,22 @@ def create_app(config_path:str|Path):
                     state.trace_event(rid,'quota_policy_blocked_all',http_status=429,detail=json.dumps(blocked_detail,ensure_ascii=False)[:400])
                     state.trace_finish(rid,'failed',http_status=429,error_type=policy_blocked[0]['reason'],error_detail=json.dumps(blocked_detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                     raise HTTPException(429,blocked_detail)
+                # 所有通道都因“上下文超窗”被拒：给调用方明确的拒绝语义（含超出的
+                # token 数与可用的最大窗口），请其 Compact 后重试，而不是硬发给装
+                # 不下的通道或伪装成 503 服务不可用。
+                ctx_rej=[r for r in rejected if r.get('reason') and r.get('reason').startswith('context_exceeded:')]
+                if ctx_rej and len(ctx_rej)==len(rejected):
+                    try:
+                        total=int(rejected[0]['reason'].split(':')[1].split('>')[0])
+                    except Exception:
+                        total=0
+                    window=max((ch.context_window_tokens for ch in request_channels if ch.context_window_tokens),default=0)
+                    ctx_detail={'error_type':'context_exceeded','request_tokens':total,'max_context_window':window,
+                                'message':f'请求 {total} token 超出 {name} 的上下文窗口 {window}；请先对对话执行 Compact（压缩）后重试。',
+                                'rejected':rejected}
+                    state.trace_event(rid,'context_exceeded_rejected',http_status=400,detail=json.dumps(ctx_detail,ensure_ascii=False)[:400])
+                    state.trace_finish(rid,'failed',http_status=400,error_type='context_exceeded',error_detail=json.dumps(ctx_detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
+                    raise HTTPException(400,ctx_detail)
                 state.trace_finish(rid,'failed',http_status=503,error_type='no_eligible_channel',error_detail=json.dumps(detail,ensure_ascii=False)[:800],latency_ms=int((time.monotonic()-req_started)*1000))
                 raise HTTPException(503,detail)
             sticky=state.affinity_channel(key,body['messages'],affinity['idle_seconds'],affinity['minimum_messages'],affinity.get('protocol_idle_seconds')) if affinity.get('enabled') else None

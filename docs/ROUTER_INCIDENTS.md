@@ -193,3 +193,8 @@
   单通道并非疏漏，因此「SenseNova 限流即 503」属设计取舍，不应静默加异厂商 fallback 破坏 link 语义。
   若需韧性，应新建独立的多通道 Runner（如 `deepseek-mix`），而不是改这个池。
 - `agnes-flash` 自 14:27:39 之后未再写入新冷却，本小时 6 成功 / 2 失败，降级中仍可用。
+- 2026-11-22 18:25–18:39 `mix-lite` 4 条 `stale_no_terminal`：客户端均为 `pi/1.5.2 (linux; node/v22.21.1)`，
+  事件链显示「客户端断开 → `finally` 兜底补写 `cancelled`」，**兜底机制正常工作**，非 Router 缺陷
+  （修复前这 4 条会永久 `running`）。其中 2 条 `handler_response_ready after 93798ms` —— 首 SSE 等到 93–94s
+  （期间命中 60s pre-response hedge），已超出该客户端约 90s 超时，客户端先断。
+  观察项：首字延迟 90s+ 会撞客户端超时，若需改善可下调 `FLEX_HEDGE_FIRST_SECONDS`（当前 60）。

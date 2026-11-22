@@ -211,3 +211,41 @@
 | `sensenova-flash-plus` | `agnes-flash` | 2026-11-22（用户明确：本身就是单 Channel Runner） |
 
 巡检规则：对上述 Runner 只统计失败、不重复提「加 fallback」建议。
+
+## 2026-11-22 23:50 NVIDIA `nvidia-nim` 全部 502：模型 ID 虚构 + LiteLLM provider 前缀缺失
+
+**现象**：`nvidia-nim` / `nvidia-nim-free` 三个 channel 配额页显示「异常」，请求 502。
+
+**根因（两个叠加，都与 Router 运行时无关）**：
+1. **模型 ID 不存在**。最初配置的 `deepseek-ai/deepseek-v3.2`、`moonshotai/kimi-k2.5`、`THUDM/glm-5-1`
+   是凭空猜测的 ID，NVIDIA 端点返回 `404 page not found`（非 LiteLLM 错误体，故曾误判为「502 网关问题」）。
+   NVIDIA 的 `/v1/models` 只返回 33 个模型，且与文档 `docs.api.nvidia.com/nim/reference/llm-apis`
+   的列表**不一致**——文档里列的 `deepseek-ai/deepseek-v4-flash`、`moonshotai/kimi-k2-instruct`、
+   `openai/gpt-oss-20b` 等均已 `410 Gone`（end of life）。**`/v1/models` 才是权威清单。**
+2. **LiteLLM 缺少 `openai/` 前缀**。custom_openai 通道必须写成 `openai/<model>`，
+   否则报 `LLM Provider NOT provided`。旧配置无前缀时该错误被上游 404 掩盖，修好 ID 后才暴露。
+
+**处置**：按 `/v1/models` 实盘替换为 6 个实测可出 token 的模型（均为 `openai/` 前缀）：
+
+| Channel | litellm_model | 直连实测 TTFT |
+|---|---|---|
+| `nvidia-glm-5.3-flash` | `openai/z-ai/glm-5.3-flash` | 15.6s |
+| `nvidia-minimax-m3.1-flash` | `openai/minimaxai/minimax-m3.1-flash` | 14.1s |
+| `nvidia-mistral-large-4` | `openai/mistralai/mistral-large-4-1t-a52b` | 0.9s |
+| `nvidia-nemotron-3.5-lightning` | `openai/nvidia/nemotron-3.5-lightning-30b-a3b` | 0.6s |
+| `nvidia-step-5-preview` | `openai/stepfun-ai/step-5-preview` | 6.3s |
+| `nvidia-poolside-laguna` | `openai/poolside/laguna-xs-2.1` | 0.6s |
+
+验证：经 Router `nvidia-nim` 非流式/流式均 200，round-robin 依次命中 3 个不同 channel 全部成功。
+
+**免费额度口径（重要，避免误解为「每日刷新 token」）**：
+NVIDIA 官方 FAQ（`docs.api.nvidia.com/nim/docs/product`）只承诺
+*「Developer Program 成员在**计划成员期内**可免费访问 NIM API 端点用于原型开发」*，
+**没有**公布每日 token / 请求数配额；实测并发 8 时 48 个请求仅 3 个 429，未见配额响应头。
+限制在于**用途**：仅原型/研发/测试，"production（服务真实终端用户）"需 NVIDIA AI Enterprise 授权。
+故巡检不应假设它「每天有一笔免费额度」；429 已由 channel 级 `quota_429_policy mode=cooldown 120s` 承接。
+
+**踩坑记录（勿再犯）**：
+- 用 `open(path,'w')` + `yaml.safe_dump` 改写 `pools.yaml` 时，**文件在 dump 抛错前已被截断为 0 字节**，
+  导致 `config/pools.yaml` 损坏。此后必须**先 dump 到临时文件、校验、再 `os.replace()`**。
+- `yaml.safe_dump` 不接受 `collections.OrderedDict`，须用普通 dict（`sort_keys=True` 已保证顺序）。

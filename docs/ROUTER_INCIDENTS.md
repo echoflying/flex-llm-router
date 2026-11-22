@@ -188,3 +188,8 @@
 - 2026-11-22 13:53:41 `sensenova-deepseek-v4-flash` 再 1 条 `no_eligible_channel`(503)，根因同 12:36 条目（单通道池 + 上游 rpm/tpm），累计该池 503：12:09–12:26 六条、13:25 一条、13:53 一条。
 - 2026-11-22 13:52:55 同池 1 条 `stale_no_terminal`：`finally` 兜底正常收尾（客户端中断导致），非缺陷。
 - `agnes-flash` 日额度降级持续：每 3 分钟一次 429 → Router 写入约 3 分钟 `quota_daily` 冷却后重试，循环往复；近 1 小时 agnes 成功 6 / 失败 4，通道处于「降级可用」而非「停摆」。
+- 2026-11-22 14:07:17 / 14:12:20 / 14:18:08 `sensenova-deepseek-v4-flash` 再 3 条 `no_eligible_channel`(503)；本小时该池另有 2 条 `tpm_limit`。
+  **归因修正**：该池是**有意**的 SenseNova-only 池（`links.sensenova-only -> sensenova-deepseek-v4-flash`），
+  单通道并非疏漏，因此「SenseNova 限流即 503」属设计取舍，不应静默加异厂商 fallback 破坏 link 语义。
+  若需韧性，应新建独立的多通道 Runner（如 `deepseek-mix`），而不是改这个池。
+- `agnes-flash` 自 14:27:39 之后未再写入新冷却，本小时 6 成功 / 2 失败，降级中仍可用。

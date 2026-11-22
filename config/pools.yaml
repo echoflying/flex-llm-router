@@ -1,700 +1,5 @@
-version: 1
-providers:
-  opencode-go:
-    base_url_env: OPENCODE_GO_API_BASE
-    api_key_env: OPENCODE_GO_API_KEY
-  sensenova:
-    base_url_env: SENSENOVA_API_BASE
-    api_key_env: SENSENOVA_API_KEY
-  deepseek-official:
-    base_url_env: DEEPSEEK_OFFICIAL_API_BASE
-    api_key_env: DEEPSEEK_OFFICIAL_API_KEY
-  agnes-official:
-    base_url_env: AGNES_API_BASE
-    api_key_env: AGNES_API_KEY
-  AntDigital:
-    base_url_env: ANTDIGITAL_API_BASE
-    api_key_env: ANTDIGITAL_API_KEY
-  VOLCENGIN:
-    base_url_env: VOLCENGINE_API_BASE
-    api_key_env: VOLCENGINE_API_KEY
-  AMD:
-    base_url_env: AMD_API_BASE
-    api_key_env: AMD_API_KEY
-  zhipu:
-    base_url_env: ZHIPU_API_BASE
-    api_key_env: ZHIPU_API_KEY
-  aliyun-qwen:
-    base_url_env: DASHSCOPE_API_BASE
-    api_key_env: DASHSCOPE_API_KEY
-  nvidia-build:
-    # NVIDIA Build (NIM API) — free tier: unlimited calls, 40 RPM limit
-    # Docs: https://build.nvidia.com
-    # Models: deepseek-ai/deepseek-v3.2, moonshotai/kimi-k2.5, etc.
-    base_url_env: NVIDIA_BUILD_API_BASE
-    api_key_env: NVIDIA_BUILD_API_KEY
 channels:
-  sensenova-deepseek-v4-flash:
-    id: sensenova-deepseek-v4-flash
-    provider: sensenova
-    externally_exposed: true
-    public_model: sensenova-deepseek-v4-flash
-    litellm_model: openai/deepseek-v4-flash
-    context_window_tokens: 1048576
-    max_output_tokens: 384000
-    max_output_tokens_source: measured
-    quota_429_policy:
-      mode: cooldown
-      cooldown_seconds: 21600
-      match:
-      - Allocated quota exceeded
-      - increase your quota limit
-      scope: channel
-      label: Sensenova 套餐额度耗尽（无重置时间，冷却 6 小时）
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - responses
-    - fim
-    - vision
-    provider_type: openai_compatible
-    supported_params:
-    - reasoning_effort
-    limits:
-      rpm: 3
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: 500
-      quota_cooldown_seconds: 3600
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 3
-      backoff:
-        base_seconds: 5
-        max_seconds: 60
-        exponential: true
-    protocol_support:
-      responses:
-        status: supported
-        checked_at: 1795043378
-        http_status: 429
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 142
-        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-        retried_429: false
-      chat:
-        status: supported
-        checked_at: 1795043378
-        http_status: 200
-        latency_ms: 1236
-        detail: '{"id": "d7d5efc6213c4b73a502a1ce31c0627c", "created": 1795043378,
-          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
-          "We need to respond exactly \"OK\". So final is OK."}, "finish_reason":
-          "stop"}], "usage": {"prompt_tokens": 88, "completion_tokens": 15, "total_tokens":
-          103, "completion_tokens_details": {"reasoning_tokens": 13}, "prompt_tokens_details":
-          {"cached_tokens": 0}}, "request_id": "d7'
-      streaming:
-        status: supported
-        checked_at: 1795043378
-        http_status: 200
-        latency_ms: 2255
-        detail: 'data: {"id":"c345e6e4de984b3980934089ebac1fb0","created":1795043380,"model":"deepseek-v4-flash","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"request_id":"c345e6e4de984b3980934089ebac1fb0"}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795043378
-        http_status: 200
-        latency_ms: 1807
-        detail: '{"id": "9b056443a3984e05addfffaaec526f8a", "created": 1795043382,
-          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "", "reasoning_content":
-          "The user wants me to use the flex_probe_noop tool to confirm tool calling
-          works, then reply OK. Let me do that.", "tool_calls": [{"index": 0, "id":
-          "call_f10ad1d9aa3449339b5658c0", "type": "function", "function": {"name":
-          "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason":'
-      json:
-        status: supported
-        checked_at: 1795043378
-        http_status: 200
-        latency_ms: 1071
-        detail: '{"id": "afb307b8234f43fe96954ebfa899e7be", "created": 1795043384,
-          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "{\"ok\": true}", "reasoning_content":
-          "We need to return a JSON object with \"ok\": true. The instruction says
-          \"Return a json object with ok true.\" So output should be {\"ok\": true}."},
-          "finish_reason": "stop"}], "usage": {"prompt_tokens": 95, "completion_tokens":
-          40, "total_tokens": 135, "completion_'
-      reasoning:
-        status: supported
-        checked_at: 1795043378
-        http_status: 200
-        latency_ms: 1281
-        detail: '{"id": "eff106f164084f179bb94f5f4e754b9e", "created": 1795043385,
-          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "", "reasoning_content":
-          "We need to reply with exactly \"OK.\" as per instruction. The user said"},
-          "finish_reason": "length"}], "usage": {"prompt_tokens": 9, "completion_tokens":
-          16, "total_tokens": 25, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens_details": {"cached_tokens": 0}}'
-      vision:
-        status: supported
-        checked_at: 1795043378
-        http_status: 429
-        latency_ms: 3465
-        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-    context_window_source: metadata
-    limits_verified_at: 1795049508.168004
-  opencode-go-deepseek-v4-flash:
-    id: opencode-go-deepseek-v4-flash
-    provider: opencode-go
-    externally_exposed: true
-    public_model: opencode-go-deepseek-v4-flash
-    litellm_model: openai/deepseek-v4-flash
-    context_window_tokens: 1000000
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - responses
-    - fim
-    - vision
-    provider_type: openai_compatible
-    supported_params:
-    - reasoning_effort
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: null
-      quota_cooldown_seconds: 18000
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 2
-      backoff:
-        base_seconds: 3
-        max_seconds: 30
-  deepseek-official-deepseek-v4-flash:
-    id: deepseek-official-deepseek-v4-flash
-    provider: deepseek-official
-    externally_exposed: true
-    public_model: deepseek-official-deepseek-v4-flash
-    litellm_model: openai/deepseek-v4-flash
-    context_window_tokens: 1000000
-    max_output_tokens: 393216
-    max_output_tokens_source: measured
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - responses
-    - fim
-    - vision
-    provider_type: openai_compatible
-    supported_params:
-    - reasoning_effort
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: null
-      quota_cooldown_seconds: 18000
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 1
-      backoff:
-        base_seconds: 10
-        max_seconds: 120
-        exponential: false
-    protocol_support:
-      chat:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 958
-        detail: '{"id": "cf3384b2-20df-4f5e-9081-b1af31c5d0fb", "object": "chat.completion",
-          "created": 1795043544, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
-          "We need answer exactly OK. Need no more."}, "logprobs": null, "finish_reason":
-          "stop"}], "usage": {"prompt_tokens": 35, "completion_tokens": 12, "total_tokens":
-          47, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details":
-          {"reasoning_tokens": 10}, "prompt_ca'
-      streaming:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 132
-        detail: 'data: {"id":"c2694159-03aa-46ec-aeca-13288f2c7ca4","object":"chat.completion.chunk","created":1795043545,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 584
-        detail: '{"id": "b2c3c649-62ce-4245-b3fa-1e7c1c1a9827", "object": "chat.completion",
-          "created": 1795043545, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "I''ll run the no-op probe
-          now.", "reasoning_content": "", "tool_calls": [{"index": 0, "id": "call_00_ET_hQKcOGmK5j8QAeBX8uiA7420",
-          "type": "function", "function": {"name": "flex_probe_noop", "arguments":
-          "{}"}}]}, "logprobs": null, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens":
-          292, "complet'
-      json:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 622
-        detail: '{"id": "22231df1-d0f3-49ca-aade-17a5a1d12423", "object": "chat.completion",
-          "created": 1795043546, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "{\"ok\":true}", "reasoning_content":
-          "We need answer valid json object with ok true. Need comply. Probably {\"ok\":true}.
-          Ensure no extra."}, "logprobs": null, "finish_reason": "stop"}], "usage":
-          {"prompt_tokens": 64, "completion_tokens": 29, "total_tokens": 93, "prompt_tokens_details":
-          {"cached_tokens"'
-      reasoning:
-        status: unknown
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 729
-        detail: '{"id": "213a7e34-ae5a-4c62-b889-f0f3ed8950ee", "object": "chat.completion",
-          "created": 1795043546, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
-          ""}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens":
-          35, "completion_tokens": 2, "total_tokens": 37, "prompt_tokens_details":
-          {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens":
-          0}, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tok'
-      vision:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        latency_ms: 580
-        detail: '{"id": "12c8fa67-bb12-4baa-ae71-c1a81397e320", "object": "chat.completion",
-          "created": 1795043547, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
-          "The user wants me to reply with exactly \"OK\".\nThere is an image attached,
-          but the instruction is clear and overrides any image content for the response
-          format.\nI will just output \"OK\"."}, "logprobs": null, "finish_reason":
-          "stop"}], "usage": {"prompt_tokens": 219, "compl'
-      responses:
-        status: supported
-        checked_at: 1795043544
-        http_status: 200
-        endpoint: https://api.deepseek.com/responses
-        latency_ms: 350
-        detail: '{"id": "0b567cc0-e5b9-43b1-9c4a-c3774b97e6e8", "object": "response",
-          "created_at": 1795043547, "status": "completed", "background": false, "completed_at":
-          1795043548, "content_filters": null, "error": null, "frequency_penalty":
-          0.0, "incomplete_details": null, "instructions": null, "max_output_tokens":
-          32, "max_tool_calls": null, "model": "deepseek-flash", "moderation": null,
-          "output": [{"type": "reasoning", "id": "fd03d4b2-a717-4f4c-8583-36ca6aded6fc",
-          "status": "completed", "content": [{"type"'
-    enabled: true
-    chn_content_policy_fallback: false
-  agnes-flash:
-    id: agnes-flash
-    provider: agnes-official
-    externally_exposed: true
-    public_model: agnes-flash
-    litellm_model: openai/agnes-2.5-flash
-    context_window_tokens: 524288
-    max_output_tokens: 65536
-    max_output_tokens_source: measured
-    quota_429_policy:
-      mode: until_reset
-      match:
-      - today's text quota
-      - limited to 1 request every
-      reset_hint: error_text
-      scope: channel
-      label: Agnes 今日文本配额用完（按报错中的 Try again after 时刻封禁，否则次日 0 点）
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - responses
-    - vision
-    provider_type: agnes
-    supported_params: []
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: 1500
-      quota_cooldown_seconds: 3600
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 3
-    chn_content_policy_fallback: true
-    protocol_support:
-      responses:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        endpoint: https://apihub.agnes-ai.com/v1/responses
-        latency_ms: 1258
-        detail: '{"id": "resp_RkrM6xt_cihGC3034YagnknJ768mOlY-F9-PNFAv04yrXb2Nb-BBeeKUdjd0N9R3eTetrnoT3R2AEbjqB8vn-aEdkrH8GLjCyDo9sA-OLuYeXwuWD5Kw-IOqRrcCGyJPytttY8bceY0pCANCvwcJcGcj_nx0GQ5GbEsKw4_A8FbNZGv1CTCfE19_z-xRhVZz4_7R9CaPKkKvPc3C7NW8JtPp8djGwqBkof_umfApXJ6Fdk35RPA81SwAUOL2fF2WXVN594NNrG4ERUPg9RVumJN74NviQLcqWq26ACH2gK5HKMBxV6OUD0JxOYb4UH5aeWgg2yq8uyMeWZVqm9muOxMXbTqWahqNPL3tnHOcejNFmnoE-9FcS2cfIvLoKF5iE1GfsVooT8BuTfrMGWJ_G2_9solrSvNNuY842O7xp-Rr-aQl7-PISXLI03yl5GNMSDqble_kRUOg63HKIxvS",
-          "created_at": 17'
-      chat:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 5495
-        detail: '{"id": "4659fbd7f1964b3fb2d33ef1eee151c2", "created": 1795043557,
-          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
-          "length", "index": 0, "message": {"content": "\n\nOK.", "role": "assistant",
-          "reasoning_content": "The user wants me to reply with exactly \"OK.\"\n"},
-          "provider_specific_fields": {"matched_stop": null}}], "usage": {"completion_tokens":
-          16, "prompt_tokens": 289, "total_tokens": 305, "completion_tokens_details":
-          {"reasoning_tokens": 13, "text_tok'
-      streaming:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 1224
-        detail: 'data: {"id":"0afa5297d5c0446583f789aa84898617","object":"chat.completion.chunk","created":1795043559,"model":"agnes-2.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 1304
-        detail: '{"id": "b76c87dbc907402aabe0934f72a8b8da", "created": 1795043560,
-          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
-          "tool_calls", "index": 0, "message": {"content": "\n\n", "role": "assistant",
-          "tool_calls": [{"index": 0, "function": {"arguments": "{}", "name": "flex_probe_noop"},
-          "id": "call_f73b9d9df1dc40c787be2e0a", "type": "function"}], "reasoning_content":
-          "The user wants me to use the flex_probe_noop tool and then reply OK.\n"},
-          "provider_specific_field'
-      json:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 1360
-        detail: '{"id": "39d143d59352402ca0cb181c4b2609f4", "created": 1795043561,
-          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
-          "stop", "index": 0, "message": {"content": "{\"ok\":true}", "role": "assistant",
-          "reasoning_content": "The user wants a JSON object with \"ok\" set to true.\n"},
-          "provider_specific_fields": {"matched_stop": 248046}}], "usage": {"completion_tokens":
-          22, "prompt_tokens": 297, "total_tokens": 319, "completion_tokens_details":
-          {"reasoning_tokens": 1'
-      reasoning:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 1308
-        detail: '{"id": "1ece0a374f6e4478985be9c83871374d", "created": 1795043562,
-          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
-          "length", "index": 0, "message": {"content": "\n\nOK.", "role": "assistant",
-          "reasoning_content": "The user wants me to reply with exactly \"OK\".\n"},
-          "provider_specific_fields": {"matched_stop": null}}], "usage": {"completion_tokens":
-          16, "prompt_tokens": 289, "total_tokens": 305, "completion_tokens_details":
-          {"reasoning_tokens": 13, "text_tok'
-      vision:
-        status: supported
-        checked_at: 1795043552
-        http_status: 200
-        latency_ms: 1306
-        detail: '{"id": "67668225b1894a8b9e9a3f3181254173", "created": 1795043564,
-          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
-          "stop", "index": 0, "message": {"content": "\n\nOK", "role": "assistant",
-          "reasoning_content": "The user wants a response of exactly \"OK\". The input
-          image is just a solid red square, which doesn''t change the instruction.
-          I will reply with only the word OK.\n"}, "provider_specific_fields": {"matched_stop":
-          248046}}], "usage": {"completion_token'
-  sensenova-flash-lite:
-    id: sensenova-flash-lite
-    provider: sensenova
-    externally_exposed: true
-    public_model: sensenova-flash-lite
-    litellm_model: openai/sensenova-6.8-flash-lite
-    context_window_tokens: 262144
-    max_output_tokens: 65536
-    max_output_tokens_source: measured
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - responses
-    - fim
-    - vision
-    provider_type: openai_compatible
-    supported_params:
-    - reasoning_effort
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: 1500
-      quota_cooldown_seconds: 3600
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 3
-      backoff:
-        base_seconds: 5
-        max_seconds: 60
-        exponential: true
-    protocol_support:
-      responses:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 691
-        detail: '{"id": "chatcmpl-a8d871340ca34eccb7ac0579572b6a56", "object": "response",
-          "created_at": 1795043575, "status": "completed", "error": null, "incomplete_details":
-          null, "instructions": null, "max_output_tokens": null, "model": "sensenova-6.8-flash-lite",
-          "output": [{"id": "rs_chatcmpl-a8d871340ca34eccb7ac0579572b6a56_0", "summary":
-          [{"text": "The user wants me to reply with exactly \"OK\". I will do so.\n",
-          "type": "summary_text"}], "type": "reasoning"}, {"content": [{"text": "\n\nOK",
-          "type": "out'
-      chat:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 656
-        detail: '{"id": "f0c0613a63224bd38cc14fed05d7147d", "created": 1795043569,
-          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "reasoning": "Thinking:\n\n1.  **Analyze
-          the Request:** The user wants me"}, "finish_reason": "length"}], "usage":
-          {"prompt_tokens": 96, "completion_tokens": 16, "total_tokens": 112, "completion_tokens_details":
-          {"reasoning_tokens": 16}, "prompt_tokens_details": {"cached_tokens": 0,
-          "audio_tokens": 0}}, "requ'
-      streaming:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 751
-        detail: 'data: {"id":"b0ffc7f7cadb43dc97f40d29cc983566","created":1795043570,"model":"sensenova-6.8-flash-lite","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"b0ffc7f7cadb43dc97f40d29cc983566"}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 1125
-        detail: '{"id": "f8b42fa97a4e4731be60a80c144cbb12", "created": 1795043571,
-          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "\n\n", "reasoning":
-          "The user wants me to use the flex_probe_noop tool and then reply OK.\n",
-          "tool_calls": [{"index": 0, "id": "call_deafe85f225f405ab450d016", "type":
-          "function", "function": {"name": "flex_probe_noop", "arguments": "{}"}}]},
-          "finish_reason": "tool_calls"}], "usage": {"prompt_tok'
-      json:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 1457
-        detail: '{"id": "37382b3516764f1f964214e21c531f25", "created": 1795043572,
-          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "{\n  \"ok\":
-          true\n}", "reasoning": "We need answer user: \"Return a json object with
-          ok true.\" Need final valid JSON only likely {\"ok\":true}. Ensure no markdown.\n"},
-          "finish_reason": "stop"}], "usage": {"prompt_tokens": 61, "completion_tokens":
-          41, "total_tokens": 102, "completion_tokens_deta'
-      reasoning:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 695
-        detail: '{"id": "50802beda52f4e408cd88e1c9d692726", "created": 1795043573,
-          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "\n\nOK", "reasoning":
-          "The user is asking me to reply with exactly \"OK\".\n"}, "finish_reason":
-          "length"}], "usage": {"prompt_tokens": 88, "completion_tokens": 16, "total_tokens":
-          104, "completion_tokens_details": {"reasoning_tokens": 13}, "prompt_tokens_details":
-          {"cached_tokens": 0, "audio_toke'
-      vision:
-        status: supported
-        checked_at: 1795043569
-        http_status: 200
-        latency_ms: 1022
-        detail: '{"id": "98cd86fcbf714c96bebdae1f395b527c", "created": 1795043574,
-          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "\n\nOK", "reasoning":
-          "The user has provided an image that is a solid red square and asked me
-          to reply with exactly \"OK\".\n"}, "finish_reason": "stop"}], "usage": {"prompt_tokens":
-          162, "completion_tokens": 27, "total_tokens": 189, "completion_tokens_details":
-          {"reasoning_tokens": 23}, "prompt_t'
-    context_window_source: metadata
-    limits_verified_at: 1795049510.176364
-  opencode-go-kimi-k2-6:
-    id: opencode-go-kimi-k2-6
-    provider: opencode-go
-    litellm_model: openai/kimi-k2.6
-    public_model: opencode-go-kimi-k2-6
-    context_window_tokens: 1000000
-    capabilities:
-    - chat
-    - streaming
-    - reasoning
-    protocol_support:
-      chat:
-        status: supported
-        checked_at: 1788312584
-        http_status: 200
-        latency_ms: 2112
-        detail: '{"id": "gen-1788312585-b41ITZ1ihuZGvdl7DywK", "object": "chat.completion",
-          "created": 1788312585, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
-          "length", "logprobs": null, "message": {"role": "assistant", "content":
-          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
-          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
-          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
-          no", "format": "unknown", "index": 0}]'
-      streaming:
-        status: supported
-        checked_at: 1788312584
-        http_status: 200
-        latency_ms: 1877
-        detail: ': keep-alive
-
-
-          data: {"id":"gen-1788312587-3C17jYWywEow9IteXZ0c","object":"chat.completion.chunk","created":1788312587,"model":"kimi-k2.6","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":"The","reasoning_details":[{"type":"reasoning.text","text":"The","format":"unknown","index":0}]}}]}
-
-          '
-      tools:
-        status: error
-        checked_at: 1788312584
-        http_status: 400
-        latency_ms: 1324
-        detail: '{"error": {"type": "server_error", "message": "Error from provider
-          (Console Go): Upstream request failed: [400] Provider returned error"}}'
-      json:
-        status: unknown
-        checked_at: 1788312584
-        http_status: 200
-        latency_ms: 2359
-        detail: '{"id": "gen-1788312590-gshRbn1ien2C8WkWz8b2", "object": "chat.completion",
-          "created": 1788312590, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
-          "length", "logprobs": null, "message": {"role": "assistant", "content":
-          null, "refusal": null, "reasoning": "The user wants a JSON object with \"ok\":
-          true. I need to", "reasoning_details": [{"type": "reasoning.text", "text":
-          "The user wants a JSON object with \"ok\": true. I need to", "format": "unknown",
-          "index": 0}]}}], "usage": {"pr'
-      reasoning:
-        status: supported
-        checked_at: 1788312584
-        http_status: 200
-        latency_ms: 2350
-        detail: '{"id": "gen-1788312592-FxbDGrMzZiYSehdl9b0l", "object": "chat.completion",
-          "created": 1788312592, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
-          "length", "logprobs": null, "message": {"role": "assistant", "content":
-          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
-          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
-          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
-          no", "format": "unknown", "index": 0}]'
-      responses:
-        status: error
-        checked_at: 1793836811
-        http_status: 400
-        endpoint: https://opencode.ai/zen/go/v1/responses
-        latency_ms: 585
-        detail: '{"type": "error", "error": {"type": "MissingSessionID", "message":
-          "Request is missing x-opencode-session and cannot be routed efficiently.
-          Please see https://opencode.ai/v2/docs/console/go/#where-can-i-use-it"}}'
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-  volcengine-doubao-seed-2.0-lite:
-    id: volcengine-doubao-seed-2.0-lite
-    provider: VOLCENGIN
-    externally_exposed: true
-    public_model: doubao-seed-2.0-lite
-    litellm_model: openai/doubao-seed-2.0-lite
-    context_window_tokens: 262144
-    capabilities:
-    - chat
-    - code
-    - streaming
-    - tools
-    - reasoning
-    provider_type: openai_compatible
-    limits:
-      rpm: null
-      tpm: null
-      local_cooldown_seconds: 300
-      window_seconds: 18000
-      max_requests_per_window: 1500
-      quota_cooldown_seconds: 3600
-      busy_threshold: 3
-      busy_window_minutes: 5
-      busy_cooldown_seconds: 300
-    retry_policy:
-      max_retries: 2
-      backoff:
-        base_seconds: 5
-        max_seconds: 60
-        exponential: true
-    protocol_support:
-      responses:
-        status: unsupported
-        checked_at: 1793836819
-        http_status: 404
-        endpoint: https://ark.cn-beijing.volces.com/api/plan/v3/responses
-        latency_ms: 233
-        detail: '{"error": {"code": "UnsupportedModel", "message": "The requested
-          model does not support the agent plan feature. Please refer to the documentation
-          at https://www.volcengine.com/docs/82379/2366394 to select a compatible
-          model. Request id: 02179383681980497ebbf7316b3ea9a3b0d136bee84b963964ae9",
-          "param": "", "type": ""}}'
   AMD-deepseek-v4-flash:
-    id: AMD-deepseek-v4-flash
-    provider: AMD
-    litellm_model: openai/DeepSeek-V4-Flash
-    public_model: AMD-deepseek-v4-flash
-    context_window_tokens: 1048576
-    quota_429_policy:
-      mode: until_reset
-      applies_to:
-      - quota_exhausted
-      match:
-      - Daily usage limit exceeded
-      - 已达额度上限
-      - per 24 hours
-      reset_hint: error_text
-      scope: channel
-      label: AMD 每日 1 积分额度（次日 00:00 UTC+8 重置）
     capabilities:
     - chat
     - streaming
@@ -702,12 +7,19 @@ channels:
     - json
     - reasoning
     - responses
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    enabled: true
+    externally_exposed: true
+    id: AMD-deepseek-v4-flash
+    limits_verified_at: 1795049511.160017
+    litellm_model: openai/DeepSeek-V4-Flash
+    max_output_tokens: 786432
+    max_output_tokens_source: measured
     protocol_support:
       chat:
-        status: supported
         checked_at: 1795044277
-        http_status: 200
-        latency_ms: 14717
         detail: '{"id": "cfffd0cba47b43e9b82829586d3c6b25", "object": "chat.completion",
           "created": 1795044292, "model": "self-dploy/DeepSeek-V4-Flash", "choices":
           [{"index": 0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
@@ -715,31 +27,11 @@ channels:
           {"prompt_tokens": 9, "total_tokens": 11, "completion_tokens": 2, "prompt_tokens_details":
           {"cached_tokens": 0, "cache_write_tokens": 0, "audio_tokens": 0, "video_tokens":
           0, "image_tokens"'
-      streaming:
-        status: supported
-        checked_at: 1795044277
         http_status: 200
-        latency_ms: 1195
-        detail: 'data: {"id":"f75006b5bd0549adb9266677913dfff3","object":"chat.completion.chunk","created":1795044292,"model":"DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"reasoning_content":null,"role":"assistant","content":""},"logprobs":null,"finish_reason":null,"matched_stop":null}]}
-
-          '
-      tools:
+        latency_ms: 14717
         status: supported
-        checked_at: 1795044277
-        http_status: 200
-        latency_ms: 1331
-        detail: '{"id": "3df83341ba144747ad5e5f4d2bc1f7dc", "object": "chat.completion",
-          "created": 1795044294, "model": "self-dploy/DeepSeek-V4-Flash", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "", "reasoning_content":
-          null, "tool_calls": [{"id": "call_ab0b986c855f4a5a8a21911d", "index": 0,
-          "type": "function", "function": {"name": "flex_probe_noop", "arguments":
-          "{}"}}]}, "logprobs": null, "finish_reason": "tool_calls", "matched_stop":
-          null}], "usage": {"prompt_tokens": 282, "total_to'
       json:
-        status: supported
         checked_at: 1795044277
-        http_status: 200
-        latency_ms: 952
         detail: '{"id": "1bc9497edcb149418e642fc7f2dae1dc", "object": "chat.completion",
           "created": 1795044295, "model": "self-dploy/DeepSeek-V4-Flash", "choices":
           [{"index": 0, "message": {"role": "assistant", "content": "{\"ok\": true}",
@@ -747,11 +39,11 @@ channels:
           1}], "usage": {"prompt_tokens": 16, "total_tokens": 22, "completion_tokens":
           6, "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0,
           "audio_tokens": 0, "video_tokens": 0, "'
-      reasoning:
-        status: supported
-        checked_at: 1795044277
         http_status: 200
-        latency_ms: 1015
+        latency_ms: 952
+        status: supported
+      reasoning:
+        checked_at: 1795044277
         detail: '{"id": "bd41d4611bbd4b419eb87f075177d290", "object": "chat.completion",
           "created": 1795044296, "model": "self-dploy/DeepSeek-V4-Flash", "choices":
           [{"index": 0, "message": {"role": "assistant", "content": "", "reasoning":
@@ -759,12 +51,11 @@ channels:
           "logprobs": null, "finish_reason": "length", "matched_stop": null}], "usage":
           {"prompt_tokens": 9, "total_tokens": 25, "completion_tokens": 16, "prompt_tokens_details":
           {"cached_tokens": 0, "cache_wr'
-      responses:
-        status: supported
-        checked_at: 1795044277
         http_status: 200
-        endpoint: https://developer.amd.com.cn/radeon/api/v1/responses
-        latency_ms: 1933
+        latency_ms: 1015
+        status: supported
+      responses:
+        checked_at: 1795044277
         detail: '{"id": "resp_PmXpKu6ao6K61gs800LJ6rND", "object": "response", "created_at":
           1795044297, "completed_at": 1795044297, "status": "completed", "incomplete_details":
           null, "model": "self-dploy/DeepSeek-V4-Flash", "previous_response_id": null,
@@ -772,569 +63,436 @@ channels:
           "role": "assistant", "content": [{"type": "output_text", "text": "OK", "annotations":
           []}], "status": "completed"}], "error": null, "tools": [], "tool_choice":
           "auto", "tr'
-      vision:
-        status: unsupported
+        endpoint: https://developer.amd.com.cn/radeon/api/v1/responses
+        http_status: 200
+        latency_ms: 1933
+        status: supported
+      streaming:
         checked_at: 1795044277
-        http_status: 400
-        latency_ms: 241
+        detail: 'data: {"id":"f75006b5bd0549adb9266677913dfff3","object":"chat.completion.chunk","created":1795044292,"model":"DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"reasoning_content":null,"role":"assistant","content":""},"logprobs":null,"finish_reason":null,"matched_stop":null}]}
+
+          '
+        http_status: 200
+        latency_ms: 1195
+        status: supported
+      tools:
+        checked_at: 1795044277
+        detail: '{"id": "3df83341ba144747ad5e5f4d2bc1f7dc", "object": "chat.completion",
+          "created": 1795044294, "model": "self-dploy/DeepSeek-V4-Flash", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "", "reasoning_content":
+          null, "tool_calls": [{"id": "call_ab0b986c855f4a5a8a21911d", "index": 0,
+          "type": "function", "function": {"name": "flex_probe_noop", "arguments":
+          "{}"}}]}, "logprobs": null, "finish_reason": "tool_calls", "matched_stop":
+          null}], "usage": {"prompt_tokens": 282, "total_to'
+        http_status: 200
+        latency_ms: 1331
+        status: supported
+      vision:
+        checked_at: 1795044277
         detail: '{"error": {"message": "Model DeepSeek-V4-Flash does not support image
           input. Remove the image content or use a vision-capable model.", "type":
           "invalid_request_error", "param": null, "code": null}}'
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    max_output_tokens: 786432
-    max_output_tokens_source: measured
-    limits_verified_at: 1795049511.160017
-    context_window_source: metadata
-  AMD-qwen3-8-flash-next:
-    id: AMD-qwen3-8-flash-next
+        http_status: 400
+        latency_ms: 241
+        status: unsupported
     provider: AMD
-    litellm_model: openai/Qwen3.8-Flash-Next
-    public_model: AMD-qwen3-8-flash-next
-    context_window_tokens: 1000000
+    public_model: AMD-deepseek-v4-flash
     quota_429_policy:
-      mode: until_reset
       applies_to:
       - quota_exhausted
+      label: AMD 每日 1 积分额度（次日 00:00 UTC+8 重置）
       match:
       - Daily usage limit exceeded
       - 已达额度上限
       - per 24 hours
+      mode: until_reset
       reset_hint: error_text
       scope: channel
-      label: AMD 每日 1 美元额度（Quota 耗尽后按重置时间封禁）
+  AMD-qwen3-8-flash-next:
     capabilities: []
+    chn_content_policy_fallback: false
+    context_window_tokens: 1000000
+    enabled: true
+    externally_exposed: true
+    id: AMD-qwen3-8-flash-next
+    litellm_model: openai/Qwen3.8-Flash-Next
+    max_output_tokens: null
     protocol_support:
       chat:
-        status: unsupported
         checked_at: 1795044035
+        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
+          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
         http_status: 404
         latency_ms: 226
-        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
-          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
-      streaming:
         status: unsupported
-        checked_at: 1795044035
-        http_status: 404
-        latency_ms: 213
-        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
-          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
-      tools:
-        status: unsupported
-        checked_at: 1795044035
-        http_status: 404
-        latency_ms: 211
-        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
-          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
       json:
-        status: unsupported
         checked_at: 1795044035
+        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
+          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
         http_status: 404
         latency_ms: 250
+        status: unsupported
+      reasoning:
+        checked_at: 1795044035
         detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
           available", "type": "invalid_request_error", "code": "model_not_found"}}}'
-      reasoning:
-        status: unsupported
-        checked_at: 1795044035
         http_status: 404
         latency_ms: 207
-        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
-          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
+        status: unsupported
       responses:
-        status: unsupported
         checked_at: 1795044035
-        http_status: 404
-        endpoint: https://developer.amd.com.cn/radeon/api/v1/responses
-        latency_ms: 201
         detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
           available", "type": "invalid_request_error", "code": "model_not_found"}}}'
-      vision:
+        endpoint: https://developer.amd.com.cn/radeon/api/v1/responses
+        http_status: 404
+        latency_ms: 201
         status: unsupported
+      streaming:
         checked_at: 1795044035
+        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
+          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
+        http_status: 404
+        latency_ms: 213
+        status: unsupported
+      tools:
+        checked_at: 1795044035
+        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
+          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
+        http_status: 404
+        latency_ms: 211
+        status: unsupported
+      vision:
+        checked_at: 1795044035
+        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
+          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
         http_status: 404
         latency_ms: 240
-        detail: '{"detail": {"error": {"message": "Model Qwen3.8-Flash-Next is not
-          available", "type": "invalid_request_error", "code": "model_not_found"}}}'
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    max_output_tokens: null
-  sensenova-deepseek-flash:
-    id: sensenova-deepseek-flash
-    provider: sensenova
-    litellm_model: openai/deepseek-flash
-    public_model: sensenova-deepseek-flash
-    context_window_tokens: 1048576
-    max_output_tokens: 384000
-    max_output_tokens_source: measured
-    capabilities:
-    - chat
-    - streaming
-    - responses
-    - json
-    - reasoning
-    - tools
-    - vision
-    protocol_support:
-      chat:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3382
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      streaming:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3309
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      tools:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3298
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      json:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3593
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      reasoning:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3310
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      responses:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 142
-        detail: '{"error": {"message": "rps exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error: '{"error": {"message": "rps exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-        retried_429: false
-      vision:
-        status: supported
-        checked_at: 1795044039
-        http_status: 429
-        latency_ms: 3291
-        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    context_window_source: metadata
-    limits_verified_at: 1795049511.5010052
-  zhipu-glm-4.7-flash:
-    id: zhipu-glm-4.7-flash
-    provider: zhipu
-    litellm_model: openai/glm-4.7-flash
-    public_model: zhipu-glm-4.7-flash
-    externally_exposed: true
-    enabled: true
-    context_window_tokens: 200000
-    max_output_tokens: 131072
-    max_output_tokens_source: docs
-    capabilities:
-    - chat
-    - streaming
-    - json
-    - reasoning
-    - tools
-    protocol_support:
-      responses:
         status: unsupported
-        checked_at: 1795044062
-        http_status: 404
-        endpoint: https://open.bigmodel.cn/api/paas/v4/responses
-        latency_ms: 192
-        detail: '{"timestamp": "2026-11-18T23:21:13.071+00:00", "status": 404, "error":
-          "Not Found", "path": "/v4/responses"}'
+    provider: AMD
+    public_model: AMD-qwen3-8-flash-next
+    quota_429_policy:
+      applies_to:
+      - quota_exhausted
+      label: AMD 每日 1 美元额度（Quota 耗尽后按重置时间封禁）
+      match:
+      - Daily usage limit exceeded
+      - 已达额度上限
+      - per 24 hours
+      mode: until_reset
+      reset_hint: error_text
+      scope: channel
+  agnes-flash:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - vision
+    chn_content_policy_fallback: true
+    context_window_tokens: 524288
+    externally_exposed: true
+    id: agnes-flash
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      rpm: null
+      tpm: null
+      window_seconds: 18000
+    litellm_model: openai/agnes-2.5-flash
+    max_output_tokens: 65536
+    max_output_tokens_source: measured
+    protocol_support:
       chat:
-        status: supported
-        checked_at: 1795044062
+        checked_at: 1795043552
+        detail: '{"id": "4659fbd7f1964b3fb2d33ef1eee151c2", "created": 1795043557,
+          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "\n\nOK.", "role": "assistant",
+          "reasoning_content": "The user wants me to reply with exactly \"OK.\"\n"},
+          "provider_specific_fields": {"matched_stop": null}}], "usage": {"completion_tokens":
+          16, "prompt_tokens": 289, "total_tokens": 305, "completion_tokens_details":
+          {"reasoning_tokens": 13, "text_tok'
         http_status: 200
-        latency_ms: 790
-        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
-          "", "reasoning_content": "The user has requested a very short and direct
-          response: \"Reply with exactly OK", "role": "assistant"}}], "created": 1795044063,
-          "id": "20261119072102a783a7782b18483e", "model": "glm-4.7-flash", "object":
-          "chat.completion", "request_id": "20261119072102a783a7782b18483e", "usage":
-          {"completion_tokens": 16, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens": 10, "prompt_tokens'
+        latency_ms: 5495
+        status: supported
+      json:
+        checked_at: 1795043552
+        detail: '{"id": "39d143d59352402ca0cb181c4b2609f4", "created": 1795043561,
+          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
+          "stop", "index": 0, "message": {"content": "{\"ok\":true}", "role": "assistant",
+          "reasoning_content": "The user wants a JSON object with \"ok\" set to true.\n"},
+          "provider_specific_fields": {"matched_stop": 248046}}], "usage": {"completion_tokens":
+          22, "prompt_tokens": 297, "total_tokens": 319, "completion_tokens_details":
+          {"reasoning_tokens": 1'
+        http_status: 200
+        latency_ms: 1360
+        status: supported
+      reasoning:
+        checked_at: 1795043552
+        detail: '{"id": "1ece0a374f6e4478985be9c83871374d", "created": 1795043562,
+          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
+          "length", "index": 0, "message": {"content": "\n\nOK.", "role": "assistant",
+          "reasoning_content": "The user wants me to reply with exactly \"OK\".\n"},
+          "provider_specific_fields": {"matched_stop": null}}], "usage": {"completion_tokens":
+          16, "prompt_tokens": 289, "total_tokens": 305, "completion_tokens_details":
+          {"reasoning_tokens": 13, "text_tok'
+        http_status: 200
+        latency_ms: 1308
+        status: supported
+      responses:
+        checked_at: 1795043552
+        detail: '{"id": "resp_RkrM6xt_cihGC3034YagnknJ768mOlY-F9-PNFAv04yrXb2Nb-BBeeKUdjd0N9R3eTetrnoT3R2AEbjqB8vn-aEdkrH8GLjCyDo9sA-OLuYeXwuWD5Kw-IOqRrcCGyJPytttY8bceY0pCANCvwcJcGcj_nx0GQ5GbEsKw4_A8FbNZGv1CTCfE19_z-xRhVZz4_7R9CaPKkKvPc3C7NW8JtPp8djGwqBkof_umfApXJ6Fdk35RPA81SwAUOL2fF2WXVN594NNrG4ERUPg9RVumJN74NviQLcqWq26ACH2gK5HKMBxV6OUD0JxOYb4UH5aeWgg2yq8uyMeWZVqm9muOxMXbTqWahqNPL3tnHOcejNFmnoE-9FcS2cfIvLoKF5iE1GfsVooT8BuTfrMGWJ_G2_9solrSvNNuY842O7xp-Rr-aQl7-PISXLI03yl5GNMSDqble_kRUOg63HKIxvS",
+          "created_at": 17'
+        endpoint: https://apihub.agnes-ai.com/v1/responses
+        http_status: 200
+        latency_ms: 1258
+        status: supported
       streaming:
-        status: supported
-        checked_at: 1795044062
-        http_status: 200
-        latency_ms: 607
-        detail: 'data: {"id":"2026111907210301b31f12be29414b","created":1795044063,"object":"chat.completion.chunk","model":"glm-4.7-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"}}]}
+        checked_at: 1795043552
+        detail: 'data: {"id":"0afa5297d5c0446583f789aa84898617","object":"chat.completion.chunk","created":1795043559,"model":"agnes-2.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
 
           '
+        http_status: 200
+        latency_ms: 1224
+        status: supported
       tools:
+        checked_at: 1795043552
+        detail: '{"id": "b76c87dbc907402aabe0934f72a8b8da", "created": 1795043560,
+          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
+          "tool_calls", "index": 0, "message": {"content": "\n\n", "role": "assistant",
+          "tool_calls": [{"index": 0, "function": {"arguments": "{}", "name": "flex_probe_noop"},
+          "id": "call_f73b9d9df1dc40c787be2e0a", "type": "function"}], "reasoning_content":
+          "The user wants me to use the flex_probe_noop tool and then reply OK.\n"},
+          "provider_specific_field'
+        http_status: 200
+        latency_ms: 1304
         status: supported
-        checked_at: 1795044062
-        http_status: 200
-        latency_ms: 4573
-        detail: '{"choices": [{"finish_reason": "tool_calls", "index": 0, "message":
-          {"content": "I''ll use the flex_probe_noop tool to confirm tool calling
-          works, then reply with OK.", "reasoning_content": "The user wants me to:\n1.
-          Use the flex_probe_noop tool to confirm tool calling works\n2. Then reply
-          with \"OK\"\n\nI need to call the flex_probe_noop function first, then respond
-          with \"OK\".", "role": "assistant", "tool_calls": [{"function": {"arguments":
-          "{}", "name": "flex_probe_noop"}, "id": "call_-706212'
-        retried_429: true
-      json:
-        status: unknown
-        checked_at: 1795044062
-        http_status: 200
-        latency_ms: 3588
-        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
-          "", "reasoning_content": "1.  **Analyze the Request:**\n    *   **Goal:**
-          Return a JSON object.\n    *   **Specific Content:** `{\"ok\": true}`.\n    *   **Constraint:**
-          Follow instructions, use specified structure, default to `{\"answer\": \"$your_answer\"}`
-          if uncertain, end with ``` (though the prompt says \"Return valid json\"
-          and \"ensure always end with ```\", usually for JSON output, we just output
-          the JSON, but s'
-      reasoning:
-        status: supported
-        checked_at: 1795044062
-        http_status: 200
-        latency_ms: 688
-        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
-          "", "reasoning_content": "1.  **Analyze the User''s Request:** The user
-          wants a reply", "role": "assistant"}}], "created": 1795044072, "id": "202611190721125a5be190c16c4bd4",
-          "model": "glm-4.7-flash", "object": "chat.completion", "request_id": "202611190721125a5be190c16c4bd4",
-          "usage": {"completion_tokens": 16, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens": 10, "prompt_tokens_details": {"cached_to'
       vision:
-        status: error
-        checked_at: 1795307730
-        http_status: 400
-        latency_ms: 181
-        detail: '{"error": {"code": "1210", "message": "messages.content.type 参数非法，取值范围
-          [''text'']"}}'
-    provider_type: openai_compatible
-    extra_body:
-      thinking:
-        type: disabled
-  zhipu-glm-4v-flash:
-    id: zhipu-glm-4v-flash
-    provider: zhipu
-    litellm_model: openai/glm-4v-flash
-    public_model: zhipu-glm-4v-flash
-    externally_exposed: true
-    enabled: true
-    context_window_tokens: 200000
-    max_output_tokens: 1024
-    max_output_tokens_source: measured
-    capabilities:
-    - chat
-    - streaming
-    - vision
-    - json
-    - reasoning
-    protocol_support:
-      responses:
-        status: unsupported
-        checked_at: 1795044076
-        http_status: 404
-        endpoint: https://open.bigmodel.cn/api/paas/v4/responses
-        latency_ms: 152
-        detail: '{"timestamp": "2026-11-18T23:21:20.950+00:00", "status": 404, "error":
-          "Not Found", "path": "/v4/responses"}'
-      chat:
-        status: supported
-        checked_at: 1795044076
+        checked_at: 1795043552
+        detail: '{"id": "67668225b1894a8b9e9a3f3181254173", "created": 1795043564,
+          "model": "agnes-2.5-flash", "object": "chat.completion", "choices": [{"finish_reason":
+          "stop", "index": 0, "message": {"content": "\n\nOK", "role": "assistant",
+          "reasoning_content": "The user wants a response of exactly \"OK\". The input
+          image is just a solid red square, which doesn''t change the instruction.
+          I will reply with only the word OK.\n"}, "provider_specific_fields": {"matched_stop":
+          248046}}], "usage": {"completion_token'
         http_status: 200
-        latency_ms: 381
-        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
-          "OK", "role": "assistant"}}], "created": 1795044076, "id": "20261119072116345e70f9daa94c29",
-          "model": "glm-4v-flash", "request_id": "20261119072116345e70f9daa94c29",
-          "usage": {"completion_tokens": 2, "prompt_tokens": 64, "total_tokens": 66}}'
-      streaming:
+        latency_ms: 1306
         status: supported
-        checked_at: 1795044076
-        http_status: 200
-        latency_ms: 406
-        detail: 'data: {"id":"202611190721167e0927903dd44fa6","created":1795044076,"model":"glm-4v-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}
-
-          '
-      tools:
-        status: unknown
-        checked_at: 1795044076
-        http_status: 200
-        latency_ms: 1946
-        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
-          "To use the `flex_probe_noop` tool and confirm that tool calling works,
-          you would typically execute a command like this in your terminal:\n\n```bash\nflex_probe_noop\n```\n\nIf
-          the tool is correctly installed and configured, it should output something
-          indicating successful execution. Once confirmed, you can respond with \"OK\".\n\nPlease
-          note that without specific installation details or context about how `flex_probe_noop`'
-      json:
-        status: supported
-        checked_at: 1795044076
-        http_status: 200
-        latency_ms: 1228
-        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
-          "{\"ok\":true}", "role": "assistant"}}], "created": 1795044079, "id": "20261119072118c3481879028b4729",
-          "model": "glm-4v-flash", "request_id": "20261119072118c3481879028b4729",
-          "usage": {"completion_tokens": 13, "prompt_tokens": 74, "total_tokens":
-          87}}'
-      reasoning:
-        status: unknown
-        checked_at: 1795044076
-        http_status: 200
-        latency_ms: 353
-        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
-          "OK", "role": "assistant"}}], "created": 1795044080, "id": "2026111907212001d5c0773f3547f2",
-          "model": "glm-4v-flash", "request_id": "2026111907212001d5c0773f3547f2",
-          "usage": {"completion_tokens": 2, "prompt_tokens": 64, "total_tokens": 66}}'
-      vision:
-        status: supported
-        checked_at: 1795044076
-        http_status: 200
-        latency_ms: 465
-        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
-          "OK", "role": "assistant"}}], "created": 1795044080, "id": "20261119072120ec0fdacc54944891",
-          "model": "glm-4v-flash", "request_id": "20261119072120ec0fdacc54944891",
-          "usage": {"completion_tokens": 2, "prompt_tokens": 67, "total_tokens": 69}}'
-    provider_type: openai_compatible
-  aliyun-qwen3.8-flash:
-    id: aliyun-qwen3.8-flash
-    provider: aliyun-qwen
-    litellm_model: openai/qwen3.8-flash
-    public_model: aliyun-qwen3.8-flash
-    externally_exposed: true
-    enabled: true
-    context_window_tokens: 260000
-    capabilities:
-    - chat
-    - streaming
-    - json
-    - reasoning
-    - tools
-    - responses
-    protocol_support:
-      responses:
-        status: supported
-        checked_at: 1795044083
-        http_status: 400
-        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/responses
-        latency_ms: 180
-        detail: '{"code": "Arrearage", "message": "Access denied, please make sure
-          your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "request_id": "5fe9688f-343b-9b7a-86ee-b188e5430fd9"}'
-        last_error: '{"code": "Arrearage", "message": "Access denied, please make
-          sure your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "request_id": "5fe9688f-343b-9b7a-86ee-b188e5430fd9"}'
-        last_error_http: 400
-        retried_429: false
-      chat:
-        status: supported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 343
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "fb3cb307-c2a8-92ca-a8a6-8bd0355114dd"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "fb3cb307-c2a8-92ca-a8a6-8bd0355114dd"}'
-        last_error_http: 403
-        retried_429: false
-      streaming:
-        status: supported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 287
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "99730493-fb54-964c-ade2-d21b7179783b"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "99730493-fb54-964c-ade2-d21b7179783b"}'
-        last_error_http: 403
-        retried_429: false
-      tools:
-        status: supported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 306
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "0cbf63be-de3e-9140-8a1c-61498eb84c62"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "0cbf63be-de3e-9140-8a1c-61498eb84c62"}'
-        last_error_http: 403
-        retried_429: false
-      json:
-        status: supported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 286
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "4cbf62d8-7048-9e38-b70f-c2554886dac7"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "4cbf62d8-7048-9e38-b70f-c2554886dac7"}'
-        last_error_http: 403
-        retried_429: false
-      reasoning:
-        status: supported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 292
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "12f11c36-22a1-9bc7-a78d-a6fb5d4643a0"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "12f11c36-22a1-9bc7-a78d-a6fb5d4643a0"}'
-        last_error_http: 403
-        retried_429: false
-      vision:
-        status: unsupported
-        checked_at: 1795044083
-        http_status: 403
-        latency_ms: 319
-        detail: '{"error": {"message": "Access to model denied. Please make sure you
-          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "3adb5c27-6090-97c1-a110-1eeb0d9b9a0e"}'
-        last_error: '{"error": {"message": "Access to model denied. Please make sure
-          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
-          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "3adb5c27-6090-97c1-a110-1eeb0d9b9a0e"}'
-        last_error_http: 403
-        retried_429: false
-    provider_type: openai_compatible
+    provider: agnes-official
+    provider_type: agnes
+    public_model: agnes-flash
+    quota_429_policy:
+      label: Agnes 今日文本配额用完（按报错中的 Try again after 时刻封禁，否则次日 0 点）
+      match:
+      - today's text quota
+      - limited to 1 request every
+      mode: until_reset
+      reset_hint: error_text
+      scope: channel
+    retry_policy:
+      max_retries: 3
+    supported_params: []
   aliyun-qwen3.7-flash:
-    id: aliyun-qwen3.7-flash
-    provider: aliyun-qwen
-    litellm_model: openai/qwen3.7-flash
-    public_model: aliyun-qwen3.7-flash
-    externally_exposed: true
-    enabled: true
-    context_window_tokens: 260000
     capabilities:
     - chat
     - streaming
     - json
     - reasoning
     - tools
+    context_window_tokens: 260000
+    enabled: true
+    externally_exposed: true
+    id: aliyun-qwen3.7-flash
+    litellm_model: openai/qwen3.7-flash
     protocol_support:
-      responses:
-        status: unsupported
-        checked_at: 1795044086
-        http_status: 400
-        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/responses
-        latency_ms: 191
-        detail: '{"code": "Arrearage", "message": "Access denied, please make sure
-          your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "request_id": "565e8b26-0c1d-966d-ada6-64b59466bf6d"}'
-        last_error: '{"code": "Arrearage", "message": "Access denied, please make
-          sure your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "request_id": "565e8b26-0c1d-966d-ada6-64b59466bf6d"}'
-        last_error_http: 400
-        retried_429: false
       chat:
-        status: error
         checked_at: 1795307730
-        http_status: 400
-        latency_ms: 239
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
           "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-3ce7673a-78e1-9e8d-985e-277e454d6aaa",
           "request_id": "3ce7673a-78e1-9e8d-985e-277e454d6aaa"}'
-      streaming:
-        status: error
-        checked_at: 1795307730
         http_status: 400
-        latency_ms: 483
-        detail: '{"error": {"message": "Access denied, please make sure your account
-          is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-adab3772-5b58-9794-aa13-762db19e43de",
-          "request_id": "adab3772-5b58-9794-aa13-762db19e43de"}'
-      tools:
+        latency_ms: 239
         status: error
-        checked_at: 1795307730
-        http_status: 400
-        latency_ms: 365
-        detail: '{"error": {"message": "Access denied, please make sure your account
-          is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
-          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-5c0f498d-9755-9f1e-b6e4-4a21aad9de56",
-          "request_id": "5c0f498d-9755-9f1e-b6e4-4a21aad9de56"}'
       json:
-        status: error
         checked_at: 1795307730
-        http_status: 400
-        latency_ms: 306
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
           "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-bc59ad31-ae5d-9fc8-b401-4ec02623c60a",
           "request_id": "bc59ad31-ae5d-9fc8-b401-4ec02623c60a"}'
-      reasoning:
-        status: error
-        checked_at: 1795307730
         http_status: 400
-        latency_ms: 209
+        latency_ms: 306
+        status: error
+      reasoning:
+        checked_at: 1795307730
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
           "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-4cf3b181-0f3c-9d08-9481-aa4d5ba86f5d",
           "request_id": "4cf3b181-0f3c-9d08-9481-aa4d5ba86f5d"}'
-      vision:
-        status: error
-        checked_at: 1795307730
         http_status: 400
-        latency_ms: 219
+        latency_ms: 209
+        status: error
+      responses:
+        checked_at: 1795044086
+        detail: '{"code": "Arrearage", "message": "Access denied, please make sure
+          your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "request_id": "565e8b26-0c1d-966d-ada6-64b59466bf6d"}'
+        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/responses
+        http_status: 400
+        last_error: '{"code": "Arrearage", "message": "Access denied, please make
+          sure your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "request_id": "565e8b26-0c1d-966d-ada6-64b59466bf6d"}'
+        last_error_http: 400
+        latency_ms: 191
+        retried_429: false
+        status: unsupported
+      streaming:
+        checked_at: 1795307730
+        detail: '{"error": {"message": "Access denied, please make sure your account
+          is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-adab3772-5b58-9794-aa13-762db19e43de",
+          "request_id": "adab3772-5b58-9794-aa13-762db19e43de"}'
+        http_status: 400
+        latency_ms: 483
+        status: error
+      tools:
+        checked_at: 1795307730
+        detail: '{"error": {"message": "Access denied, please make sure your account
+          is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-5c0f498d-9755-9f1e-b6e4-4a21aad9de56",
+          "request_id": "5c0f498d-9755-9f1e-b6e4-4a21aad9de56"}'
+        http_status: 400
+        latency_ms: 365
+        status: error
+      vision:
+        checked_at: 1795307730
         detail: '{"error": {"message": "Access denied, please make sure your account
           is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
           "type": "Arrearage", "param": null, "code": "Arrearage"}, "id": "chatcmpl-26e5faa6-b4cf-9572-bc37-6a39ba125ef6",
           "request_id": "26e5faa6-b4cf-9572-bc37-6a39ba125ef6"}'
+        http_status: 400
+        latency_ms: 219
+        status: error
+    provider: aliyun-qwen
     provider_type: openai_compatible
+    public_model: aliyun-qwen3.7-flash
+  aliyun-qwen3.8-flash:
+    capabilities:
+    - chat
+    - streaming
+    - json
+    - reasoning
+    - tools
+    - responses
+    context_window_tokens: 260000
+    enabled: true
+    externally_exposed: true
+    id: aliyun-qwen3.8-flash
+    litellm_model: openai/qwen3.8-flash
+    protocol_support:
+      chat:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "fb3cb307-c2a8-92ca-a8a6-8bd0355114dd"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "fb3cb307-c2a8-92ca-a8a6-8bd0355114dd"}'
+        last_error_http: 403
+        latency_ms: 343
+        retried_429: false
+        status: supported
+      json:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "4cbf62d8-7048-9e38-b70f-c2554886dac7"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "4cbf62d8-7048-9e38-b70f-c2554886dac7"}'
+        last_error_http: 403
+        latency_ms: 286
+        retried_429: false
+        status: supported
+      reasoning:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "12f11c36-22a1-9bc7-a78d-a6fb5d4643a0"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "12f11c36-22a1-9bc7-a78d-a6fb5d4643a0"}'
+        last_error_http: 403
+        latency_ms: 292
+        retried_429: false
+        status: supported
+      responses:
+        checked_at: 1795044083
+        detail: '{"code": "Arrearage", "message": "Access denied, please make sure
+          your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "request_id": "5fe9688f-343b-9b7a-86ee-b188e5430fd9"}'
+        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/responses
+        http_status: 400
+        last_error: '{"code": "Arrearage", "message": "Access denied, please make
+          sure your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment",
+          "request_id": "5fe9688f-343b-9b7a-86ee-b188e5430fd9"}'
+        last_error_http: 400
+        latency_ms: 180
+        retried_429: false
+        status: supported
+      streaming:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "99730493-fb54-964c-ade2-d21b7179783b"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "99730493-fb54-964c-ade2-d21b7179783b"}'
+        last_error_http: 403
+        latency_ms: 287
+        retried_429: false
+        status: supported
+      tools:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "0cbf63be-de3e-9140-8a1c-61498eb84c62"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "0cbf63be-de3e-9140-8a1c-61498eb84c62"}'
+        last_error_http: 403
+        latency_ms: 306
+        retried_429: false
+        status: supported
+      vision:
+        checked_at: 1795044083
+        detail: '{"error": {"message": "Access to model denied. Please make sure you
+          are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "3adb5c27-6090-97c1-a110-1eeb0d9b9a0e"}'
+        http_status: 403
+        last_error: '{"error": {"message": "Access to model denied. Please make sure
+          you are eligible for using the model.", "type": "AccessDenied.Unpurchased",
+          "param": null, "code": "AccessDenied.Unpurchased"}, "request_id": "3adb5c27-6090-97c1-a110-1eeb0d9b9a0e"}'
+        last_error_http: 403
+        latency_ms: 319
+        retried_429: false
+        status: unsupported
+    provider: aliyun-qwen
+    provider_type: openai_compatible
+    public_model: aliyun-qwen3.8-flash
   deepseek-official-deepseek-flash:
-    id: deepseek-official-deepseek-flash
-    provider: deepseek-official
-    litellm_model: openai/deepseek-flash
-    public_model: deepseek-official-deepseek-flash
-    context_window_tokens: 1048576
-    max_output_tokens: 393216
-    max_output_tokens_source: measured
     capabilities:
     - chat
     - streaming
@@ -1343,12 +501,19 @@ channels:
     - reasoning
     - vision
     - responses
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    enabled: true
+    externally_exposed: true
+    id: deepseek-official-deepseek-flash
+    limits_verified_at: 1795049512.415501
+    litellm_model: openai/deepseek-flash
+    max_output_tokens: 393216
+    max_output_tokens_source: measured
     protocol_support:
       chat:
-        status: supported
         checked_at: 1795044090
-        http_status: 200
-        latency_ms: 652
         detail: '{"id": "87e20361-1a40-4471-873d-c2a7d351daab", "object": "chat.completion",
           "created": 1795044090, "model": "deepseek-flash", "choices": [{"index":
           0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
@@ -1356,31 +521,11 @@ channels:
           null, "finish_reason": "length"}], "usage": {"prompt_tokens": 35, "completion_tokens":
           16, "total_tokens": 51, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details":
           {"reasonin'
-      streaming:
-        status: supported
-        checked_at: 1795044090
         http_status: 200
-        latency_ms: 205
-        detail: 'data: {"id":"8a8542bd-3210-499c-999e-65ed2d104cc0","object":"chat.completion.chunk","created":1795044091,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
-
-          '
-      tools:
+        latency_ms: 652
         status: supported
-        checked_at: 1795044090
-        http_status: 200
-        latency_ms: 659
-        detail: '{"id": "3b0b7cc4-9175-4ecf-aa0d-81deb0067029", "object": "chat.completion",
-          "created": 1795044091, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "I''ll confirm the tool works
-          and then reply.", "reasoning_content": "", "tool_calls": [{"index": 0, "id":
-          "call_00_ET_E4pdRaf3KMYK9YcMJq7R7870", "type": "function", "function": {"name":
-          "flex_probe_noop", "arguments": "{}"}}]}, "logprobs": null, "finish_reason":
-          "tool_calls"}], "usage": {"prompt_tokens":'
       json:
-        status: supported
         checked_at: 1795044090
-        http_status: 200
-        latency_ms: 890
         detail: '{"id": "e104f8d2-e4a6-48a9-b06c-3d89a38da204", "object": "chat.completion",
           "created": 1795044092, "model": "deepseek-flash", "choices": [{"index":
           0, "message": {"role": "assistant", "content": "{\"ok\":true}", "reasoning_content":
@@ -1388,11 +533,11 @@ channels:
           strictly adhere schema. User says Return a json object with ok true. So
           final exactly JSON object."}, "logprobs": null, "finish_reason": "stop"}],
           "usage": {"prompt_tokens": 64, "completion_toke'
-      reasoning:
-        status: unknown
-        checked_at: 1795044090
         http_status: 200
-        latency_ms: 527
+        latency_ms: 890
+        status: supported
+      reasoning:
+        checked_at: 1795044090
         detail: '{"id": "0fca7999-38e2-406a-9e79-d362456663b5", "object": "chat.completion",
           "created": 1795044093, "model": "deepseek-flash", "choices": [{"index":
           0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
@@ -1400,24 +545,11 @@ channels:
           35, "completion_tokens": 2, "total_tokens": 37, "prompt_tokens_details":
           {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens":
           0}, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tok'
-      vision:
-        status: supported
-        checked_at: 1795044090
         http_status: 200
-        latency_ms: 926
-        detail: '{"id": "6a935d08-8202-405a-9cef-818d81ef9d2b", "object": "chat.completion",
-          "created": 1795044093, "model": "deepseek-flash", "choices": [{"index":
-          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
-          "The user wants me to reply with exactly \"OK\".\nThe image provided is
-          just a solid pinkish/red color block. It doesn''t contain any text or specific
-          instruction.\nThe instruction is just \"Reply with exactly OK.\"\nI will
-          output \"OK\"."}, "logprobs": null, "finish_reason": "s'
+        latency_ms: 527
+        status: unknown
       responses:
-        status: supported
         checked_at: 1795044090
-        http_status: 200
-        endpoint: https://api.deepseek.com/responses
-        latency_ms: 678
         detail: '{"id": "b245856c-e5ef-45dd-abbd-132adcf0f64f", "object": "response",
           "created_at": 1795044094, "status": "completed", "background": false, "completed_at":
           1795044094, "content_filters": null, "error": null, "frequency_penalty":
@@ -1425,309 +557,761 @@ channels:
           32, "max_tool_calls": null, "model": "deepseek-flash", "moderation": null,
           "output": [{"type": "reasoning", "id": "fee487ff-3f88-4ca8-a380-eaf5876d1dd6",
           "status": "completed", "content": [{"type"'
+        endpoint: https://api.deepseek.com/responses
+        http_status: 200
+        latency_ms: 678
+        status: supported
+      streaming:
+        checked_at: 1795044090
+        detail: 'data: {"id":"8a8542bd-3210-499c-999e-65ed2d104cc0","object":"chat.completion.chunk","created":1795044091,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
+
+          '
+        http_status: 200
+        latency_ms: 205
+        status: supported
+      tools:
+        checked_at: 1795044090
+        detail: '{"id": "3b0b7cc4-9175-4ecf-aa0d-81deb0067029", "object": "chat.completion",
+          "created": 1795044091, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "I''ll confirm the tool works
+          and then reply.", "reasoning_content": "", "tool_calls": [{"index": 0, "id":
+          "call_00_ET_E4pdRaf3KMYK9YcMJq7R7870", "type": "function", "function": {"name":
+          "flex_probe_noop", "arguments": "{}"}}]}, "logprobs": null, "finish_reason":
+          "tool_calls"}], "usage": {"prompt_tokens":'
+        http_status: 200
+        latency_ms: 659
+        status: supported
+      vision:
+        checked_at: 1795044090
+        detail: '{"id": "6a935d08-8202-405a-9cef-818d81ef9d2b", "object": "chat.completion",
+          "created": 1795044093, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
+          "The user wants me to reply with exactly \"OK\".\nThe image provided is
+          just a solid pinkish/red color block. It doesn''t contain any text or specific
+          instruction.\nThe instruction is just \"Reply with exactly OK.\"\nI will
+          output \"OK\"."}, "logprobs": null, "finish_reason": "s'
+        http_status: 200
+        latency_ms: 926
+        status: supported
+    provider: deepseek-official
+    public_model: deepseek-official-deepseek-flash
+  deepseek-official-deepseek-v4-flash:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    - vision
     chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    context_window_source: metadata
-    limits_verified_at: 1795049512.415501
-  sensenova-glm-5-2:
-    id: sensenova-glm-5-2
-    provider: sensenova
-    litellm_model: openai/glm-5.2
-    public_model: sensenova-glm-5-2
     context_window_tokens: 1000000
+    enabled: true
+    externally_exposed: true
+    id: deepseek-official-deepseek-v4-flash
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: null
+      quota_cooldown_seconds: 18000
+      rpm: null
+      tpm: null
+      window_seconds: 18000
+    litellm_model: openai/deepseek-v4-flash
+    max_output_tokens: 393216
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795043544
+        detail: '{"id": "cf3384b2-20df-4f5e-9081-b1af31c5d0fb", "object": "chat.completion",
+          "created": 1795043544, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
+          "We need answer exactly OK. Need no more."}, "logprobs": null, "finish_reason":
+          "stop"}], "usage": {"prompt_tokens": 35, "completion_tokens": 12, "total_tokens":
+          47, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details":
+          {"reasoning_tokens": 10}, "prompt_ca'
+        http_status: 200
+        latency_ms: 958
+        status: supported
+      json:
+        checked_at: 1795043544
+        detail: '{"id": "22231df1-d0f3-49ca-aade-17a5a1d12423", "object": "chat.completion",
+          "created": 1795043546, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "{\"ok\":true}", "reasoning_content":
+          "We need answer valid json object with ok true. Need comply. Probably {\"ok\":true}.
+          Ensure no extra."}, "logprobs": null, "finish_reason": "stop"}], "usage":
+          {"prompt_tokens": 64, "completion_tokens": 29, "total_tokens": 93, "prompt_tokens_details":
+          {"cached_tokens"'
+        http_status: 200
+        latency_ms: 622
+        status: supported
+      reasoning:
+        checked_at: 1795043544
+        detail: '{"id": "213a7e34-ae5a-4c62-b889-f0f3ed8950ee", "object": "chat.completion",
+          "created": 1795043546, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
+          ""}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens":
+          35, "completion_tokens": 2, "total_tokens": 37, "prompt_tokens_details":
+          {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens":
+          0}, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tok'
+        http_status: 200
+        latency_ms: 729
+        status: unknown
+      responses:
+        checked_at: 1795043544
+        detail: '{"id": "0b567cc0-e5b9-43b1-9c4a-c3774b97e6e8", "object": "response",
+          "created_at": 1795043547, "status": "completed", "background": false, "completed_at":
+          1795043548, "content_filters": null, "error": null, "frequency_penalty":
+          0.0, "incomplete_details": null, "instructions": null, "max_output_tokens":
+          32, "max_tool_calls": null, "model": "deepseek-flash", "moderation": null,
+          "output": [{"type": "reasoning", "id": "fd03d4b2-a717-4f4c-8583-36ca6aded6fc",
+          "status": "completed", "content": [{"type"'
+        endpoint: https://api.deepseek.com/responses
+        http_status: 200
+        latency_ms: 350
+        status: supported
+      streaming:
+        checked_at: 1795043544
+        detail: 'data: {"id":"c2694159-03aa-46ec-aeca-13288f2c7ca4","object":"chat.completion.chunk","created":1795043545,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
+
+          '
+        http_status: 200
+        latency_ms: 132
+        status: supported
+      tools:
+        checked_at: 1795043544
+        detail: '{"id": "b2c3c649-62ce-4245-b3fa-1e7c1c1a9827", "object": "chat.completion",
+          "created": 1795043545, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "I''ll run the no-op probe
+          now.", "reasoning_content": "", "tool_calls": [{"index": 0, "id": "call_00_ET_hQKcOGmK5j8QAeBX8uiA7420",
+          "type": "function", "function": {"name": "flex_probe_noop", "arguments":
+          "{}"}}]}, "logprobs": null, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens":
+          292, "complet'
+        http_status: 200
+        latency_ms: 584
+        status: supported
+      vision:
+        checked_at: 1795043544
+        detail: '{"id": "12c8fa67-bb12-4baa-ae71-c1a81397e320", "object": "chat.completion",
+          "created": 1795043547, "model": "deepseek-flash", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
+          "The user wants me to reply with exactly \"OK\".\nThere is an image attached,
+          but the instruction is clear and overrides any image content for the response
+          format.\nI will just output \"OK\"."}, "logprobs": null, "finish_reason":
+          "stop"}], "usage": {"prompt_tokens": 219, "compl'
+        http_status: 200
+        latency_ms: 580
+        status: supported
+    provider: deepseek-official
+    provider_type: openai_compatible
+    public_model: deepseek-official-deepseek-v4-flash
+    retry_policy:
+      backoff:
+        base_seconds: 10
+        exponential: false
+        max_seconds: 120
+      max_retries: 1
+    supported_params:
+    - reasoning_effort
+  nvidia-deepseek-v3.2:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    context_window_tokens: 131072
+    externally_exposed: true
+    id: nvidia-deepseek-v3.2
+    litellm_model: deepseek-ai/deepseek-v3.2
+    max_output_tokens: 16384
+    provider: nvidia-build
+    public_model: nvidia-deepseek-v3.2
+  nvidia-glm-5.1:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    context_window_tokens: 131072
+    externally_exposed: true
+    id: nvidia-glm-5.1
+    litellm_model: THUDM/glm-5-1
+    max_output_tokens: 16384
+    provider: nvidia-build
+    public_model: nvidia-glm-5.1
+  nvidia-kimi-k2.5:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - vision
+    context_window_tokens: 1048576
+    externally_exposed: true
+    id: nvidia-kimi-k2.5
+    litellm_model: moonshotai/kimi-k2.5
+    max_output_tokens: 131072
+    provider: nvidia-build
+    public_model: nvidia-kimi-k2.5
+  opencode-go-deepseek-v4-flash:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    - vision
+    context_window_tokens: 1000000
+    externally_exposed: true
+    id: opencode-go-deepseek-v4-flash
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: null
+      quota_cooldown_seconds: 18000
+      rpm: null
+      tpm: null
+      window_seconds: 18000
+    litellm_model: openai/deepseek-v4-flash
+    provider: opencode-go
+    provider_type: openai_compatible
+    public_model: opencode-go-deepseek-v4-flash
+    retry_policy:
+      backoff:
+        base_seconds: 3
+        max_seconds: 30
+      max_retries: 2
+    supported_params:
+    - reasoning_effort
+  opencode-go-kimi-k2-6:
+    capabilities:
+    - chat
+    - streaming
+    - reasoning
+    chn_content_policy_fallback: false
+    context_window_tokens: 1000000
+    enabled: true
+    externally_exposed: true
+    id: opencode-go-kimi-k2-6
+    litellm_model: openai/kimi-k2.6
+    protocol_support:
+      chat:
+        checked_at: 1788312584
+        detail: '{"id": "gen-1788312585-b41ITZ1ihuZGvdl7DywK", "object": "chat.completion",
+          "created": 1788312585, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
+          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
+          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
+          no", "format": "unknown", "index": 0}]'
+        http_status: 200
+        latency_ms: 2112
+        status: supported
+      json:
+        checked_at: 1788312584
+        detail: '{"id": "gen-1788312590-gshRbn1ien2C8WkWz8b2", "object": "chat.completion",
+          "created": 1788312590, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants a JSON object with \"ok\":
+          true. I need to", "reasoning_details": [{"type": "reasoning.text", "text":
+          "The user wants a JSON object with \"ok\": true. I need to", "format": "unknown",
+          "index": 0}]}}], "usage": {"pr'
+        http_status: 200
+        latency_ms: 2359
+        status: unknown
+      reasoning:
+        checked_at: 1788312584
+        detail: '{"id": "gen-1788312592-FxbDGrMzZiYSehdl9b0l", "object": "chat.completion",
+          "created": 1788312592, "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason":
+          "length", "logprobs": null, "message": {"role": "assistant", "content":
+          null, "refusal": null, "reasoning": "The user wants me to reply with exactly
+          \"OK\". No punctuation, no", "reasoning_details": [{"type": "reasoning.text",
+          "text": "The user wants me to reply with exactly \"OK\". No punctuation,
+          no", "format": "unknown", "index": 0}]'
+        http_status: 200
+        latency_ms: 2350
+        status: supported
+      responses:
+        checked_at: 1793836811
+        detail: '{"type": "error", "error": {"type": "MissingSessionID", "message":
+          "Request is missing x-opencode-session and cannot be routed efficiently.
+          Please see https://opencode.ai/v2/docs/console/go/#where-can-i-use-it"}}'
+        endpoint: https://opencode.ai/zen/go/v1/responses
+        http_status: 400
+        latency_ms: 585
+        status: error
+      streaming:
+        checked_at: 1788312584
+        detail: ': keep-alive
+
+
+          data: {"id":"gen-1788312587-3C17jYWywEow9IteXZ0c","object":"chat.completion.chunk","created":1788312587,"model":"kimi-k2.6","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":"The","reasoning_details":[{"type":"reasoning.text","text":"The","format":"unknown","index":0}]}}]}
+
+          '
+        http_status: 200
+        latency_ms: 1877
+        status: supported
+      tools:
+        checked_at: 1788312584
+        detail: '{"error": {"type": "server_error", "message": "Error from provider
+          (Console Go): Upstream request failed: [400] Provider returned error"}}'
+        http_status: 400
+        latency_ms: 1324
+        status: error
+    provider: opencode-go
+    public_model: opencode-go-kimi-k2-6
+  sensenova-deepseek-flash:
+    capabilities:
+    - chat
+    - streaming
+    - responses
+    - json
+    - reasoning
+    - tools
+    - vision
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    enabled: true
+    externally_exposed: true
+    id: sensenova-deepseek-flash
+    limits_verified_at: 1795049511.5010052
+    litellm_model: openai/deepseek-flash
+    max_output_tokens: 384000
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3382
+        retried_429: true
+        status: supported
+      json:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3593
+        retried_429: true
+        status: supported
+      reasoning:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3310
+        retried_429: true
+        status: supported
+      responses:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "rps exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 429
+        last_error: '{"error": {"message": "rps exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 142
+        retried_429: false
+        status: supported
+      streaming:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3309
+        retried_429: true
+        status: supported
+      tools:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3298
+        retried_429: true
+        status: supported
+      vision:
+        checked_at: 1795044039
+        detail: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "tpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3291
+        retried_429: true
+        status: supported
+    provider: sensenova
+    public_model: sensenova-deepseek-flash
+  sensenova-deepseek-v4-flash:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    - vision
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    externally_exposed: true
+    id: sensenova-deepseek-v4-flash
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: 500
+      quota_cooldown_seconds: 3600
+      rpm: 3
+      tpm: null
+      window_seconds: 18000
+    limits_verified_at: 1795049508.168004
+    litellm_model: openai/deepseek-v4-flash
+    max_output_tokens: 384000
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795043378
+        detail: '{"id": "d7d5efc6213c4b73a502a1ce31c0627c", "created": 1795043378,
+          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "OK", "reasoning_content":
+          "We need to respond exactly \"OK\". So final is OK."}, "finish_reason":
+          "stop"}], "usage": {"prompt_tokens": 88, "completion_tokens": 15, "total_tokens":
+          103, "completion_tokens_details": {"reasoning_tokens": 13}, "prompt_tokens_details":
+          {"cached_tokens": 0}}, "request_id": "d7'
+        http_status: 200
+        latency_ms: 1236
+        status: supported
+      json:
+        checked_at: 1795043378
+        detail: '{"id": "afb307b8234f43fe96954ebfa899e7be", "created": 1795043384,
+          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "{\"ok\": true}", "reasoning_content":
+          "We need to return a JSON object with \"ok\": true. The instruction says
+          \"Return a json object with ok true.\" So output should be {\"ok\": true}."},
+          "finish_reason": "stop"}], "usage": {"prompt_tokens": 95, "completion_tokens":
+          40, "total_tokens": 135, "completion_'
+        http_status: 200
+        latency_ms: 1071
+        status: supported
+      reasoning:
+        checked_at: 1795043378
+        detail: '{"id": "eff106f164084f179bb94f5f4e754b9e", "created": 1795043385,
+          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "", "reasoning_content":
+          "We need to reply with exactly \"OK.\" as per instruction. The user said"},
+          "finish_reason": "length"}], "usage": {"prompt_tokens": 9, "completion_tokens":
+          16, "total_tokens": 25, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens_details": {"cached_tokens": 0}}'
+        http_status: 200
+        latency_ms: 1281
+        status: supported
+      responses:
+        checked_at: 1795043378
+        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 429
+        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 142
+        retried_429: false
+        status: supported
+      streaming:
+        checked_at: 1795043378
+        detail: 'data: {"id":"c345e6e4de984b3980934089ebac1fb0","created":1795043380,"model":"deepseek-v4-flash","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"request_id":"c345e6e4de984b3980934089ebac1fb0"}
+
+          '
+        http_status: 200
+        latency_ms: 2255
+        status: supported
+      tools:
+        checked_at: 1795043378
+        detail: '{"id": "9b056443a3984e05addfffaaec526f8a", "created": 1795043382,
+          "model": "deepseek-v4-flash", "object": "chat.completion", "choices": [{"index":
+          0, "message": {"role": "assistant", "content": "", "reasoning_content":
+          "The user wants me to use the flex_probe_noop tool to confirm tool calling
+          works, then reply OK. Let me do that.", "tool_calls": [{"index": 0, "id":
+          "call_f10ad1d9aa3449339b5658c0", "type": "function", "function": {"name":
+          "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason":'
+        http_status: 200
+        latency_ms: 1807
+        status: supported
+      vision:
+        checked_at: 1795043378
+        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3465
+        retried_429: true
+        status: supported
+    provider: sensenova
+    provider_type: openai_compatible
+    public_model: sensenova-deepseek-v4-flash
+    quota_429_policy:
+      cooldown_seconds: 21600
+      label: Sensenova 套餐额度耗尽（无重置时间，冷却 6 小时）
+      match:
+      - Allocated quota exceeded
+      - increase your quota limit
+      mode: cooldown
+      scope: channel
+    retry_policy:
+      backoff:
+        base_seconds: 5
+        exponential: true
+        max_seconds: 60
+      max_retries: 3
+    supported_params:
+    - reasoning_effort
+  sensenova-flash-lite:
+    capabilities:
+    - chat
+    - code
+    - streaming
+    - tools
+    - json
+    - reasoning
+    - responses
+    - fim
+    - vision
+    context_window_source: metadata
+    context_window_tokens: 262144
+    externally_exposed: true
+    id: sensenova-flash-lite
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      rpm: null
+      tpm: null
+      window_seconds: 18000
+    limits_verified_at: 1795049510.176364
+    litellm_model: openai/sensenova-6.8-flash-lite
+    max_output_tokens: 65536
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795043569
+        detail: '{"id": "f0c0613a63224bd38cc14fed05d7147d", "created": 1795043569,
+          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning": "Thinking:\n\n1.  **Analyze
+          the Request:** The user wants me"}, "finish_reason": "length"}], "usage":
+          {"prompt_tokens": 96, "completion_tokens": 16, "total_tokens": 112, "completion_tokens_details":
+          {"reasoning_tokens": 16}, "prompt_tokens_details": {"cached_tokens": 0,
+          "audio_tokens": 0}}, "requ'
+        http_status: 200
+        latency_ms: 656
+        status: supported
+      json:
+        checked_at: 1795043569
+        detail: '{"id": "37382b3516764f1f964214e21c531f25", "created": 1795043572,
+          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "{\n  \"ok\":
+          true\n}", "reasoning": "We need answer user: \"Return a json object with
+          ok true.\" Need final valid JSON only likely {\"ok\":true}. Ensure no markdown.\n"},
+          "finish_reason": "stop"}], "usage": {"prompt_tokens": 61, "completion_tokens":
+          41, "total_tokens": 102, "completion_tokens_deta'
+        http_status: 200
+        latency_ms: 1457
+        status: supported
+      reasoning:
+        checked_at: 1795043569
+        detail: '{"id": "50802beda52f4e408cd88e1c9d692726", "created": 1795043573,
+          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "\n\nOK", "reasoning":
+          "The user is asking me to reply with exactly \"OK\".\n"}, "finish_reason":
+          "length"}], "usage": {"prompt_tokens": 88, "completion_tokens": 16, "total_tokens":
+          104, "completion_tokens_details": {"reasoning_tokens": 13}, "prompt_tokens_details":
+          {"cached_tokens": 0, "audio_toke'
+        http_status: 200
+        latency_ms: 695
+        status: supported
+      responses:
+        checked_at: 1795043569
+        detail: '{"id": "chatcmpl-a8d871340ca34eccb7ac0579572b6a56", "object": "response",
+          "created_at": 1795043575, "status": "completed", "error": null, "incomplete_details":
+          null, "instructions": null, "max_output_tokens": null, "model": "sensenova-6.8-flash-lite",
+          "output": [{"id": "rs_chatcmpl-a8d871340ca34eccb7ac0579572b6a56_0", "summary":
+          [{"text": "The user wants me to reply with exactly \"OK\". I will do so.\n",
+          "type": "summary_text"}], "type": "reasoning"}, {"content": [{"text": "\n\nOK",
+          "type": "out'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 200
+        latency_ms: 691
+        status: supported
+      streaming:
+        checked_at: 1795043569
+        detail: 'data: {"id":"b0ffc7f7cadb43dc97f40d29cc983566","created":1795043570,"model":"sensenova-6.8-flash-lite","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"b0ffc7f7cadb43dc97f40d29cc983566"}
+
+          '
+        http_status: 200
+        latency_ms: 751
+        status: supported
+      tools:
+        checked_at: 1795043569
+        detail: '{"id": "f8b42fa97a4e4731be60a80c144cbb12", "created": 1795043571,
+          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "\n\n", "reasoning":
+          "The user wants me to use the flex_probe_noop tool and then reply OK.\n",
+          "tool_calls": [{"index": 0, "id": "call_deafe85f225f405ab450d016", "type":
+          "function", "function": {"name": "flex_probe_noop", "arguments": "{}"}}]},
+          "finish_reason": "tool_calls"}], "usage": {"prompt_tok'
+        http_status: 200
+        latency_ms: 1125
+        status: supported
+      vision:
+        checked_at: 1795043569
+        detail: '{"id": "98cd86fcbf714c96bebdae1f395b527c", "created": 1795043574,
+          "model": "sensenova-6.8-flash-lite", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "\n\nOK", "reasoning":
+          "The user has provided an image that is a solid red square and asked me
+          to reply with exactly \"OK\".\n"}, "finish_reason": "stop"}], "usage": {"prompt_tokens":
+          162, "completion_tokens": 27, "total_tokens": 189, "completion_tokens_details":
+          {"reasoning_tokens": 23}, "prompt_t'
+        http_status: 200
+        latency_ms: 1022
+        status: supported
+    provider: sensenova
+    provider_type: openai_compatible
+    public_model: sensenova-flash-lite
+    retry_policy:
+      backoff:
+        base_seconds: 5
+        exponential: true
+        max_seconds: 60
+      max_retries: 3
+    supported_params:
+    - reasoning_effort
+  sensenova-glm-5-2:
     capabilities:
     - chat
     - streaming
     - tools
     - json
     - reasoning
+    chn_content_policy_fallback: false
+    context_window_tokens: 1000000
+    enabled: true
+    externally_exposed: true
+    id: sensenova-glm-5-2
+    litellm_model: openai/glm-5.2
     protocol_support:
       chat:
-        status: supported
         checked_at: 1795044097
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
         http_status: 400
+        last_error: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        last_error_http: 400
         latency_ms: 149
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error_http: 400
         retried_429: false
-      streaming:
         status: supported
-        checked_at: 1795044097
-        http_status: 400
-        latency_ms: 136
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error_http: 400
-        retried_429: false
-      tools:
-        status: supported
-        checked_at: 1795044097
-        http_status: 400
-        latency_ms: 149
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error_http: 400
-        retried_429: false
       json:
-        status: supported
         checked_at: 1795044097
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
         http_status: 400
+        last_error: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        last_error_http: 400
         latency_ms: 139
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-        last_error_http: 400
         retried_429: false
-      reasoning:
         status: supported
+      reasoning:
         checked_at: 1795044097
-        http_status: 400
-        latency_ms: 143
         detail: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
+        http_status: 400
         last_error: '{"error": {"message": "matched user group has no available model
           instance", "type": "failed_precondition_error", "code": "9"}}'
         last_error_http: 400
+        latency_ms: 143
         retried_429: false
-      vision:
-        status: error
+        status: supported
+      responses:
         checked_at: 1795307730
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 400
+        latency_ms: 147
+        status: error
+      streaming:
+        checked_at: 1795044097
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        http_status: 400
+        last_error: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        last_error_http: 400
+        latency_ms: 136
+        retried_429: false
+        status: supported
+      tools:
+        checked_at: 1795044097
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        http_status: 400
+        last_error: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
+        last_error_http: 400
+        latency_ms: 149
+        retried_429: false
+        status: supported
+      vision:
+        checked_at: 1795307730
+        detail: '{"error": {"message": "matched user group has no available model
+          instance", "type": "failed_precondition_error", "code": "9"}}'
         http_status: 400
         latency_ms: 197
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-      responses:
         status: error
-        checked_at: 1795307730
-        http_status: 400
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 147
-        detail: '{"error": {"message": "matched user group has no available model
-          instance", "type": "failed_precondition_error", "code": "9"}}'
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-  sensenova-kimi-k3:
-    id: sensenova-kimi-k3
     provider: sensenova
-    litellm_model: openai/kimi-k3
-    public_model: sensenova-kimi-k3
-    context_window_tokens: 1048576
-    capabilities:
-    - chat
-    - streaming
-    - tools
-    - json
-    - reasoning
-    - vision
-    - responses
-    protocol_support:
-      chat:
-        status: supported
-        checked_at: 1795044345
-        http_status: 200
-        latency_ms: 1408
-        detail: '{"id": "2484de8946c941a7b5a5f705a8304da3", "created": 1795044346,
-          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
-          "message": {"role": "assistant", "content": "", "reasoning_content": "The
-          user asked to reply with exactly OK. Final should be exactly OK, no"}, "finish_reason":
-          "length"}], "usage": {"prompt_tokens": 94, "completion_tokens": 16, "total_tokens":
-          110, "completion_tokens_details": {"reasoning_tokens": 16}, "prompt_tokens_details":
-          {"cached_tokens": 0}}, "servi'
-      streaming:
-        status: supported
-        checked_at: 1795044345
-        http_status: 200
-        latency_ms: 1179
-        detail: 'data: {"id":"e922b5ec8c7e4006ad0952b41b8f2a22","created":1795044348,"model":"kimi-k3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"},"finish_reason":null}],"service_tier":"default","request_id":"e922b5ec8c7e4006ad0952b41b8f2a22"}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795044345
-        http_status: 200
-        latency_ms: 1563
-        detail: '{"id": "fd02a7973f2748208cbe44dddf4fc28e", "created": 1795044349,
-          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
-          "message": {"role": "assistant", "content": "", "reasoning_content": "Need
-          use flex_probe_noop then reply OK. Do so. Then final OK.", "tool_calls":
-          [{"index": 0, "id": "flex_probe_noop_0_47b6709f", "type": "function", "function":
-          {"name": "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}],
-          "usage": {"prompt_tokens": 171, "completion_to'
-      json:
-        status: supported
-        checked_at: 1795044345
-        http_status: 200
-        latency_ms: 1614
-        detail: '{"id": "ec61953631b24c17ae70ad9a7c625c4c", "created": 1795044351,
-          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
-          "message": {"role": "assistant", "content": "{\"response_format\":\"json_object\"}",
-          "reasoning_content": "User wants JSON {\"ok\":true}. Need final raw JSON
-          only, no markdown. Ensure valid JSON object. Final exactly {\"ok\": true}."},
-          "finish_reason": "stop"}], "usage": {"prompt_tokens": 156, "completion_tokens":
-          40, "total_tokens": 196, "completion_tokens_'
-      reasoning:
-        status: supported
-        checked_at: 1795044345
-        http_status: 200
-        latency_ms: 1189
-        detail: '{"id": "4678c09b93dd4abbb00d69d73de2ee1b", "created": 1795044352,
-          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
-          "message": {"role": "assistant", "content": "", "reasoning_content": "The
-          user is asking for a simple reply of exactly \"OK\". The system prompt"},
-          "finish_reason": "length"}], "usage": {"prompt_tokens": 94, "completion_tokens":
-          16, "total_tokens": 110, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens_details": {"cached_tokens": 0}}, "se'
-      vision:
-        status: supported
-        checked_at: 1795044345
-        http_status: 429
-        latency_ms: 3306
-        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-      responses:
-        status: supported
-        checked_at: 1795044345
-        http_status: 429
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 234
-        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
-        retried_429: false
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    context_window_source: metadata
-    max_output_tokens: 65536
-    max_output_tokens_source: metadata
-    limits_verified_at: 1795049512.698387
-  sensenova-sensenova-6-8-flash:
-    id: sensenova-sensenova-6-8-flash
-    provider: sensenova
-    litellm_model: openai/sensenova-6.8-flash
-    public_model: sensenova-sensenova-6-8-flash
-    context_window_tokens: 262144
-    capabilities:
-    - chat
-    - streaming
-    - json
-    - reasoning
-    - vision
-    - responses
-    - tools
-    protocol_support:
-      chat:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 1713
-        detail: '{"id": "30c6c1488bea4fb4a950c4e0eecacb7f", "created": 1795044131,
-          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "reasoning": "Hmm, this user
-          seems to be testing my basic response capability with a simple instruction"},
-          "finish_reason": "length"}], "usage": {"prompt_tokens": 63, "completion_tokens":
-          16, "total_tokens": 79, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens_details": {"cached_tokens": 0, "a'
-      streaming:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 1252
-        detail: 'data: {"id":"9e029e2821754881bb8de9642a771e5b","created":1795044133,"model":"sensenova-6.8-flash","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"9e029e2821754881bb8de9642a771e5b"}
-
-          '
-      tools:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 2760
-        detail: '{"id": "4ba78a9fe3bb4dffa54a71775a34dc86", "created": 1795044134,
-          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "reasoning": "Okay, the user
-          wants me to use the flex_probe_noop tool to confirm tool calling works,
-          then reply OK. First, I need to recall that flex_probe_noop is described
-          as a no-op capability probe, meaning it probably doesn''t do anything but
-          test if tool calling functions properly.\n\nThe user explicitly aske'
-      json:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 944
-        detail: '{"id": "30fd5bdcb6164b83be088b152b401cd0", "created": 1795044137,
-          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "content": "{\"ok\": true}",
-          "reasoning": "The user wants a simple JSON object with `ok` set to `true`."},
-          "finish_reason": "stop"}], "usage": {"prompt_tokens": 71, "completion_tokens":
-          23, "total_tokens": 94, "completion_tokens_details": {"reasoning_tokens":
-          16}, "prompt_tokens_details": {"cached_tokens": 0, "aud'
-      reasoning:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 1710
-        detail: '{"id": "3a27968ffa2c4cc7bb97966f1fbb982a", "created": 1795044138,
-          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "reasoning": "Hmm, this user
-          seems to be testing my response capabilities with a simple \"OK"}, "finish_reason":
-          "length"}], "usage": {"prompt_tokens": 63, "completion_tokens": 16, "total_tokens":
-          79, "completion_tokens_details": {"reasoning_tokens": 16}, "prompt_tokens_details":
-          {"cached_tokens": 0, "audio_tokens'
-      vision:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        latency_ms: 1631
-        detail: '{"id": "afbb838f04a2445fb49e62162ceba23c", "created": 1795044139,
-          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
-          [{"index": 0, "message": {"role": "assistant", "reasoning": "Thinking Process:\n\n1.  **Analyze
-          the Request:**\n    *   Instruction: \"Reply with exactly OK.\"\n    *   Input:
-          An image (mostly red/pink) and the system context indicating I am SenseNova
-          (商量).\n    *   Constraint: The output must be *exactly* \"OK"}, "finish_reason":
-          "length"}], "usage": {"prompt'
-      responses:
-        status: supported
-        checked_at: 1795044131
-        http_status: 200
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 1091
-        detail: '{"id": "resp_9957873aa2694cbab2a749b0421e0010", "object": "response",
-          "created_at": 1795044141, "status": "incomplete", "error": null, "incomplete_details":
-          {"reason": "max_output_tokens"}, "instructions": null, "max_output_tokens":
-          32, "model": "sensenova-6.8-flash", "output": [{"id": "rs_resp_9957873aa2694cbab2a749b0421e0010",
-          "status": "incomplete", "summary": [{"text": "Okay, the user requested an
-          answer with only ''OK''. I need to ensure that my response is precise and
-          does not include any ex'
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    max_output_tokens: 131072
-    max_output_tokens_source: measured
-    limits_verified_at: 1795049512.8299809
-    context_window_source: metadata
+    public_model: sensenova-glm-5-2
   sensenova-glm-5-3:
-    id: sensenova-glm-5-3
-    provider: sensenova
-    litellm_model: openai/glm-5.3
-    public_model: sensenova-glm-5-3
-    context_window_tokens: 1048576
-    max_output_tokens: 131072
-    max_output_tokens_source: measured
     capabilities:
     - chat
     - streaming
@@ -1736,12 +1320,19 @@ channels:
     - reasoning
     - vision
     - responses
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    enabled: true
+    externally_exposed: true
+    id: sensenova-glm-5-3
+    limits_verified_at: 1795049512.9616451
+    litellm_model: openai/glm-5.3
+    max_output_tokens: 131072
+    max_output_tokens_source: measured
     protocol_support:
       chat:
-        status: supported
         checked_at: 1795044144
-        http_status: 200
-        latency_ms: 1163
         detail: '{"id": "d55031d479b74d6f9a552fd51873dd7e", "created": 1795044145,
           "model": "glm-5.3", "object": "chat.completion", "choices": [{"index": 0,
           "message": {"role": "assistant", "content": "OK", "reasoning_content": "The
@@ -1749,31 +1340,11 @@ channels:
           request. There''s nothing harmful about it. I should comply with exactly
           what they asked for."}, "finish_reason": "stop"}], "usage": {"prompt_tokens":
           17, "completion_tokens": 39, "total_tokens": 56, "completion_'
-      streaming:
-        status: supported
-        checked_at: 1795044144
         http_status: 200
-        latency_ms: 464
-        detail: 'data: {"id":"8b32f1a42b1f4d90bbe9b98ea0a095a2","created":1795044146,"model":"glm-5.3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"The"},"finish_reason":null}],"service_tier":"default","request_id":"8b32f1a42b1f4d90bbe9b98ea0a095a2"}
-
-          '
-      tools:
+        latency_ms: 1163
         status: supported
-        checked_at: 1795044144
-        http_status: 200
-        latency_ms: 1354
-        detail: '{"id": "baa96cb6a7c743a9b81e5f5f605b0334", "created": 1795044147,
-          "model": "glm-5.3", "object": "chat.completion", "choices": [{"index": 0,
-          "message": {"role": "assistant", "content": "", "reasoning_content": "The
-          user wants me to use the flex_probe_noop tool to confirm tool calling works,
-          then reply OK. Let me call the tool.", "tool_calls": [{"index": 0, "id":
-          "call_vl4tfb3yrrlkvndaru4njv0o", "type": "function", "function": {"name":
-          "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason": "to'
       json:
-        status: supported
         checked_at: 1795044144
-        http_status: 200
-        latency_ms: 1141
         detail: '{"id": "425e0fbc5ca645ed81cdee677d1a2ef9", "created": 1795044148,
           "model": "glm-5.3", "object": "chat.completion", "choices": [{"index": 0,
           "message": {"role": "assistant", "content": "{\"ok\": true}", "reasoning_content":
@@ -1781,275 +1352,698 @@ channels:
           "finish_reason": "stop"}], "usage": {"prompt_tokens": 25, "completion_tokens":
           23, "total_tokens": 48, "completion_tokens_details": {"reasoning_tokens":
           18}, "prompt_tokens_details": {"cached_tokens": 0}'
-      reasoning:
-        status: supported
-        checked_at: 1795044144
         http_status: 200
-        latency_ms: 825
+        latency_ms: 1141
+        status: supported
+      reasoning:
+        checked_at: 1795044144
         detail: '{"id": "2d33ecad27fd41d1b70b06d5b6f27839", "created": 1795044149,
           "model": "glm-5.3", "object": "chat.completion", "choices": [{"index": 0,
           "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
           "usage": {"prompt_tokens": 17, "completion_tokens": 2, "total_tokens": 19,
           "completion_tokens_details": {"reasoning_tokens": 1}, "prompt_tokens_details":
           {"cached_tokens": 0}}, "service_tier": "default", "request_id": "2d33ecad27fd41d1b70b06d5b6f27839"}'
-      vision:
+        http_status: 200
+        latency_ms: 825
         status: supported
-        checked_at: 1795044144
-        http_status: 429
-        latency_ms: 3327
-        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        retried_429: true
-        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
-          "code": "8"}}'
-        last_error_http: 429
       responses:
-        status: supported
         checked_at: 1795044144
-        http_status: 429
-        endpoint: https://token.sensenova.cn/v1/responses
-        latency_ms: 157
         detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
           "code": "8"}}'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 429
         last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
           "code": "8"}}'
         last_error_http: 429
+        latency_ms: 157
         retried_429: false
-    chn_content_policy_fallback: false
-    externally_exposed: true
-    enabled: true
-    context_window_source: metadata
-    limits_verified_at: 1795049512.9616451
-  # NVIDIA Build (NIM) free tier channels — 40 RPM, no cost
-  # Register at https://build.nvidia.com, get API key (nvapi-xxxx)
-  nvidia-deepseek-v3.2:
-    id: nvidia-deepseek-v3.2
-    provider: nvidia-build
-    litellm_model: deepseek-ai/deepseek-v3.2
-    public_model: nvidia-deepseek-v3.2
-    context_window_tokens: 131072
-    max_output_tokens: 16384
+        status: supported
+      streaming:
+        checked_at: 1795044144
+        detail: 'data: {"id":"8b32f1a42b1f4d90bbe9b98ea0a095a2","created":1795044146,"model":"glm-5.3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"The"},"finish_reason":null}],"service_tier":"default","request_id":"8b32f1a42b1f4d90bbe9b98ea0a095a2"}
+
+          '
+        http_status: 200
+        latency_ms: 464
+        status: supported
+      tools:
+        checked_at: 1795044144
+        detail: '{"id": "baa96cb6a7c743a9b81e5f5f605b0334", "created": 1795044147,
+          "model": "glm-5.3", "object": "chat.completion", "choices": [{"index": 0,
+          "message": {"role": "assistant", "content": "", "reasoning_content": "The
+          user wants me to use the flex_probe_noop tool to confirm tool calling works,
+          then reply OK. Let me call the tool.", "tool_calls": [{"index": 0, "id":
+          "call_vl4tfb3yrrlkvndaru4njv0o", "type": "function", "function": {"name":
+          "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason": "to'
+        http_status: 200
+        latency_ms: 1354
+        status: supported
+      vision:
+        checked_at: 1795044144
+        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3327
+        retried_429: true
+        status: supported
+    provider: sensenova
+    public_model: sensenova-glm-5-3
+  sensenova-kimi-k3:
     capabilities:
     - chat
-    - code
-    - streaming
-    - tools
-    - json
-    - reasoning
-  nvidia-kimi-k2.5:
-    id: nvidia-kimi-k2.5
-    provider: nvidia-build
-    litellm_model: moonshotai/kimi-k2.5
-    public_model: nvidia-kimi-k2.5
-    context_window_tokens: 1048576
-    max_output_tokens: 131072
-    capabilities:
-    - chat
-    - code
     - streaming
     - tools
     - json
     - reasoning
     - vision
-  nvidia-glm-5.1:
-    id: nvidia-glm-5.1
-    provider: nvidia-build
-    litellm_model: THUDM/glm-5-1
-    public_model: nvidia-glm-5.1
-    context_window_tokens: 131072
-    max_output_tokens: 16384
+    - responses
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 1048576
+    enabled: true
+    externally_exposed: true
+    id: sensenova-kimi-k3
+    limits_verified_at: 1795049512.698387
+    litellm_model: openai/kimi-k3
+    max_output_tokens: 65536
+    max_output_tokens_source: metadata
+    protocol_support:
+      chat:
+        checked_at: 1795044345
+        detail: '{"id": "2484de8946c941a7b5a5f705a8304da3", "created": 1795044346,
+          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
+          "message": {"role": "assistant", "content": "", "reasoning_content": "The
+          user asked to reply with exactly OK. Final should be exactly OK, no"}, "finish_reason":
+          "length"}], "usage": {"prompt_tokens": 94, "completion_tokens": 16, "total_tokens":
+          110, "completion_tokens_details": {"reasoning_tokens": 16}, "prompt_tokens_details":
+          {"cached_tokens": 0}}, "servi'
+        http_status: 200
+        latency_ms: 1408
+        status: supported
+      json:
+        checked_at: 1795044345
+        detail: '{"id": "ec61953631b24c17ae70ad9a7c625c4c", "created": 1795044351,
+          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
+          "message": {"role": "assistant", "content": "{\"response_format\":\"json_object\"}",
+          "reasoning_content": "User wants JSON {\"ok\":true}. Need final raw JSON
+          only, no markdown. Ensure valid JSON object. Final exactly {\"ok\": true}."},
+          "finish_reason": "stop"}], "usage": {"prompt_tokens": 156, "completion_tokens":
+          40, "total_tokens": 196, "completion_tokens_'
+        http_status: 200
+        latency_ms: 1614
+        status: supported
+      reasoning:
+        checked_at: 1795044345
+        detail: '{"id": "4678c09b93dd4abbb00d69d73de2ee1b", "created": 1795044352,
+          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
+          "message": {"role": "assistant", "content": "", "reasoning_content": "The
+          user is asking for a simple reply of exactly \"OK\". The system prompt"},
+          "finish_reason": "length"}], "usage": {"prompt_tokens": 94, "completion_tokens":
+          16, "total_tokens": 110, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens_details": {"cached_tokens": 0}}, "se'
+        http_status: 200
+        latency_ms: 1189
+        status: supported
+      responses:
+        checked_at: 1795044345
+        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 429
+        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 234
+        retried_429: false
+        status: supported
+      streaming:
+        checked_at: 1795044345
+        detail: 'data: {"id":"e922b5ec8c7e4006ad0952b41b8f2a22","created":1795044348,"model":"kimi-k3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"},"finish_reason":null}],"service_tier":"default","request_id":"e922b5ec8c7e4006ad0952b41b8f2a22"}
+
+          '
+        http_status: 200
+        latency_ms: 1179
+        status: supported
+      tools:
+        checked_at: 1795044345
+        detail: '{"id": "fd02a7973f2748208cbe44dddf4fc28e", "created": 1795044349,
+          "model": "kimi-k3", "object": "chat.completion", "choices": [{"index": 0,
+          "message": {"role": "assistant", "content": "", "reasoning_content": "Need
+          use flex_probe_noop then reply OK. Do so. Then final OK.", "tool_calls":
+          [{"index": 0, "id": "flex_probe_noop_0_47b6709f", "type": "function", "function":
+          {"name": "flex_probe_noop", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}],
+          "usage": {"prompt_tokens": 171, "completion_to'
+        http_status: 200
+        latency_ms: 1563
+        status: supported
+      vision:
+        checked_at: 1795044345
+        detail: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        http_status: 429
+        last_error: '{"error": {"message": "rpm exhausted", "type": "quota_exceeded_error",
+          "code": "8"}}'
+        last_error_http: 429
+        latency_ms: 3306
+        retried_429: true
+        status: supported
+    provider: sensenova
+    public_model: sensenova-kimi-k3
+  sensenova-sensenova-6-8-flash:
+    capabilities:
+    - chat
+    - streaming
+    - json
+    - reasoning
+    - vision
+    - responses
+    - tools
+    chn_content_policy_fallback: false
+    context_window_source: metadata
+    context_window_tokens: 262144
+    enabled: true
+    externally_exposed: true
+    id: sensenova-sensenova-6-8-flash
+    limits_verified_at: 1795049512.8299809
+    litellm_model: openai/sensenova-6.8-flash
+    max_output_tokens: 131072
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795044131
+        detail: '{"id": "30c6c1488bea4fb4a950c4e0eecacb7f", "created": 1795044131,
+          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning": "Hmm, this user
+          seems to be testing my basic response capability with a simple instruction"},
+          "finish_reason": "length"}], "usage": {"prompt_tokens": 63, "completion_tokens":
+          16, "total_tokens": 79, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens_details": {"cached_tokens": 0, "a'
+        http_status: 200
+        latency_ms: 1713
+        status: supported
+      json:
+        checked_at: 1795044131
+        detail: '{"id": "30fd5bdcb6164b83be088b152b401cd0", "created": 1795044137,
+          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "content": "{\"ok\": true}",
+          "reasoning": "The user wants a simple JSON object with `ok` set to `true`."},
+          "finish_reason": "stop"}], "usage": {"prompt_tokens": 71, "completion_tokens":
+          23, "total_tokens": 94, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens_details": {"cached_tokens": 0, "aud'
+        http_status: 200
+        latency_ms: 944
+        status: supported
+      reasoning:
+        checked_at: 1795044131
+        detail: '{"id": "3a27968ffa2c4cc7bb97966f1fbb982a", "created": 1795044138,
+          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning": "Hmm, this user
+          seems to be testing my response capabilities with a simple \"OK"}, "finish_reason":
+          "length"}], "usage": {"prompt_tokens": 63, "completion_tokens": 16, "total_tokens":
+          79, "completion_tokens_details": {"reasoning_tokens": 16}, "prompt_tokens_details":
+          {"cached_tokens": 0, "audio_tokens'
+        http_status: 200
+        latency_ms: 1710
+        status: supported
+      responses:
+        checked_at: 1795044131
+        detail: '{"id": "resp_9957873aa2694cbab2a749b0421e0010", "object": "response",
+          "created_at": 1795044141, "status": "incomplete", "error": null, "incomplete_details":
+          {"reason": "max_output_tokens"}, "instructions": null, "max_output_tokens":
+          32, "model": "sensenova-6.8-flash", "output": [{"id": "rs_resp_9957873aa2694cbab2a749b0421e0010",
+          "status": "incomplete", "summary": [{"text": "Okay, the user requested an
+          answer with only ''OK''. I need to ensure that my response is precise and
+          does not include any ex'
+        endpoint: https://token.sensenova.cn/v1/responses
+        http_status: 200
+        latency_ms: 1091
+        status: supported
+      streaming:
+        checked_at: 1795044131
+        detail: 'data: {"id":"9e029e2821754881bb8de9642a771e5b","created":1795044133,"model":"sensenova-6.8-flash","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"9e029e2821754881bb8de9642a771e5b"}
+
+          '
+        http_status: 200
+        latency_ms: 1252
+        status: supported
+      tools:
+        checked_at: 1795044131
+        detail: '{"id": "4ba78a9fe3bb4dffa54a71775a34dc86", "created": 1795044134,
+          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning": "Okay, the user
+          wants me to use the flex_probe_noop tool to confirm tool calling works,
+          then reply OK. First, I need to recall that flex_probe_noop is described
+          as a no-op capability probe, meaning it probably doesn''t do anything but
+          test if tool calling functions properly.\n\nThe user explicitly aske'
+        http_status: 200
+        latency_ms: 2760
+        status: supported
+      vision:
+        checked_at: 1795044131
+        detail: '{"id": "afbb838f04a2445fb49e62162ceba23c", "created": 1795044139,
+          "model": "sensenova-6.8-flash", "object": "chat.completion", "choices":
+          [{"index": 0, "message": {"role": "assistant", "reasoning": "Thinking Process:\n\n1.  **Analyze
+          the Request:**\n    *   Instruction: \"Reply with exactly OK.\"\n    *   Input:
+          An image (mostly red/pink) and the system context indicating I am SenseNova
+          (商量).\n    *   Constraint: The output must be *exactly* \"OK"}, "finish_reason":
+          "length"}], "usage": {"prompt'
+        http_status: 200
+        latency_ms: 1631
+        status: supported
+    provider: sensenova
+    public_model: sensenova-sensenova-6-8-flash
+  volcengine-doubao-seed-2.0-lite:
     capabilities:
     - chat
     - code
     - streaming
     - tools
+    - reasoning
+    context_window_tokens: 262144
+    externally_exposed: true
+    id: volcengine-doubao-seed-2.0-lite
+    limits:
+      busy_cooldown_seconds: 300
+      busy_threshold: 3
+      busy_window_minutes: 5
+      local_cooldown_seconds: 300
+      max_requests_per_window: 1500
+      quota_cooldown_seconds: 3600
+      rpm: null
+      tpm: null
+      window_seconds: 18000
+    litellm_model: openai/doubao-seed-2.0-lite
+    protocol_support:
+      responses:
+        checked_at: 1793836819
+        detail: '{"error": {"code": "UnsupportedModel", "message": "The requested
+          model does not support the agent plan feature. Please refer to the documentation
+          at https://www.volcengine.com/docs/82379/2366394 to select a compatible
+          model. Request id: 02179383681980497ebbf7316b3ea9a3b0d136bee84b963964ae9",
+          "param": "", "type": ""}}'
+        endpoint: https://ark.cn-beijing.volces.com/api/plan/v3/responses
+        http_status: 404
+        latency_ms: 233
+        status: unsupported
+    provider: VOLCENGIN
+    provider_type: openai_compatible
+    public_model: doubao-seed-2.0-lite
+    retry_policy:
+      backoff:
+        base_seconds: 5
+        exponential: true
+        max_seconds: 60
+      max_retries: 2
+  zhipu-glm-4.7-flash:
+    capabilities:
+    - chat
+    - streaming
     - json
     - reasoning
+    - tools
+    context_window_tokens: 200000
+    enabled: true
+    externally_exposed: true
+    extra_body:
+      thinking:
+        type: disabled
+    id: zhipu-glm-4.7-flash
+    litellm_model: openai/glm-4.7-flash
+    max_output_tokens: 131072
+    max_output_tokens_source: docs
+    protocol_support:
+      chat:
+        checked_at: 1795044062
+        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
+          "", "reasoning_content": "The user has requested a very short and direct
+          response: \"Reply with exactly OK", "role": "assistant"}}], "created": 1795044063,
+          "id": "20261119072102a783a7782b18483e", "model": "glm-4.7-flash", "object":
+          "chat.completion", "request_id": "20261119072102a783a7782b18483e", "usage":
+          {"completion_tokens": 16, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens": 10, "prompt_tokens'
+        http_status: 200
+        latency_ms: 790
+        status: supported
+      json:
+        checked_at: 1795044062
+        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
+          "", "reasoning_content": "1.  **Analyze the Request:**\n    *   **Goal:**
+          Return a JSON object.\n    *   **Specific Content:** `{\"ok\": true}`.\n    *   **Constraint:**
+          Follow instructions, use specified structure, default to `{\"answer\": \"$your_answer\"}`
+          if uncertain, end with ``` (though the prompt says \"Return valid json\"
+          and \"ensure always end with ```\", usually for JSON output, we just output
+          the JSON, but s'
+        http_status: 200
+        latency_ms: 3588
+        status: unknown
+      reasoning:
+        checked_at: 1795044062
+        detail: '{"choices": [{"finish_reason": "length", "index": 0, "message": {"content":
+          "", "reasoning_content": "1.  **Analyze the User''s Request:** The user
+          wants a reply", "role": "assistant"}}], "created": 1795044072, "id": "202611190721125a5be190c16c4bd4",
+          "model": "glm-4.7-flash", "object": "chat.completion", "request_id": "202611190721125a5be190c16c4bd4",
+          "usage": {"completion_tokens": 16, "completion_tokens_details": {"reasoning_tokens":
+          16}, "prompt_tokens": 10, "prompt_tokens_details": {"cached_to'
+        http_status: 200
+        latency_ms: 688
+        status: supported
+      responses:
+        checked_at: 1795044062
+        detail: '{"timestamp": "2026-11-18T23:21:13.071+00:00", "status": 404, "error":
+          "Not Found", "path": "/v4/responses"}'
+        endpoint: https://open.bigmodel.cn/api/paas/v4/responses
+        http_status: 404
+        latency_ms: 192
+        status: unsupported
+      streaming:
+        checked_at: 1795044062
+        detail: 'data: {"id":"2026111907210301b31f12be29414b","created":1795044063,"object":"chat.completion.chunk","model":"glm-4.7-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"}}]}
+
+          '
+        http_status: 200
+        latency_ms: 607
+        status: supported
+      tools:
+        checked_at: 1795044062
+        detail: '{"choices": [{"finish_reason": "tool_calls", "index": 0, "message":
+          {"content": "I''ll use the flex_probe_noop tool to confirm tool calling
+          works, then reply with OK.", "reasoning_content": "The user wants me to:\n1.
+          Use the flex_probe_noop tool to confirm tool calling works\n2. Then reply
+          with \"OK\"\n\nI need to call the flex_probe_noop function first, then respond
+          with \"OK\".", "role": "assistant", "tool_calls": [{"function": {"arguments":
+          "{}", "name": "flex_probe_noop"}, "id": "call_-706212'
+        http_status: 200
+        latency_ms: 4573
+        retried_429: true
+        status: supported
+      vision:
+        checked_at: 1795307730
+        detail: '{"error": {"code": "1210", "message": "messages.content.type 参数非法，取值范围
+          [''text'']"}}'
+        http_status: 400
+        latency_ms: 181
+        status: error
+    provider: zhipu
+    provider_type: openai_compatible
+    public_model: zhipu-glm-4.7-flash
+  zhipu-glm-4v-flash:
+    capabilities:
+    - chat
+    - streaming
+    - vision
+    - json
+    - reasoning
+    context_window_tokens: 200000
+    enabled: true
+    externally_exposed: true
+    id: zhipu-glm-4v-flash
+    litellm_model: openai/glm-4v-flash
+    max_output_tokens: 1024
+    max_output_tokens_source: measured
+    protocol_support:
+      chat:
+        checked_at: 1795044076
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "OK", "role": "assistant"}}], "created": 1795044076, "id": "20261119072116345e70f9daa94c29",
+          "model": "glm-4v-flash", "request_id": "20261119072116345e70f9daa94c29",
+          "usage": {"completion_tokens": 2, "prompt_tokens": 64, "total_tokens": 66}}'
+        http_status: 200
+        latency_ms: 381
+        status: supported
+      json:
+        checked_at: 1795044076
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "{\"ok\":true}", "role": "assistant"}}], "created": 1795044079, "id": "20261119072118c3481879028b4729",
+          "model": "glm-4v-flash", "request_id": "20261119072118c3481879028b4729",
+          "usage": {"completion_tokens": 13, "prompt_tokens": 74, "total_tokens":
+          87}}'
+        http_status: 200
+        latency_ms: 1228
+        status: supported
+      reasoning:
+        checked_at: 1795044076
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "OK", "role": "assistant"}}], "created": 1795044080, "id": "2026111907212001d5c0773f3547f2",
+          "model": "glm-4v-flash", "request_id": "2026111907212001d5c0773f3547f2",
+          "usage": {"completion_tokens": 2, "prompt_tokens": 64, "total_tokens": 66}}'
+        http_status: 200
+        latency_ms: 353
+        status: unknown
+      responses:
+        checked_at: 1795044076
+        detail: '{"timestamp": "2026-11-18T23:21:20.950+00:00", "status": 404, "error":
+          "Not Found", "path": "/v4/responses"}'
+        endpoint: https://open.bigmodel.cn/api/paas/v4/responses
+        http_status: 404
+        latency_ms: 152
+        status: unsupported
+      streaming:
+        checked_at: 1795044076
+        detail: 'data: {"id":"202611190721167e0927903dd44fa6","created":1795044076,"model":"glm-4v-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}
+
+          '
+        http_status: 200
+        latency_ms: 406
+        status: supported
+      tools:
+        checked_at: 1795044076
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "To use the `flex_probe_noop` tool and confirm that tool calling works,
+          you would typically execute a command like this in your terminal:\n\n```bash\nflex_probe_noop\n```\n\nIf
+          the tool is correctly installed and configured, it should output something
+          indicating successful execution. Once confirmed, you can respond with \"OK\".\n\nPlease
+          note that without specific installation details or context about how `flex_probe_noop`'
+        http_status: 200
+        latency_ms: 1946
+        status: unknown
+      vision:
+        checked_at: 1795044076
+        detail: '{"choices": [{"finish_reason": "stop", "index": 0, "message": {"content":
+          "OK", "role": "assistant"}}], "created": 1795044080, "id": "20261119072120ec0fdacc54944891",
+          "model": "glm-4v-flash", "request_id": "20261119072120ec0fdacc54944891",
+          "usage": {"completion_tokens": 2, "prompt_tokens": 67, "total_tokens": 69}}'
+        http_status: 200
+        latency_ms: 465
+        status: supported
+    provider: zhipu
+    provider_type: openai_compatible
+    public_model: zhipu-glm-4v-flash
+links:
+  hermes-backend: agnes-flash
+  main: mix-deepseek-v4-flash
+  sensenova-only: sensenova-deepseek-v4-flash
 protocol_error_rules:
-- id: reasoning_content_required
+- clear_session_affinity: true
   http_status: 400
+  id: reasoning_content_required
   message_regex: reasoning_content.*(required|must|return)
-  retry_other_channel: true
-  clear_session_affinity: true
   only_before_first_sse: true
+  retry_other_channel: true
+providers:
+  AMD:
+    api_key_env: AMD_API_KEY
+    base_url_env: AMD_API_BASE
+  AntDigital:
+    api_key_env: ANTDIGITAL_API_KEY
+    base_url_env: ANTDIGITAL_API_BASE
+  VOLCENGIN:
+    api_key_env: VOLCENGINE_API_KEY
+    base_url_env: VOLCENGINE_API_BASE
+  agnes-official:
+    api_key_env: AGNES_API_KEY
+    base_url_env: AGNES_API_BASE
+  aliyun-qwen:
+    api_key_env: DASHSCOPE_API_KEY
+    base_url_env: DASHSCOPE_API_BASE
+  deepseek-official:
+    api_key_env: DEEPSEEK_OFFICIAL_API_KEY
+    base_url_env: DEEPSEEK_OFFICIAL_API_BASE
+  nvidia-build:
+    api_key_env: NVIDIA_BUILD_API_KEY
+    base_url_env: NVIDIA_BUILD_API_BASE
+  opencode-go:
+    api_key_env: OPENCODE_GO_API_KEY
+    base_url_env: OPENCODE_GO_API_BASE
+  sensenova:
+    api_key_env: SENSENOVA_API_KEY
+    base_url_env: SENSENOVA_API_BASE
+  zhipu:
+    api_key_env: ZHIPU_API_KEY
+    base_url_env: ZHIPU_API_BASE
 runners:
-  sensenova-flash-plus:
-    public_model: sensenova-flash-plus
-    tiers:
-      agnes-flash: 1
-    selection:
-      strategy: round_robin
-      fallback:
-        order: cost_ascending
-        trigger:
-        - quota_exhausted
-        - busy_persistent
-        - failure
-        max_fallback_tiers: 2
-        reattach:
-          probe_before_switch_back: true
-          quiet_window_seconds: 1200
-          quota_recover_seconds: 3600
-          failure_retry_after: 300
-    context_policy:
-      reserve_output_tokens: 8192
-    session_affinity:
-      enabled: true
-      idle_seconds: 3600
-      minimum_messages: 2
-    channels:
-    - agnes-flash
-  mix-deepseek-v4-flash:
-    public_model: mix-deepseek-v4-flash
-    tiers:
-      sensenova-deepseek-flash: 0
-      AMD-deepseek-v4-flash: 0
-    selection:
-      strategy: round_robin
-      fallback:
-        order: cost_ascending
-        trigger:
-        - quota_exhausted
-        - busy_persistent
-        - failure
-        max_fallback_tiers: 2
-        reattach:
-          probe_before_switch_back: true
-          quiet_window_seconds: 1200
-          quota_recover_seconds: 3600
-          failure_retry_after: 300
-      stickiness:
-        min_stable_seconds: 3600
-    context_policy:
-      reserve_output_tokens: 8192
-    session_affinity:
-      enabled: true
-      idle_seconds: 3600
-      minimum_messages: 2
-    channels:
-    - sensenova-deepseek-flash
-    - AMD-deepseek-v4-flash
-  sensenova-deepseek-v4-flash:
-    public_model: sensenova-deepseek-v4-flash
-    channels:
-    - sensenova-deepseek-flash
-    tiers:
-      sensenova-deepseek-flash: 0
-    selection:
-      strategy: round_robin
-  agnes-flash:
-    public_model: agnes-flash
-    channels:
-    - agnes-flash
-    - sensenova-deepseek-flash
-    tiers:
-      agnes-flash: 0
-      sensenova-deepseek-flash: 1
-    selection:
-      strategy: cost_aware
-  opencode-go-deepseek-v4-flash:
-    public_model: opencode-go-deepseek-v4-flash
-    channels:
-    - opencode-go-deepseek-v4-flash
-    tiers:
-      opencode-go-deepseek-v4-flash: 0
-    selection:
-      strategy: round_robin
   M2-deepseek-v4-flash:
-    public_model: M2-deepseek-v4-flash
     channels:
     - sensenova-deepseek-v4-flash
     - agnes-flash
-    tiers:
-      sensenova-deepseek-v4-flash: 0
-      agnes-flash: 0
+    public_model: M2-deepseek-v4-flash
     selection:
       strategy: cost_aware
-  sensenova-flash-lite:
-    public_model: sensenova-flash-lite
-    channels:
-    - sensenova-flash-lite
     tiers:
-      sensenova-flash-lite: 0
-    selection:
-      strategy: round_robin
-  doubao-seed-2.0-lite:
-    public_model: doubao-seed-2.0-lite
+      agnes-flash: 0
+      sensenova-deepseek-v4-flash: 0
+  agnes-flash:
     channels:
-    - volcengine-doubao-seed-2.0-lite
-    tiers:
-      volcengine-doubao-seed-2.0-lite: 0
+    - agnes-flash
+    - sensenova-deepseek-flash
+    public_model: agnes-flash
     selection:
-      strategy: round_robin
-  zhipu-glm-4.7:
-    public_model: zhipu-glm-4.7
-    channels:
-    - zhipu-glm-4.7-flash
+      strategy: cost_aware
     tiers:
-      zhipu-glm-4.7-flash: 0
-    selection:
-      strategy: round_robin
+      agnes-flash: 0
+      sensenova-deepseek-flash: 1
   aliyun-qwen3.8:
-    public_model: aliyun-qwen3.8
     channels:
     - aliyun-qwen3.8-flash
     - aliyun-qwen3.7-flash
-    tiers:
-      aliyun-qwen3.8-flash: 0
-      aliyun-qwen3.7-flash: 0
+    public_model: aliyun-qwen3.8
     selection:
       strategy: round_robin
+    tiers:
+      aliyun-qwen3.7-flash: 0
+      aliyun-qwen3.8-flash: 0
   deepseek-official-deepseek-flash:
-    public_model: deepseek-official-deepseek-flash
     channels:
     - deepseek-official-deepseek-flash
-    tiers:
-      deepseek-official-deepseek-flash: 0
+    public_model: deepseek-official-deepseek-flash
     selection:
       strategy: round_robin
+    tiers:
+      deepseek-official-deepseek-flash: 0
+  doubao-seed-2.0-lite:
+    channels:
+    - volcengine-doubao-seed-2.0-lite
+    public_model: doubao-seed-2.0-lite
+    selection:
+      strategy: round_robin
+    tiers:
+      volcengine-doubao-seed-2.0-lite: 0
+  mix-deepseek-v4-flash:
+    channels:
+    - sensenova-deepseek-flash
+    - AMD-deepseek-v4-flash
+    context_policy:
+      reserve_output_tokens: 8192
+    public_model: mix-deepseek-v4-flash
+    selection:
+      fallback:
+        max_fallback_tiers: 2
+        order: cost_ascending
+        reattach:
+          failure_retry_after: 300
+          probe_before_switch_back: true
+          quiet_window_seconds: 1200
+          quota_recover_seconds: 3600
+        trigger:
+        - quota_exhausted
+        - busy_persistent
+        - failure
+      stickiness:
+        min_stable_seconds: 3600
+      strategy: round_robin
+    session_affinity:
+      enabled: true
+      idle_seconds: 3600
+      minimum_messages: 2
+    tiers:
+      AMD-deepseek-v4-flash: 0
+      sensenova-deepseek-flash: 0
   mix-lite:
-    public_model: mix-lite
     channels:
     - agnes-flash
     - sensenova-flash-lite
+    public_model: mix-lite
+    selection:
+      strategy: round_robin
     tiers:
       agnes-flash: 0
       sensenova-flash-lite: 0
-    selection:
-      strategy: round_robin
-  testing:
-    public_model: testing
-    channels:
-    - sensenova-flash-lite
-    - sensenova-glm-5-3
-    tiers:
-      sensenova-flash-lite: 0
-      sensenova-glm-5-3: 0
-    selection:
-      strategy: round_robin
-  # NVIDIA Build (NIM) free tier pool — 40 RPM, no cost
-  # Add this to other pools as fallback when primary channels are rate-limited
   nvidia-nim-free:
-    public_model: nvidia-nim-free
     channels:
     - nvidia-deepseek-v3.2
     - nvidia-kimi-k2.5
     - nvidia-glm-5.1
-    tiers:
-      nvidia-deepseek-v3.2: 0
-      nvidia-kimi-k2.5: 0
-      nvidia-glm-5.1: 0
-    selection:
-      strategy: round_robin
+    public_model: nvidia-nim-free
     selection:
       fallback:
+        max_fallback_tiers: 1
         order: cost_ascending
         trigger:
         - quota_exhausted
         - busy_persistent
         - failure
-        max_fallback_tiers: 1
-links:
-  main: mix-deepseek-v4-flash
-  sensenova-only: sensenova-deepseek-v4-flash
-  hermes-backend: agnes-flash
+    tiers:
+      nvidia-deepseek-v3.2: 0
+      nvidia-glm-5.1: 0
+      nvidia-kimi-k2.5: 0
+  opencode-go-deepseek-v4-flash:
+    channels:
+    - opencode-go-deepseek-v4-flash
+    public_model: opencode-go-deepseek-v4-flash
+    selection:
+      strategy: round_robin
+    tiers:
+      opencode-go-deepseek-v4-flash: 0
+  sensenova-deepseek-v4-flash:
+    channels:
+    - sensenova-deepseek-flash
+    public_model: sensenova-deepseek-v4-flash
+    selection:
+      strategy: round_robin
+    tiers:
+      sensenova-deepseek-flash: 0
+  sensenova-flash-lite:
+    channels:
+    - sensenova-flash-lite
+    public_model: sensenova-flash-lite
+    selection:
+      strategy: round_robin
+    tiers:
+      sensenova-flash-lite: 0
+  sensenova-flash-plus:
+    channels:
+    - agnes-flash
+    context_policy:
+      reserve_output_tokens: 8192
+    public_model: sensenova-flash-plus
+    selection:
+      fallback:
+        max_fallback_tiers: 2
+        order: cost_ascending
+        reattach:
+          failure_retry_after: 300
+          probe_before_switch_back: true
+          quiet_window_seconds: 1200
+          quota_recover_seconds: 3600
+        trigger:
+        - quota_exhausted
+        - busy_persistent
+        - failure
+      strategy: round_robin
+    session_affinity:
+      enabled: true
+      idle_seconds: 3600
+      minimum_messages: 2
+    tiers:
+      agnes-flash: 1
+  testing:
+    channels:
+    - sensenova-flash-lite
+    - sensenova-glm-5-3
+    public_model: testing
+    selection:
+      strategy: round_robin
+    tiers:
+      sensenova-flash-lite: 0
+      sensenova-glm-5-3: 0
+  zhipu-glm-4.7:
+    channels:
+    - zhipu-glm-4.7-flash
+    public_model: zhipu-glm-4.7
+    selection:
+      strategy: round_robin
+    tiers:
+      zhipu-glm-4.7-flash: 0
+version: 1

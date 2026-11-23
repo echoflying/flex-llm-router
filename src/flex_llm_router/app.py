@@ -390,7 +390,10 @@ def error_type(e):
         #   B类(瞬时限流/忙):       'HTTP 429: rpm exhausted' / 'HTTP 429: inference tpm exhausted' / rate limit
         # 注意: 'rpm exhausted'/'tpm exhausted' 是瞬时窗口限流(B类)，不是总量；只有 'allocated quota exceeded' 是 A类
         # A类: 套餐/总配额耗尽（提额才可恢复）
-        if any(x in detail for x in ('allocated quota exceeded','quota exceeded','insufficient_quota','free allocated','exceeded your quota','额度','配额')):
+        # 注意 'Daily usage limit exceeded' / 'at most N per day' 是每日总量配额(A类)，
+        # 不是 rpm/tpm 瞬时窗口限流。缺省时它落入下面的 rpm_limit，导致短冷却而非长冷却，
+        # 且学习器读不到「重置时刻」(使用建议的核心输入)。显式归为 quota_exhausted。
+        if any(x in detail for x in ('allocated quota exceeded','quota exceeded','insufficient_quota','free allocated','exceeded your quota','额度','配额','daily usage limit','at most 1 pt','at most 1 pts','per day (beijing time)','已达额度上限')):
             return 'quota_exhausted'
         # B类细分: tpm / rpm 分开(退避策略不同, 统计分开)
         if 'tpm' in detail or 'tokens per minute' in detail or 'token limit' in detail:return 'tpm_limit'

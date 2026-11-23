@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
@@ -40,12 +41,16 @@ def main():
     ap.add_argument('--share', type=float, default=0.80, help='share threshold (0..1)')
     ap.add_argument('--idle-max', type=int, default=2,
                     help='a channel counts as "idle" if it has <= this many calls in the window')
+    ap.add_argument('--density-min', type=int, default=5,
+                    help='window (minutes) for 429-density check')
+    ap.add_argument('--density-warn', type=int, default=10,
+                    help='WARN when this many rpm_limit+tpm_limit occur in the density window')
     args = ap.parse_args()
 
     import sqlite3
     db = sqlite3.connect('data/flex.db')
     db.row_factory = sqlite3.Row
-    since = int(__import__('time').time() - args.hours * 3600)
+    since = int(time.time() - args.hours * 3600)
 
     rows = db.execute(
         "SELECT pool, channel, COUNT(*) n FROM attempts "
@@ -87,6 +92,27 @@ def main():
     if not flagged:
         print("\nVerdict: no imbalance (no multi-channel Runner has a single "
               "channel > {:.0%} with an idle sibling)".format(args.share))
+
+    # --- 429-density check (WARN only) ---------------------------------------
+    # High density of rpm_limit/tpm_limit means the request volume is running
+    # against a tight upstream cap — a usage-vs-capacity mismatch, not a fault
+    # per se.  Report it as a WARN so the operator can judge whether to throttle
+    # the caller or raise the channel's cap.
+    dsince = int(time.time() - args.density_min * 60)
+    dense = db.execute(
+        "SELECT pool, error_type, COUNT(*) n FROM attempts "
+        "WHERE started>=? AND error_type IN ('rpm_limit','tpm_limit') "
+        "GROUP BY pool, error_type HAVING COUNT(*)>=? ORDER BY n DESC",
+        (dsince, args.density_warn)).fetchall()
+    if dense:
+        print(f"\n429-density WARN (last {args.density_min} min, "
+              f">={args.density_warn} rpm/tpm_limit):")
+        for r in dense:
+            print(f"  {r['pool']:<40} {r['error_type']:<15} {r['n']} "
+                  f"(usage vs upstream cap mismatch; throttle caller or raise cap)")
+        return 1
+
+    if not flagged:
         return 0
 
     print(f"\nVerdict: {len(flagged)} Runner(s) show load imbalance.")

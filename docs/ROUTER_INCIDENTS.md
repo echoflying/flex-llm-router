@@ -263,3 +263,29 @@ NVIDIA 官方 FAQ（`docs.api.nvidia.com/nim/docs/product`）只承诺
 - 用 `open(path,'w')` + `yaml.safe_dump` 改写 `pools.yaml` 时，**文件在 dump 抛错前已被截断为 0 字节**，
   导致 `config/pools.yaml` 损坏。此后必须**先 dump 到临时文件、校验、再 `os.replace()`**。
 - `yaml.safe_dump` 不接受 `collections.OrderedDict`，须用普通 dict（`sort_keys=True` 已保证顺序）。
+
+---
+
+## 2026-11-23 21:41 — nvidia-nim-free 输出上限偏好导致单通道塌缩（mistral 占 ~90%）
+
+**现象**：用户指出 `nvidia-nim-free` Runner 里 `nvidia-mistral-large-4` 承担约 90% 调用且受限，
+其余通道"100 可用"却几乎未被调用（6h 内 nemotron/step/poolside 均 **0** 次）。
+
+**根因（Router 设计行为，非上游）**：`app.py:2902` 的「输出上限偏好」过滤器——
+客户端（DeepSeek Harness）请求 `max_completion_tokens=32768`，而只有 mistral 配了
+`max_output_tokens=32768`，其余 5 通道只配 `16384`。于是 `full_capacity`（能**完整满足**请求输出上限的通道）
+只剩 mistral 一个，`available` 塌缩为 `[mistral]`，`round_robin` 在 1 元素上轮转 → mistral 100%。
+trace 证据：6h 内 `output_capacity_preferred` 事件 **72 次**，detail 均为
+「暂不选 glm/minimax/nemotron/step/poolside（需夹取）」。（`max_completion_tokens=65536` 的请求不受影响，
+因 `full_capacity` 为空、不塌缩，这解释了 glm/minimax 分到少量流量的原因。）
+
+**关键认知**：16384 是保守设定值，**不是上游硬顶**。实测 `max_tokens=32768` 直连：
+nemotron、poolside、mistral 均 HTTP 200；glm/minimax/step 为 000（25s 超时，非 400 拒绝，模型本身慢）。
+
+**处置（配置修复，非结构改动）**：6 个 nvidia 通道 `max_output_tokens` 统一 **16384 → 32768**。
+改前备份 `config/pools.yaml.backup.20261123214126`，临时文件+`os.replace` 写入，`launchctl kickstart -k` 重启。
+重启后 `nvidia-nim-free` 用互不相同请求验证：轮转跨 glm→poolside→glm→minimax→nemotron 至少 4 个不同通道，
+均 success、无新 cooldown；此前 0 次的 poolside/nemotron 均获流量。
+
+**注意（验证方法教训）**：测试若反复发**完全相同**的请求体，会命中 120 秒结果恢复窗口
+（`replay_hit`，复用首个成功结果、不重发上游），产生"看似单通道"的伪影。验证轮转必须用互不相同的请求体。

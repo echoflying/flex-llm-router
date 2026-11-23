@@ -4416,14 +4416,24 @@ def create_app(config_path:str|Path):
         """
         grace=int(os.getenv('FLEX_STALE_TRACE_GRACE','1800'))
         interval=max(30,int(os.getenv('FLEX_STALE_TRACE_INTERVAL','120')))
+        # Liveness heartbeat: the OS probe treats a router log with no write in
+        # >5m as a possible hang.  With zero traffic the access log sits silent,
+        # so an idle (but healthy) router would raise false STALE alarms.  A
+        # periodic heartbeat keeps the log fresh; if the event loop is genuinely
+        # blocked, the heartbeat also stops and the probe's signal stays real.
+        heartbeat_every=max(1,int(os.getenv('FLEX_HEARTBEAT_EVERY_SWEEPS','2')))
+        sweep_no=0
         while True:
             await asyncio.sleep(interval)
+            sweep_no+=1
             try:
                 closed=state.sweep_stale_traces(grace)
                 if closed:
                     logger.warning('stale trace sweeper closed %d running trace(s) older than %ds',closed,grace)
             except Exception as exc:  # 清扫循环自身不应拖垮进程
                 logger.error('stale trace sweeper error: %s', exc)
+            if sweep_no % heartbeat_every == 0:
+                logger.info('heartbeat sweeps=%d',sweep_no)
 
     @app.on_event('startup')
     async def _start_probe_loop():

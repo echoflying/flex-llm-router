@@ -2364,8 +2364,15 @@ def create_app(config_path:str|Path):
                     'stats':     _paths('/api/gps/stats'),
                 },
             },
-            # 以后新域（如通用 search）加一个章节即可：
-            # {'id': 'search', 'title': '通用搜索', 'groups': {'search': _paths('/api/search')}},
+            {
+                'id': 'search', 'title': '搜索代理',
+                'groups': {
+                    'channels':  _paths('/api/search/channels'),
+                    'search':    _paths('/api/search/search'),
+                    'test':      _paths('/api/search/test/{channel}'),
+                    'stats':     _paths('/api/search/stats'),
+                },
+            },
             {
                 'id': 'system', 'title': '系统 / 页面',
                 'groups': {
@@ -2653,6 +2660,113 @@ def create_app(config_path:str|Path):
                 'result': result,
                 'sources_info': {s['id']: {'available': s['available'], 'reason': s['reason']}
                                  for s in gps_mod.gps_sources_info()['sources']}}
+
+    @app.get('/api/search/channels')
+    async def search_channels():
+        """搜索代理通道清单 + 实时可用性（外部调用方先查这个）.
+
+        GET /api/search/channels
+        返回每个通道的 id/name/kind/needs_key/key_configured/available/reason，
+        以及默认尝试顺序 ``order``。不产生任何外部探测：可用性是本地推断
+        （被探测标记 blocked 的通道、缺 key 的通道一律判为不可用）。
+        """
+        import flex_llm_router.search_proxy as sp
+        return {'object': 'search_channels', 'router_version': app.version,
+                **sp.search_channels_info()}
+
+    @app.get('/api/search/stats')
+    async def search_stats():
+        """搜索代理调用统计（命中/未命中 + 按通道拆分）.
+
+        GET /api/search/stats
+        只读本进程记录的 SQLite 统计（search_stats 表）。
+        """
+        return {'object': 'search_stats', 'router_version': app.version,
+                'stats': state.search_statistics()}
+
+    @app.post('/api/search/search')
+    async def search_proxy_search(req: Request):
+        """统一搜索入口（聚合全部通道，自动跳过不可用者）.
+
+        POST /api/search/search   body: {"query": "聚贤楼酒店", "kind": null,
+                                       "channels": null, "city": "上饶市",
+                                       "district": "玉山县", "limit": 10,
+                                       "max_channels": 3, "force": false}
+        - ``kind`` 可选 web/poi/geo/wiki，只试匹配类目的通道。
+        - ``channels`` 显式指定时完全覆盖默认顺序。
+        - ``force`` 为 true 时强制尝试被标记 blocked 的通道（如反爬/失效的）。
+        - 结果统一格式：``{"channel","kind","title","url","snippet","latency_ms","poi"}``；
+          ``channels_used`` 记录实际命中的通道，``skipped`` 记录跳过原因。
+        """
+        import flex_llm_router.search_proxy as sp
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(400, 'invalid JSON body')
+        query = (body.get('query') or '').strip()
+        if not query:
+            raise HTTPException(400, 'query is required')
+        channels = body.get('channels')
+        if channels is not None:
+            if not isinstance(channels, list) or not channels:
+                raise HTTPException(400, 'channels must be a non-empty list')
+            channels = [str(c) for c in channels]
+        kind = body.get('kind')
+        if kind is not None and kind not in ('web', 'poi', 'geo', 'wiki'):
+            raise HTTPException(400, 'kind must be one of: web, poi, geo, wiki')
+        try:
+            limit = int(body.get('limit') or 10)
+        except (TypeError, ValueError):
+            raise HTTPException(400, 'limit must be an integer')
+        try:
+            max_channels = int(body.get('max_channels') or 3)
+        except (TypeError, ValueError):
+            raise HTTPException(400, 'max_channels must be an integer')
+        limit = max(1, min(limit, 20)); max_channels = max(1, min(max_channels, len(sp.SEARCH_ORDER)))
+        res = sp.search(query, channels=channels, kind=kind, city=body.get('city') or '',
+                        district=body.get('district') or '', limit=limit,
+                        max_channels=max_channels, force=bool(body.get('force')), state=state)
+        return {'object': 'search', 'router_version': app.version,
+                'request': {'query': query, 'kind': kind, 'channels': channels,
+                            'limit': limit, 'max_channels': max_channels},
+                'result': res,
+                'channels': {c['id']: {'available': c['available'], 'reason': c['reason']}
+                             for c in sp.search_channels_info()['channels']}}
+
+    @app.post('/api/search/test/{channel}')
+    async def search_channel_test(channel: str, req: Request):
+        """单通道真实探测（强制调用，忽略 blocked 标记）.
+
+        POST /api/search/test/{channel}   body: {"query": "聚贤楼酒店",
+                                       "city": "上饶市", "district": "玉山县"}
+        返回该通道的真实结果或错误详情，用于逐个验证通道可用性。
+        """
+        import flex_llm_router.search_proxy as sp
+        if channel not in sp.SEARCH_CHANNELS:
+            raise HTTPException(404, 'unknown channel: ' + channel +
+                                '（可选：' + ', '.join(sp.SEARCH_ORDER) + '）')
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        query = (body.get('query') or '聚贤楼酒店').strip()
+        city = body.get('city') or ''
+        district = body.get('district') or ''
+        try:
+            limit = max(1, min(int(body.get('limit') or 5), 20))
+        except (TypeError, ValueError):
+            limit = 5
+        t0 = time.time()
+        try:
+            rows = sp._ADAPTERS[channel](query, city, district, limit,
+                                          sp.resolve_search_key(channel))
+        except Exception as e:
+            raise HTTPException(502, f'channel {channel} 调用失败: {type(e).__name__}: {str(e)[:200]}')
+        return {'object': 'search_channel_test', 'router_version': app.version,
+                'channel': channel, 'meta': sp.SEARCH_CHANNELS[channel],
+                'available': sp.channel_available(channel), 'reason': sp.channel_reason(channel),
+                'query': query, 'latency_ms': int((time.time() - t0) * 1000),
+                'n': len(rows), 'results': rows[:limit]}
 
     @app.get('/api/runners')
     async def runner_list():

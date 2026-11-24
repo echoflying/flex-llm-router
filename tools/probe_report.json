@@ -1,0 +1,72 @@
+[
+  {
+    "channel": "searxng",
+    "ok": true,
+    "latency_ms": 602,
+    "n": 10,
+    "note": "本地 127.0.0.1:8080 三引擎"
+  },
+  {
+    "channel": "bing",
+    "ok": true,
+    "latency_ms": 4426,
+    "n": 10,
+    "note": "直爬 b_algo"
+  },
+  {
+    "channel": "baidu_web",
+    "ok": false,
+    "latency_ms": 162,
+    "n": 0,
+    "note": "HTTP200 反爬/无结果"
+  },
+  {
+    "channel": "sogou",
+    "ok": true,
+    "latency_ms": 996,
+    "n": 8,
+    "note": "搜狗移动版"
+  },
+  {
+    "channel": "socom",
+    "ok": true,
+    "latency_ms": 1036,
+    "n": 14,
+    "note": "360 网页搜索"
+  },
+  {
+    "channel": "sogou_baike",
+    "ok": false,
+    "latency_ms": 301,
+    "n": 0,
+    "note": "HTTP404 HTTP 404"
+  },
+  {
+    "channel": "poi_360",
+    "ok": true,
+    "latency_ms": 1055,
+    "n": 10,
+    "note": "360 移动端 window.__STATE__"
+  },
+  {
+    "channel": "osm",
+    "ok": true,
+    "latency_ms": 738,
+    "n": 1,
+    "note": "Nominatim 免 key"
+  },
+  {
+    "channel": "tencent_poi",
+    "ok": true,
+    "latency_ms": 301,
+    "n": 1,
+    "note": "place/v1/search + Referer 白名单"
+  },
+  {
+    "channel": "tavily",
+    "ok": false,
+    "latency_ms": 0,
+    "n": 0,
+    "note": "缺 TAVILY_API_KEY（flow 的 search_provider_keys 表 0 行，从未录入）"
+  }
+]

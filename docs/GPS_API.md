@@ -114,6 +114,8 @@ gcj = wgs84_to_gcj02(117.9938, 28.8143)
 
 **Key 管理**（对齐 `config.py` 的 Provider 模型）：`GPS_PROVIDERS` 只存 env var 名，key 值由 `.env` 注入。
 
+**源可用性**：需要 key 的源（amap/tencent）配置上可用 = 该 key 存在；360/百度无需 key 恒可用。`/api/gps/sources` 的 `available`/`reason` 动态反映，缺 key 时 `reason` 明确列出所需 env var，不再显示误导性错误码。
+
 ## 调用示例
 
 ```bash

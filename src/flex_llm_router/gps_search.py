@@ -56,6 +56,42 @@ def bd09_to_gcj02(bd_lng, bd_lat):
     return z*math.cos(theta), z*math.sin(theta)
 
 
+def wgs84_to_gcj02(lng, lat):
+    """WGS-84 → GCJ-02（正向偏移，与 gcj02_to_wgs84 逆向互配）."""
+    a, ee = 6378245.0, 0.00669342162296594323
+    def _transform_lat(x, y):
+        ret = -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*math.sqrt(abs(x))
+        ret += (20.0*math.sin(6.0*x*math.pi) + 20.0*math.sin(2.0*x*math.pi))*2.0/3.0
+        ret += (20.0*math.sin(y*math.pi) + 40.0*math.sin(y/3.0*math.pi))*2.0/3.0
+        ret += (160.0*math.sin(y/12.0*math.pi) + 320*math.sin(y*math.pi/30.0))*2.0/3.0
+        return ret
+    def _transform_lng(x, y):
+        ret = 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*math.sqrt(abs(x))
+        ret += (20.0*math.sin(6.0*x*math.pi) + 20.0*math.sin(2.0*x*math.pi))*2.0/3.0
+        ret += (20.0*math.sin(x*math.pi) + 40.0*math.sin(x/3.0*math.pi))*2.0/3.0
+        ret += (150.0*math.sin(x/12.0*math.pi) + 300*math.sin(x/30.0*math.pi))*2.0/3.0
+        return ret
+    if not (72.004 < lng < 137.8347 and 0.8293 < lat < 55.8271):
+        return lng, lat  # 国境外不加偏移
+    dlat = _transform_lat(lng-105.0, lat-35.0)
+    dlng = _transform_lng(lng-105.0, lat-35.0)
+    radlat = lat/180.0*math.pi
+    magic = math.sin(radlat)
+    magic = 1 - ee*magic*magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat*180.0)/((a*(1-ee))/(magic*sqrtmagic)*math.pi)
+    dlng = (dlng*180.0)/(a/sqrtmagic*math.cos(radlat)*math.pi)
+    return lng+dlng, lat+dlat
+
+
+def gcj02_to_bd09(gj_lng, gj_lat):
+    """GCJ-02 → BD-09（百度私有坐标系）."""
+    xpi = math.pi*3000.0/180.0
+    z = math.sqrt(gj_lng*gj_lng + gj_lat*gj_lat) + 0.00002*math.sin(gj_lat*xpi)
+    theta = math.atan2(gj_lat, gj_lng) + 0.000003*math.cos(gj_lng*xpi)
+    return z*math.cos(theta)+0.0065, z*math.sin(theta)+0.006
+
+
 # ── 名称相似度（Dice bigram + 品牌前缀惩罚）──────────────────
 def norm_shop_name(s):
     s = str(s or '')
@@ -104,6 +140,26 @@ GPS_ORDER = {
     'normal': ['360', 'baidu', 'amap', 'tencent'],
     'high':   ['360', 'amap'],
 }
+
+# Key 管理：对齐 config.py 的 Provider 模型——只存 env var 名，key 值由 .env 注入。
+# 360/百度无需 key。缺失 env 时 adapter 返回 disabled，不报错。
+GPS_PROVIDERS = {
+    'amap':    {'api_key_env': 'AMAP_WEB_API_KEY', 'fallback_key_env': 'AMAP_KEY'},
+    'tencent': {'api_key_env': 'TENCENT_WEB_API_KEY'},
+}
+
+
+def resolve_api_key(source_id):
+    """从 env 解析指定源的 API key。缺失返回 ''。key 值绝不写日志。"""
+    p = GPS_PROVIDERS.get(source_id)
+    if not p:
+        return ''
+    for env in (p.get('api_key_env'), p.get('fallback_key_env')):
+        if env:
+            v = (os.getenv(env) or '').strip()
+            if v:
+                return v
+    return ''
 
 
 def _http_get_json(url, referer=None, timeout=15):
@@ -222,7 +278,7 @@ def geocode_shop_baidu(name, city, district):
 
 
 def geocode_shop_amap(name, city, district):
-    key = os.environ.get('AMAP_WEB_API_KEY') or os.environ.get('AMAP_KEY', '')
+    key = resolve_api_key('amap')
     if not key:
         return _hit(False, error='no amap key', disabled=True)
     kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
@@ -259,7 +315,7 @@ def geocode_shop_amap(name, city, district):
 
 
 def geocode_shop_tencent(name, city, district):
-    key = os.environ.get('TENCENT_WEB_API_KEY', '')
+    key = resolve_api_key('tencent')
     if not key:
         return _hit(False, error='no tencent key', disabled=True)
     kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
@@ -304,7 +360,8 @@ _ADAPTERS = {
 }
 
 
-def gps_search(name, city=None, district=None, sources=None, priority='normal', stats_db=None):
+def gps_search(name, city=None, district=None, sources=None, priority='normal', state=None):
+    """统一入口。state: StateStore 实例（与 LLM 调用数据同库 flex.db），None 则不落统计。"""
     chain = sources or GPS_ORDER.get(priority) or GPS_ORDER['normal']
     attempts = []
     had_fail = False
@@ -322,10 +379,10 @@ def gps_search(name, city=None, district=None, sources=None, priority='normal', 
         outcome = 'hit' if r.get('ok') else 'miss'
         attempts.append({'source': sid, 'outcome': outcome,
                          'sim': r.get('match_sim'), 'error': r.get('error')})
-        if stats_db:
+        if state is not None:
             try:
-                record_gps_stat(stats_db, sid, priority, outcome, r.get('match_sim'),
-                                had_fail, name, r.get('error'))
+                state.record_gps_stat(sid, priority, outcome, r.get('match_sim'),
+                                      had_fail, name, r.get('error'))
             except Exception:
                 pass
         if r.get('ok'):
@@ -340,63 +397,3 @@ def gps_search(name, city=None, district=None, sources=None, priority='normal', 
 def gps_sources_info():
     return {'sources': [{'id': sid, **meta} for sid, meta in GPS_SOURCES.items()],
             'order': GPS_ORDER}
-
-
-STATS_DDL = """
-CREATE TABLE IF NOT EXISTS pf_gps_stats (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  priority TEXT,
-  outcome TEXT NOT NULL,
-  sim REAL,
-  fallback INTEGER DEFAULT 0,
-  shop_name TEXT,
-  error TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_pf_gps_stats_ts ON pf_gps_stats(ts);
-CREATE INDEX IF NOT EXISTS idx_pf_gps_stats_source ON pf_gps_stats(source);
-"""
-
-
-def _stats_conn(db_path):
-    import sqlite3
-    conn = sqlite3.connect(db_path, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(STATS_DDL)
-    conn.commit()
-    return conn
-
-
-def record_gps_stat(db_path, source, priority, outcome, sim, fallback, shop_name, error=None):
-    conn = _stats_conn(db_path)
-    try:
-        conn.execute(
-            'INSERT INTO pf_gps_stats (ts, source, priority, outcome, sim, fallback, shop_name, error) VALUES (?,?,?,?,?,?,?,?)',
-            (int(time.time()), source, priority, outcome, sim, 1 if fallback else 0, shop_name, error))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def gps_stats(db_path):
-    conn = _stats_conn(db_path)
-    try:
-        per = {}
-        for row in conn.execute(
-                "SELECT source, outcome, COUNT(*) n, SUM(CASE WHEN outcome='hit' THEN 1 ELSE 0 END) hits "
-                'FROM pf_gps_stats GROUP BY source').fetchall():
-            per[row['source']] = {'calls': row['n'], 'hits': row['hits'],
-                                  'hit_rate': round(row['hits'] / row['n'], 4) if row['n'] else 0}
-        f = conn.execute(
-            "SELECT COUNT(*) total, SUM(CASE WHEN fallback=0 AND outcome='hit' THEN 1 ELSE 0 END) first_hit, "
-            'SUM(CASE WHEN fallback=1 THEN 1 ELSE 0 END) fb_attempts, '
-            "SUM(CASE WHEN fallback=1 AND outcome='hit' THEN 1 ELSE 0 END) fb_hit FROM pf_gps_stats").fetchone()
-        total = f['total'] or 0
-        fb_attempts = f['fb_attempts'] or 0
-        return {'per_source': per,
-                'fallback': {'total_calls': total, 'first_source_hit': f['first_hit'] or 0,
-                             'fallback_attempts': fb_attempts, 'fallback_hit': f['fb_hit'] or 0,
-                             'fallback_rate': round(f['fb_hit'] / fb_attempts, 4) if fb_attempts else 0}}
-    finally:
-        conn.close()

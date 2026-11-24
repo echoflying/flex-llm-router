@@ -2592,7 +2592,6 @@ def create_app(config_path:str|Path):
                 'runners':runners,'channels':channels}
 
     # ── GPS 坐标搜索 API（独立模块 gps_search，不依赖点 farm；外部经 HTTP 调用）──
-    _GPS_STATS_DB = os.getenv('FLEX_GPS_STATS_DB', 'data/gps_stats.sqlite')
 
     @app.get('/api/gps/sources')
     async def gps_sources():
@@ -2616,7 +2615,7 @@ def create_app(config_path:str|Path):
         """
         import flex_llm_router.gps_search as gps_mod
         return {'object': 'gps_stats', 'router_version': app.version,
-                'stats': gps_mod.gps_stats(_GPS_STATS_DB)}
+                'stats': state.gps_source_statistics()}
 
     @app.post('/api/gps/search')
     async def gps_search(req: Request):
@@ -2647,7 +2646,7 @@ def create_app(config_path:str|Path):
         if priority not in gps_mod.GPS_ORDER:
             raise HTTPException(400, 'priority must be one of: ' + ', '.join(gps_mod.GPS_ORDER))
         result = gps_mod.gps_search(name, city=body.get('city'), district=body.get('district'),
-                                    sources=sources, priority=priority, stats_db=_GPS_STATS_DB)
+                                    sources=sources, priority=priority, state=state)
         return {'object': 'gps_search', 'router_version': app.version,
                 'request': {'name': name, 'city': body.get('city'), 'district': body.get('district'),
                             'sources': sources, 'priority': priority},

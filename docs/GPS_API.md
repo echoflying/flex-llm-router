@@ -95,7 +95,24 @@ GET /api/gps/stats
 }
 ```
 
-统计存 `data/gps_stats.sqlite`（可用环境变量 `FLEX_GPS_STATS_DB` 覆盖）。
+统计存 `data/flex.db` 的 `gps_stats` 表（与 LLM 调用数据同库，走同一个 StateStore 持久化层）。
+
+## 模块内可直接拷贝的纯函数（不整 API）
+
+| 函数 | 用途 |
+|---|---|
+| `gcj02_to_wgs84(lng, lat)` | GCJ-02 → WGS-84（采集落盘统一制） |
+| `wgs84_to_gcj02(lng, lat)` | WGS-84 → GCJ-02（国境外不加偏移） |
+| `bd09_to_gcj02(lng, lat)` | BD-09 → GCJ-02（百度墨卡托解析后） |
+| `gcj02_to_bd09(lng, lat)` | GCJ-02 → BD-09 |
+| `resolve_api_key(source_id)` | 从 env 解析源 key（key 值不写日志） |
+
+```python
+from flex_llm_router.gps_search import wgs84_to_gcj02
+gcj = wgs84_to_gcj02(117.9938, 28.8143)
+```
+
+**Key 管理**（对齐 `config.py` 的 Provider 模型）：`GPS_PROVIDERS` 只存 env var 名，key 值由 `.env` 注入。
 
 ## 调用示例
 

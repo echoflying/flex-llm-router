@@ -27,4 +27,15 @@
 <section class="wide"><h2>短时结果恢复</h2><p>对完全相同的 <code>stream: false</code>、无工具调用请求，Router 会在上次正常成功后的 <b>120 秒</b> 内直接恢复完整 JSON，并在 Trace 记录 <code>replay_hit</code>。它适合 Hermes 的命令批准类重发（例如已得到 <code>APPROVE</code> 但传输中断），不适用于流式内容或工具调用。完整响应仅短时保存在本机，到期删除；Prompt、API Key 和 Cookie 不会写入该临时表或长期统计。</p></section>
 <section class="wide"><h2>可观测与管理</h2><p><b>调用轨迹</b>记录每次请求的选路、上游调用、429、冷却、重试、退让、首字时间、结果恢复和最终结果；默认不保存完整 Prompt。<b>调用统计</b>按 Channel 或 Pool 展示总请求、一次成功、重试后成功和真正失败，并提供响应时间表（平均值、中位数、P95、最短/最长和 TTFT 中位数）。时间范围为最近 24 小时（按 15 分钟调用趋势和小时统计）、近 7 天（按天）或近 30 天（按周）。管理页可测试、启停或重置单个通道。</p><p>Setup 中可单独开启<b>全文上行请求留存</b>，用于复现特定 payload：只保存实际发向上游的完整请求正文，不保存 API Header/Key，也不额外保存流式模型输出。默认关闭；保留时长、最多条数和最大空间可配，达到任一限制会从最旧记录自动清理。</p></section>
 <section class="wide"><h2>边界与原则</h2><p>Router 只负责路由与传输，不替代调用方的 Agent 决策。它不会把 API Key、Cookie 或完整对话内容写入调用轨迹；上游模型、额度与能力仍以配置和真实响应为准。</p></section>
+<section class="wide"><h2>GPS 坐标搜索（/api/gps/*）</h2><p>GPS 模块把店铺名称解析为坐标，外部调用方先查可用源再搜索；不依赖点 farm，经 HTTP 调用。</p><table><thead><tr><th>端点</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>GET /api/gps/sources</code></td><td>可用源与优先级（360 / 高德 / 腾讯 / 百度），及 normal/high 默认顺序。</td></tr>
+<tr><td><code>POST /api/gps/search</code></td><td>统一搜索：<code>{name, city?, district?, sources?, priority?}</code>。返回 <code>coord</code>（WGS-84）、<code>gcj02</code>、<code>poiName</code>、<code>matchSim</code>、<code>adcode</code>；前一源无有效数据自动 Fallback。</td></tr>
+<tr><td><code>GET /api/gps/stats</code></td><td>每源命中率与 Fallback 链健康度。</td></tr>
+</tbody></table></section>
+<section class="wide"><h2>搜索代理（/api/search/*）</h2><p>聚合点 farm 用过的全部搜索通道（地图 POI / 本地 SearXNG / 网页 / 百科 / Tavily），统一入口按可用性自动选择。</p><table><thead><tr><th>端点</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>GET /api/search/channels</code></td><td>通道清单 + 实时可用性（id/kind/needs_key/key_configured/available/reason）。</td></tr>
+<tr><td><code>POST /api/search/search</code></td><td>统一搜索：<code>{query, kind?, channels?, city?, district?, limit?, max_channels?, force?}</code>。结果统一 <code>{channel,kind,title,url,snippet,latency_ms,poi}</code>；<code>channels_used</code> 记录命中通道，<code>skipped</code> 记录跳过原因。</td></tr>
+<tr><td><code>POST /api/search/test/{channel}</code></td><td>单通道真实探测（忽略 blocked 标记）。</td></tr>
+<tr><td><code>GET /api/search/stats</code></td><td>调用统计（命中/未命中 + 按通道拆分）。</td></tr>
+</tbody></table><p>通道：<code>poi_360</code>、<code>tencent_poi</code>、<code>searxng</code>、<code>bing</code>、<code>sogou</code>、<code>socom</code>、<code>osm</code>、<code>tavily</code> 可用；<code>baidu_web</code>（反爬）、<code>sogou_baike</code>（404）不可用。key 只存环境变量名，值由 <code>.env</code> 注入。</p></section>
 </main>

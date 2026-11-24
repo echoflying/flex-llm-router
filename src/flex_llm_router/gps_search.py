@@ -130,10 +130,10 @@ NAME_MATCH_WEAK = 0.45
 
 # ── 源注册表 ──────────────────────────────────────────────
 GPS_SOURCES = {
-    '360':    {'name': '360地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84', 'available': True,  'reason': None},
-    'baidu':  {'name': '百度地图', 'quality': 'medium', 'coord': '墨卡托→BD-09→GCJ-02→WGS-84', 'available': True, 'reason': None},
-    'amap':   {'name': '高德地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84', 'available': False, 'reason': 'AMAP年度额度耗尽(10044)'},
-    'tencent': {'name': '腾讯地图', 'quality': 'medium', 'coord': 'GCJ-02→WGS-84', 'available': False, 'reason': 'TENCENT key来源域名未授权(110)'},
+    '360':    {'name': '360地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84'},
+    'baidu':  {'name': '百度地图', 'quality': 'medium', 'coord': '墨卡托→BD-09→GCJ-02→WGS-84'},
+    'amap':   {'name': '高德地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84'},
+    'tencent': {'name': '腾讯地图', 'quality': 'medium', 'coord': 'GCJ-02→WGS-84'},
 }
 
 GPS_ORDER = {
@@ -147,6 +147,26 @@ GPS_PROVIDERS = {
     'amap':    {'api_key_env': 'AMAP_WEB_API_KEY', 'fallback_key_env': 'AMAP_KEY'},
     'tencent': {'api_key_env': 'TENCENT_WEB_API_KEY'},
 }
+
+# 需要 key 的源：配置上可用 = key 存在。360/百度无需 key，恒可用。
+_KEY_REQUIRED_SOURCES = {'amap', 'tencent'}
+
+
+def _source_available(source_id):
+    """动态可用性：需要 key 的源必须有 key；360/百度恒可用。"""
+    if source_id in _KEY_REQUIRED_SOURCES:
+        return bool(resolve_api_key(source_id))
+    return True
+
+
+def _source_reason(source_id):
+    """动态原因：需要 key 且缺失时说明缺哪个 env var。"""
+    if source_id in _KEY_REQUIRED_SOURCES and not resolve_api_key(source_id):
+        envs = GPS_PROVIDERS.get(source_id, {})
+        names = [envs.get('api_key_env'), envs.get('fallback_key_env')]
+        names = [n for n in names if n]
+        return f'{source_id} 未配置 key（需 env: {" / ".join(names)}）'
+    return None
 
 
 def resolve_api_key(source_id):
@@ -277,6 +297,39 @@ def geocode_shop_baidu(name, city, district):
                 raw={'x': mx, 'y': my})
 
 
+def _poi_name(p):
+    return p.get('title') or p.get('name') or ''
+
+
+def _poi_district_text(p):
+    """综合地址文本，用于 district 二次过滤（兼容 amap/baidu/tencent 不同字段）。
+    tencent 用 ad_info.district；amap/baidu 用 adname / district。"""
+    parts = [p.get('address', ''), p.get('adname', ''), p.get('district', '')]
+    ad = p.get('ad_info') or {}
+    if isinstance(ad, dict):
+        parts.append(ad.get('district', ''))
+    return ' '.join(str(x) for x in parts)
+
+
+def _best_poi(pois, name, district):
+    """候选排序：优先选 district 匹配的 POI，再按 sim 降序。
+
+    region(city,0) 边界不严会返回跨区 POI，必须按 district 二次过滤；
+    在匹配子集里取 sim 最高，避免"最佳 sim 是跨区、本区略低"被误判。
+    返回 (best_sim, poi, district_ok)。
+    """
+    scored = sorted(((name_similarity(name, _poi_name(p)), p) for p in pois), key=lambda t: -t[0])
+    if not scored:
+        return 0.0, None, False
+    dist_key = _strip_suffix(district) if district else ''
+    if dist_key:
+        for s, p in scored:
+            pd = _poi_district_text(p)
+            if pd.strip() and dist_key in pd:
+                return s, p, True
+    return scored[0][0], scored[0][1], False
+
+
 def geocode_shop_amap(name, city, district):
     key = resolve_api_key('amap')
     if not key:
@@ -293,21 +346,20 @@ def geocode_shop_amap(name, city, district):
     pois = d.get('pois') or []
     if not pois:
         return _hit(False, error='no poi')
-    scored = sorted(((name_similarity(name, p.get('name', '')), p) for p in pois), key=lambda t: -t[0])
-    best_s, poi = scored[0]
+    best_s, poi, district_ok = _best_poi(pois, name, district)
+    if poi is None:
+        return _hit(False, error='no poi')
     if best_s < NAME_MATCH_WEAK:
-        return _hit(False, error=f'weak name match (best={poi.get("name", "-")} sim={best_s:.2f})',
-                    weak={'name': poi.get('name', ''), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
+        return _hit(False, error=f'weak name match (best={_poi_name(poi)} sim={best_s:.2f})',
+                    weak={'name': _poi_name(poi), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
     loc = (poi.get('location') or '').split(',')
     if len(loc) != 2:
         return _hit(False, error='no coords')
     lng, lat = float(loc[0]), float(loc[1])
-    poi_dist = f'{poi.get("address", "")} {poi.get("adname", "")}'
-    dist_key = _strip_suffix(district)
-    if dist_key and poi_dist.strip() and dist_key not in poi_dist:
-        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    if _strip_suffix(district) and not district_ok:
+        return _hit(False, error=f'district mismatch: poi={_poi_district_text(poi)} (want {_strip_suffix(district)})')
     wgs = gcj02_to_wgs84(lng, lat)
-    return _hit(True, name=poi.get('name', name), address=poi.get('address', ''),
+    return _hit(True, name=_poi_name(poi) or name, address=poi.get('address', ''),
                 district=poi.get('adname', ''), adcode=poi.get('adcode'),
                 match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
                 gcj02={'lng': lng, 'lat': lat}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
@@ -331,21 +383,20 @@ def geocode_shop_tencent(name, city, district):
     data = d.get('data') or []
     if not data:
         return _hit(False, error='no poi')
-    scored = sorted(((name_similarity(name, p.get('title') or p.get('name', '')), p) for p in data), key=lambda t: -t[0])
-    best_s, poi = scored[0]
+    best_s, poi, district_ok = _best_poi(data, name, district)
+    if poi is None:
+        return _hit(False, error='no poi')
     if best_s < NAME_MATCH_WEAK:
-        return _hit(False, error=f'weak name match (best={poi.get("title", "-")} sim={best_s:.2f})',
-                    weak={'name': poi.get('title', ''), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
+        return _hit(False, error=f'weak name match (best={_poi_name(poi)} sim={best_s:.2f})',
+                    weak={'name': _poi_name(poi), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
     loc = poi.get('location') or {}
     lng, lat = float(loc.get('lng', 0) or 0), float(loc.get('lat', 0) or 0)
     if not lng or not lat:
         return _hit(False, error='no coords')
-    poi_dist = f'{poi.get("address", "")} {poi.get("district", "")}'
-    dist_key = _strip_suffix(district)
-    if dist_key and poi_dist.strip() and dist_key not in poi_dist:
-        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    if _strip_suffix(district) and not district_ok:
+        return _hit(False, error=f'district mismatch: poi={_poi_district_text(poi)} (want {_strip_suffix(district)})')
     wgs = gcj02_to_wgs84(lng, lat)
-    return _hit(True, name=poi.get('title') or poi.get('name', name), address=poi.get('address', ''),
+    return _hit(True, name=_poi_name(poi), address=poi.get('address', ''),
                 district=poi.get('district', ''), adcode=(poi.get('ad_info') or {}).get('adcode'),
                 match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
                 gcj02={'lng': lng, 'lat': lat}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
@@ -371,8 +422,8 @@ def gps_search(name, city=None, district=None, sources=None, priority='normal', 
             attempts.append({'source': sid, 'outcome': 'disabled', 'sim': None, 'error': 'unknown source'})
             had_fail = True
             continue
-        if not src['available']:
-            attempts.append({'source': sid, 'outcome': 'disabled', 'sim': None, 'error': src['reason'] or 'disabled'})
+        if not _source_available(sid):
+            attempts.append({'source': sid, 'outcome': 'disabled', 'sim': None, 'error': _source_reason(sid) or 'disabled'})
             had_fail = True
             continue
         r = _ADAPTERS[sid](name, city, district)
@@ -395,5 +446,7 @@ def gps_search(name, city=None, district=None, sources=None, priority='normal', 
 
 
 def gps_sources_info():
-    return {'sources': [{'id': sid, **meta} for sid, meta in GPS_SOURCES.items()],
+    return {'sources': [{'id': sid, **meta,
+                         'available': _source_available(sid),
+                         'reason': _source_reason(sid)} for sid, meta in GPS_SOURCES.items()],
             'order': GPS_ORDER}

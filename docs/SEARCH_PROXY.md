@@ -13,12 +13,12 @@ flex-llm-router 的统一搜索入口，聚合 point farm 用过的全部搜索�
 | `sogou` | 搜狗网页 | web | 无 | 996ms n=8 | ✅ 可用（移动版） |
 | `socom` | 360 网页 | web | 无 | 1036ms n=14 | ✅ 可用 |
 | `osm` | OSM Nominatim | geo | 无 | 738ms n=1 | ✅ 可用（免 key 地理源） |
-| `tavily` | Tavily 付费 | web | `TAVILY_API_KEY` | — | ⚠️ 缺 key（从未录入） |
+| `tavily` | Tavily 付费 | web | `TAVILY_API_KEY` | 4772ms n=5 | ✅ 已配置 key，实测命中玉山聚贤大酒店 |
 | `baidu_web` | 百度网页 | web | 无 | HTTP200 反爬 | ❌ 反爬（返回验证页） |
 | `sogou_baike` | 搜狗百科 | wiki | 无 | HTTP404 | ❌ 接口失效 |
 
-> **Tavily key**：flow-llm-router 的 `search_provider_keys` 表 **0 行**——Tavily 代码在（`api/tavily.com/search`），
-> 但 key 从未录入。配置 `TAVILY_API_KEY` 到 `.env` 后自动启用。
+> **Tavily key**：2026-11-24 由用户提供并写入 `.env` 的 `TAVILY_API_KEY`（54 字符，gitignore 不落库）。
+> 配置后自动启用（需重启服务加载新环境）。flow-llm-router 的 `search_provider_keys` 表仍 0 行——该侧未复用。
 
 ## API
 
@@ -44,7 +44,8 @@ flex-llm-router 的统一搜索入口，聚合 point farm 用过的全部搜索�
 ## 已知局限
 
 - **SearXNG 引擎质量差**：对中文长关键词返回拆词/垃圾结果（与 point farm 观察一致）。
-  建议 POI 搜索优先 `poi_360`/`tencent_poi`；`searxng` 仅作文本佐证。
+  已**降级为佐证通道**（排在 `poi_360`/`tencent_poi` 之后）。POI 搜索优先 `poi_360`/`tencent_poi`；
+  `searxng` 仅作文本佐证。
 - 坐标系统：`poi_360`/`tencent_poi` 返回 GCJ-02，`osm` 返回 WGS-84（结果 `poi.coord_sys` 标注）。
 - 5 个 `tests/test_routing_integration.py` 用例预先失败（`HTTP 429 inference tpm exhausted`，
   LLM 配额 mock 环境问题），与搜索代理无关（已用 git stash 验证改动前后均失败）。

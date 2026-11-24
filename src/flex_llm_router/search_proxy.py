@@ -37,7 +37,7 @@ SEARCH_CHANNELS: dict = {
     "searxng": {
         "name": "SearXNG 本地", "kind": "web", "needs_key": False,
         "base_url_env": "SEARXNG_BASE_URL", "default_base": "http://127.0.0.1:8080",
-        "engines": "bing,ddg,google", "probe": "602ms n=10 本地最快",
+        "engines": "bing,ddg,google", "probe": "602ms n=10 本地最快但中文拆词质量差（佐证用）",
     },
     "poi_360": {
         "name": "360 地图 POI", "kind": "poi", "needs_key": False,
@@ -72,7 +72,7 @@ SEARCH_CHANNELS: dict = {
     "tavily": {
         "name": "Tavily 付费", "kind": "web", "needs_key": True,
         "key_env": "TAVILY_API_KEY", "url": "https://api.tavily.com/search",
-        "depth": "advanced", "probe": "缺 key（flow search_provider_keys 0 行，从未录入）",
+        "depth": "advanced", "probe": "4772ms n=5 高质量（玉山聚贤大酒店 精确命中）",
     },
     "baidu_web": {
         "name": "百度网页", "kind": "web", "needs_key": False,
@@ -86,9 +86,9 @@ SEARCH_CHANNELS: dict = {
     },
 }
 
-# 默认尝试顺序（按探测到的可用性 + 延迟排序）
+# 默认尝试顺序（按探测可用性 + 语义优先级；SearXNG 因中文拆词质量差降为佐证通道）
 SEARCH_ORDER: list = [
-    "searxng", "poi_360", "tencent_poi", "bing", "sogou", "socom",
+    "poi_360", "tencent_poi", "searxng", "bing", "sogou", "socom",
     "osm", "tavily", "baidu_web", "sogou_baike",
 ]
 

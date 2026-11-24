@@ -15,6 +15,8 @@
   </div>
 </div>
 <div id="app">Loading…</div>
+<div id="gps"></div>
+<div id="search"></div>
 <style>
 body{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
 table{font-size:12px;width:100%;table-layout:fixed;border-collapse:collapse}
@@ -64,6 +66,12 @@ code{font-size:11px}
 #bottom th{text-align:left}
 .errrow td{background:#fff5f5;font-size:12px}
 .errrow td.bad{color:#b42318;font-weight:600}
+/* GPS / 搜索代理区块 */
+#gps,#search{margin:22px 0 8px;padding:12px 14px;border:1px solid #e3e8ef;border-radius:6px;background:#fbfcfe}
+#gps table,#search table{width:100%;table-layout:fixed;border-collapse:collapse;margin-top:6px}
+#gps th,#search th{text-align:left;font-size:11px;color:#667;background:#f1f4f9}
+#gps td,#search td{font-size:12px;padding:4px 8px;border-bottom:1px solid #e3e8ef;word-break:break-word;overflow:hidden;vertical-align:top}
+#gps h2,#search h2{font-size:15px;margin:0 0 4px}
 </style>
 <script>
 const q=s=>document.querySelector(s),
@@ -146,12 +154,60 @@ async function loadBottom(){
   q('#bottom').innerHTML=out;
 }
 
+async function loadGps(){
+  try{
+    const [src,st]=await Promise.all([
+      fetch('/api/gps/sources').then(r=>r.json()),
+      fetch('/api/gps/stats').then(r=>r.json())
+    ]);
+    const per=st.stats.per_source||{}, fb=st.stats.fallback||{};
+    const rows=(src.sources||[]).map(s=>{
+      const p=per[s.id]||{};
+      const rate=p.hit_rate!=null?(p.hit_rate*100).toFixed(1)+'%':'—';
+      return `<tr><td><code>${esc(s.id)}</code></td>`+
+        `<td>${s.available?`<span class="dot green"></span>可用`:`<span class="dot red"></span>不可用`}</td>`+
+        `<td>${esc(p.calls||0)}</td><td>${esc(p.hits||0)}</td><td>${rate}</td>`+
+        `<td>${esc(s.reason||'')}</td></tr>`;
+    }).join('');
+    q('#gps').innerHTML=`<h2>GPS 坐标搜索</h2>`+
+      `<div class="cache-sub">总调用 ${fb.total_calls||0} · 首源直接命中 ${fb.first_source_hit||0} · Fallback 尝试 ${fb.fallback_attempts||0} · Fallback 命中 ${fb.fallback_hit||0}${fb.fallback_rate!=null?'（'+(fb.fallback_rate*100).toFixed(1)+'%）':''}</div>`+
+      `<table><colgroup><col style="width:14%"><col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:8%"><col></colgroup>`+
+      `<tr><th>源</th><th>可用</th><th>调用</th><th>命中</th><th>命中率</th><th>说明</th></tr>${rows}</table>`;
+  }catch(e){ q('#gps').innerHTML='<p class="empty">GPS 数据加载失败：'+esc(e.message)+'</p>'; }
+}
+
+async function loadSearch(){
+  try{
+    const [ch,st]=await Promise.all([
+      fetch('/api/search/channels').then(r=>r.json()),
+      fetch('/api/search/stats').then(r=>r.json())
+    ]);
+    const per=st.stats.per_channel||{};
+    const rows=(ch.channels||[]).map(c=>{
+      const p=per[c.id]||{};
+      const key=c.needs_key?(c.key_configured?'key✓':'key✗'):'—';
+      const rate=p.hit_rate!=null?(p.hit_rate*100).toFixed(1)+'%':'—';
+      return `<tr><td><code>${esc(c.id)}</code></td><td>${esc(c.name)}</td>`+
+        `<td>${esc(c.kind)}</td>`+
+        `<td>${c.available?`<span class="dot green"></span>可用`:`<span class="dot red"></span>不可用`}</td>`+
+        `<td>${key}</td><td>${esc(p.calls||0)}</td><td>${rate}</td>`+
+        `<td>${esc(c.reason||'')}</td></tr>`;
+    }).join('');
+    q('#search').innerHTML=`<h2>搜索代理</h2>`+
+      `<div class="cache-sub">总调用 ${st.stats.total_calls||0} · 命中 ${st.stats.hits||0}${st.stats.hit_rate!=null?'（'+(st.stats.hit_rate*100).toFixed(1)+'%）':''}</div>`+
+      `<table><colgroup><col style="width:12%"><col style="width:14%"><col style="width:7%"><col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col></colgroup>`+
+      `<tr><th>通道</th><th>名称</th><th>类目</th><th>可用</th><th>key</th><th>调用</th><th>命中率</th><th>说明</th></tr>${rows}</table>`;
+  }catch(e){ q('#search').innerHTML='<p class="empty">搜索数据加载失败：'+esc(e.message)+'</p>'; }
+}
+
 async function load(){
   try{
     const d=await fetch('/api/dashboard').then(r=>r.json());
     renderPulse(d.runners||[]);
     renderRunners(d.runners||[],d.activity_cache);
   }catch(e){ q('#app').innerHTML='<p class="empty">加载失败：'+esc(e.message)+'</p>'; }
+  await loadGps();
+  await loadSearch();
   await loadBottom();
 }
 load();

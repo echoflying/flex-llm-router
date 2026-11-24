@@ -2273,6 +2273,128 @@ def create_app(config_path:str|Path):
         if 'protocol_idle_seconds' in out: PROTOCOL_AFFINITY_IDLE_SECONDS=out['protocol_idle_seconds']
         logger.warning('affinity idle windows: session=%ss protocol=%ss',SESSION_AFFINITY_IDLE_SECONDS,PROTOCOL_AFFINITY_IDLE_SECONDS)
         return {'session_idle_seconds':SESSION_AFFINITY_IDLE_SECONDS,'protocol_idle_seconds':PROTOCOL_AFFINITY_IDLE_SECONDS}
+
+    @app.get('/api/help')
+    async def api_help(verbose: bool = False):
+        """能力目录: 枚举全部 HTTP 端点 + 参数 + 说明, 调用方免读文档即可发现接口.
+
+        GET /api/help?verbose=false
+        返回 ``object: 'help'`` 目录, 每条含 ``method/path/params/description``。
+        参数由 FastAPI 路由自省生成(无需手写), 与真实路由永远同步。
+        ``?verbose=true`` 附上各端点参数的类型/默认值/必填与 tags。
+        """
+        import inspect
+        from pydantic import BaseModel
+        catalog = []
+        seen = set()
+        for r in app.routes:
+            path = getattr(r, 'path', None)
+            methods = getattr(r, 'methods', None)
+            if not path or not methods:
+                continue
+            # 去重: 同一 path 多个 method 合并(如 GET+POST)
+            key = path
+            if key in seen:
+                continue
+            seen.add(key)
+            methods = sorted(methods)
+            ep = getattr(r, 'endpoint', None)
+            desc = inspect.getdoc(ep) if ep else None
+            desc = (desc or '').strip()
+            # 参数: query + path + body
+            params = []
+            d = getattr(r, 'dependant', None)
+            if d is not None:
+                for group, kind in ((getattr(d, 'query_params', []) or [], 'query'),
+                                    (getattr(d, 'path_params', []) or [], 'path'),
+                                    ([getattr(d, 'body_field', None)] if getattr(d, 'body_field', None) else [], 'body')):
+                    for p in group:
+                        fi = p.field_info
+                        dflt = getattr(fi, 'default', None)
+                        # 必填判定: PydanticUndefined 或 required=True
+                        required = bool(getattr(fi, 'required', False))
+                        if not required and dflt is not None and type(dflt).__name__ == 'PydanticUndefined':
+                            required = True
+                        ann = getattr(fi, 'annotation', None)
+                        item = {'name': p.name, 'in': kind}
+                        if verbose:
+                            item['type'] = str(ann) if ann else None
+                            item['required'] = required
+                            if dflt is not None and type(dflt).__name__ != 'PydanticUndefined':
+                                item['default'] = repr(dflt)
+                        params.append(item)
+            catalog.append({
+                'method': '|'.join(methods),
+                'path': path,
+                'params': params,
+                'description': desc.split('\n')[0] if desc else None,
+            })
+        catalog.sort(key=lambda x: (x['path'], x['method']))
+
+        # 分章节目录：LLM / GPS 完全独立，按路径前缀自动归属，后面加新域（如 search）只需在规则表加一行。
+        _path_set = {c['path'] for c in catalog}
+        def _has(prefix):  # 存在任一以 prefix 开头的端点
+            return any(p.startswith(prefix) for p in _path_set)
+        def _paths(*prefixes):  # 收集所有匹配前缀的端点路径（去重保序）
+            seen = set(); out = []
+            for p in sorted(_path_set):
+                if any(p.startswith(pr) for pr in prefixes) and p not in seen:
+                    seen.add(p); out.append(p)
+            return out
+        def _exact(*paths):  # 精确匹配（用于 HTML 页面等固定路径）
+            return [p for p in sorted(_path_set) if p in paths]
+        chapters = [
+            {
+                'id': 'llm', 'title': 'LLM 路由',
+                'groups': {
+                    'routing':   _paths('/v1/'),
+                    'advice':    _paths('/api/bulk-lite'),
+                    'status':    _paths('/api/fleet-status', '/api/dashboard', '/api/quality', '/healthz'),
+                    'config':    _paths('/api/config', '/api/setup', '/api/ui'),
+                    'statistics': _paths('/api/statistics', '/api/quota', '/api/requests'),
+                    'traces':    _paths('/api/traces', '/api/errors', '/api/debug'),
+                    'runners':   _paths('/api/runners', '/api/pools', '/api/providers'),
+                },
+            },
+            {
+                'id': 'gps', 'title': 'GPS 坐标搜索',
+                'groups': {
+                    'sources':   _paths('/api/gps/sources'),
+                    'search':    _paths('/api/gps/search'),
+                    'stats':     _paths('/api/gps/stats'),
+                },
+            },
+            # 以后新域（如通用 search）加一个章节即可：
+            # {'id': 'search', 'title': '通用搜索', 'groups': {'search': _paths('/api/search')}},
+            {
+                'id': 'system', 'title': '系统 / 页面',
+                'groups': {
+                    'pages':     _exact('/', '/help', '/setup', '/traces', '/statistics', '/quota', '/config', '/login', '/tasks', '/import', '/lookup', '/dictionaries', '/docs', '/docs/oauth2-redirect', '/redoc', '/openapi.json'),
+                    'admin':     _paths('/api/admin'),
+                    'api_help':  _exact('/api/help'),
+                },
+            },
+        ]
+        # 去掉空分组，去掉空章节
+        chapters = [ch for ch in chapters if any(v for v in ch['groups'].values())]
+        for ch in chapters:
+            ch['groups'] = {k: v for k, v in ch['groups'].items() if v}
+        return {'object': 'help', 'router_version': app.version,
+                'generated_at': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime()),
+                'endpoint_count': len(catalog),
+                'endpoints': catalog,
+                'chapters': chapters,
+                # 兼容旧字段：扁平 groups（LLM 为主），保持向后兼容
+                'groups': {
+                    'routing':   ['/v1/chat/completions', '/v1/models'],
+                    'advice':    ['/api/bulk-lite'],
+                    'status':    ['/api/fleet-status', '/api/dashboard', '/api/quality', '/healthz'],
+                    'config':    [p for p in ['/api/config', '/api/config/view', '/api/config/runners', '/api/config/channels', '/api/config/providers'] if p in _path_set],
+                    'statistics': [c['path'] for c in catalog if c['path'].startswith('/api/statistics')],
+                    'traces':    [c['path'] for c in catalog if c['path'].startswith('/api/traces') or c['path'].startswith('/api/errors')],
+                },
+            }
+
     @app.get('/healthz')
     async def health():
         uptime=int(time.time()-app.state.started_at)
@@ -2468,6 +2590,70 @@ def create_app(config_path:str|Path):
                          'daily_budget_tokens_remaining':budget_tokens_left,
                          'daily_budget_tokens_consumed':max(0,budget_tokens_declared-budget_tokens_left)},
                 'runners':runners,'channels':channels}
+
+    # ── GPS 坐标搜索 API（独立模块 gps_search，不依赖点 farm；外部经 HTTP 调用）──
+    _GPS_STATS_DB = os.getenv('FLEX_GPS_STATS_DB', 'data/gps_stats.sqlite')
+
+    @app.get('/api/gps/sources')
+    async def gps_sources():
+        """GPS 可用源与优先级顺序（外部调用方先查这个再搜）.
+
+        GET /api/gps/sources
+        返回四个源（360/baidu/amap/tencent）的可用性/质量/坐标系统，及 normal/high
+        两档默认顺序。不产生任何外部探测，纯本地常量。
+        """
+        import flex_llm_router.gps_search as gps_mod
+        return {'object': 'gps_sources', 'router_version': app.version,
+                **gps_mod.gps_sources_info()}
+
+    @app.get('/api/gps/stats')
+    async def gps_stats():
+        """GPS 搜索调用统计（每源命中率 + Fallback 链）.
+
+        GET /api/gps/stats
+        返回 ``per_source``（每源 calls/hits/hit_rate）与 ``fallback``（首源直接命中、
+        fallback 尝试/命中率）。只读本进程记录的 SQLite 统计。
+        """
+        import flex_llm_router.gps_search as gps_mod
+        return {'object': 'gps_stats', 'router_version': app.version,
+                'stats': gps_mod.gps_stats(_GPS_STATS_DB)}
+
+    @app.post('/api/gps/search')
+    async def gps_search(req: Request):
+        """GPS 坐标搜索（统一入口，外部类似 LLM 调用）.
+
+        POST /api/gps/search   body: {"name": "聚贤楼", "city": "上饶市",
+                                       "district": "玉山县", "sources": null,
+                                       "priority": "normal"}
+        - ``name`` 必填；``city``/``district`` 帮助行政区校验。
+        - ``sources`` 显式指定时完全覆盖默认链；否则按 ``priority`` 档（normal/high）。
+        - Fallback：前一源无有效数据 → 下一源继续，返回 ``attempts`` 全链记录。
+        - 坐标统一 WGS-84（``coord``），另附 ``gcj02`` 与来源字段。
+        """
+        import flex_llm_router.gps_search as gps_mod
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(400, 'invalid JSON body')
+        name = (body.get('name') or '').strip()
+        if not name:
+            raise HTTPException(400, 'name is required')
+        sources = body.get('sources')
+        if sources is not None:
+            if not isinstance(sources, list) or not sources:
+                raise HTTPException(400, 'sources must be a non-empty list')
+            sources = [str(s) for s in sources]
+        priority = body.get('priority') or 'normal'
+        if priority not in gps_mod.GPS_ORDER:
+            raise HTTPException(400, 'priority must be one of: ' + ', '.join(gps_mod.GPS_ORDER))
+        result = gps_mod.gps_search(name, city=body.get('city'), district=body.get('district'),
+                                    sources=sources, priority=priority, stats_db=_GPS_STATS_DB)
+        return {'object': 'gps_search', 'router_version': app.version,
+                'request': {'name': name, 'city': body.get('city'), 'district': body.get('district'),
+                            'sources': sources, 'priority': priority},
+                'result': result,
+                'sources_info': {s['id']: {'available': s['available'], 'reason': s['reason']}
+                                 for s in gps_mod.gps_sources_info()['sources']}}
 
     @app.get('/api/runners')
     async def runner_list():

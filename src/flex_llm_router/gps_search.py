@@ -1,0 +1,402 @@
+"""Point Farm GPS 坐标搜索服务（独立模块，供 Flask 路由 /api/gps/search 调用）。
+
+设计目标：
+  - 对外统一暴露「店名 → 经纬度」搜索能力，调用方不用读 engine.mjs 源码。
+  - 四个源：360 / 百度 / 高德 / 腾讯。360、百度可用；高德、腾讯代码就绪但默认挂起。
+  - 优先级档：normal（360→百度→高德→腾讯）、high（质量 high 的可用源）。
+  - 显式指定 sources 时完全覆盖默认链。
+  - Fallback：前一源无有效数据 → 下一源继续，直到命中或链尽。
+  - 统计：每次源尝试记一条，存 SQLite。
+
+与 engine.mjs 的关系：本模块复刻 engine.mjs 的 geocodeShop360/geocodeShopBaidu 逻辑
+（Python 版），并新增高德/腾讯适配器。engine.mjs 不动；Flask app 通过本模块对外提供能力。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import time
+import urllib.parse
+import urllib.request
+
+# 坐标转换（WGS-84 / GCJ-02 / BD-09）——内联实现，本模块完全独立，不依赖点 farm 的 scripts
+def gcj02_to_wgs84(lng, lat):
+    a, ee = 6378245.0, 0.00669342162296594323
+    if not (72.004 < lng < 137.8347 and 0.8293 < lat < 55.8271):
+        return lng, lat
+    def _t_lat(x, y):
+        ret = -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*math.sqrt(abs(x))
+        ret += (20.0*math.sin(6.0*x*math.pi) + 20.0*math.sin(2.0*x*math.pi))*2.0/3.0
+        ret += (20.0*math.sin(y*math.pi) + 40.0*math.sin(y/3.0*math.pi))*2.0/3.0
+        ret += (160.0*math.sin(y/12.0*math.pi) + 320*math.sin(y*math.pi/30.0))*2.0/3.0
+        return ret
+    def _t_lng(x, y):
+        ret = 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*math.sqrt(abs(x))
+        ret += (20.0*math.sin(6.0*x*math.pi) + 20.0*math.sin(2.0*x*math.pi))*2.0/3.0
+        ret += (20.0*math.sin(x*math.pi) + 40.0*math.sin(x/3.0*math.pi))*2.0/3.0
+        ret += (150.0*math.sin(x/12.0*math.pi) + 300*math.sin(x/30.0*math.pi))*2.0/3.0
+        return ret
+    dlat = _t_lat(lng-105.0, lat-35.0)
+    dlng = _t_lng(lng-105.0, lat-35.0)
+    radlat = lat/180.0*math.pi
+    magic = math.sin(radlat)
+    magic = 1 - ee*magic*magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat*180.0)/((a*(1-ee))/(magic*sqrtmagic)*math.pi)
+    dlng = (dlng*180.0)/(a/sqrtmagic*math.cos(radlat)*math.pi)
+    return lng-dlng, lat-dlat
+def bd09_to_gcj02(bd_lng, bd_lat):
+    xpi = math.pi*3000.0/180.0
+    x, y = bd_lng-0.0065, bd_lat-0.006
+    z = math.sqrt(x*x+y*y) - 0.00002*math.sin(y*xpi)
+    theta = math.atan2(y, x) - 0.000003*math.cos(x*xpi)
+    return z*math.cos(theta), z*math.sin(theta)
+
+
+# ── 名称相似度（Dice bigram + 品牌前缀惩罚）──────────────────
+def norm_shop_name(s):
+    s = str(s or '')
+    s = re.sub(r'[（(][^）)]*[）)]', '', s)
+    s = re.sub(r'^(老字号|正宗|百年|通称|本地|据说)', '', s)
+    s = re.sub(r'(老店|老街|老字号)', '', s)
+    s = re.sub(r'[店馆庄楼铺坊堂]$', '', s)
+    return re.sub(r'[^\u4e00-\u9fa5A-Za-z0-9]', '', s)
+
+
+def bigram_set(s):
+    return {s[i:i+2] for i in range(len(s) - 1)}
+
+
+def brand_prefix(n):
+    m = re.match(r'^([\u4e00-\u9fa5])(记|氏|家)', n)
+    return m.group(1) + m.group(2) if m else ''
+
+
+def name_similarity(a, b):
+    na, nb = norm_shop_name(a), norm_shop_name(b)
+    A, B = bigram_set(na), bigram_set(nb)
+    if not A or not B:
+        return 0.0
+    inter = len(A & B)
+    sim = (2.0 * inter) / (len(A) + len(B))
+    pa, pb = brand_prefix(na), brand_prefix(nb)
+    if pa and pb and pa != pb:
+        sim *= 0.2
+    return sim
+
+
+NAME_MATCH_MIN = 0.6
+NAME_MATCH_WEAK = 0.45
+
+
+# ── 源注册表 ──────────────────────────────────────────────
+GPS_SOURCES = {
+    '360':    {'name': '360地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84', 'available': True,  'reason': None},
+    'baidu':  {'name': '百度地图', 'quality': 'medium', 'coord': '墨卡托→BD-09→GCJ-02→WGS-84', 'available': True, 'reason': None},
+    'amap':   {'name': '高德地图', 'quality': 'high',   'coord': 'GCJ-02→WGS-84', 'available': False, 'reason': 'AMAP年度额度耗尽(10044)'},
+    'tencent': {'name': '腾讯地图', 'quality': 'medium', 'coord': 'GCJ-02→WGS-84', 'available': False, 'reason': 'TENCENT key来源域名未授权(110)'},
+}
+
+GPS_ORDER = {
+    'normal': ['360', 'baidu', 'amap', 'tencent'],
+    'high':   ['360', 'amap'],
+}
+
+
+def _http_get_json(url, referer=None, timeout=15):
+    # 完整 Chrome UA：百度 map.baidu.com 对简写 "Mozilla/5.0" 返回 403，必须完整 UA
+    headers = {'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) '
+                              'Chrome/120.0.0.0 Safari/537.36')}
+    if referer:
+        headers['Referer'] = referer
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def _strip_suffix(s, suffixes=('市', '县', '区')):
+    s = str(s or '')
+    for sfx in suffixes:
+        if s.endswith(sfx):
+            return s[:-len(sfx)]
+    return s
+
+
+def _hit(ok, **kw):
+    base = {'ok': ok}
+    base.update(kw)
+    return base
+
+
+def geocode_shop_360(name, city, district):
+    kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
+    url = f'https://restapi.map.360.cn/newapi?d=pc&brand_cpc=on&keyword={kw}&cityname={urllib.parse.quote(city or "")}&sid=1014&_={int(time.time()*1000)}'
+    try:
+        d = _http_get_json(url)
+    except Exception as e:
+        return _hit(False, error=f'{e}')
+    lst = (d or {}).get('list') or []
+    if not lst:
+        return _hit(False, error='no poi')
+    scored = sorted(((name_similarity(name, p.get('name', '')), p) for p in lst), key=lambda t: -t[0])
+    best_s, poi = scored[0]
+    if best_s < NAME_MATCH_WEAK:
+        return _hit(False, error=f'weak name match (best={poi.get("name", "-")} sim={best_s:.2f})',
+                    weak={'name': poi.get('name', ''), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
+    poi_dist = f'{poi.get("district", "")} {poi.get("address", "")}'
+    dist_key = _strip_suffix(district)
+    if dist_key and poi_dist.strip() and dist_key not in poi_dist:
+        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    lng, lat = float(poi.get('x', 0) or 0), float(poi.get('y', 0) or 0)
+    if not lng or not lat:
+        return _hit(False, error='no coords')
+    wgs = gcj02_to_wgs84(lng, lat)
+    return _hit(True, name=poi.get('name', name), address=poi.get('address', ''),
+                district=poi.get('district', ''), adcode=poi.get('adcode'),
+                match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
+                gcj02={'lng': lng, 'lat': lat}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
+                raw={'x': lng, 'y': lat})
+
+
+def _mercator_to_lnglat(mx, my):
+    lng = mx / 20037508.34 * 180
+    lat = math.atan(math.exp(my / 20037508.34 * math.pi)) * 2 - math.pi / 2
+    return lng, lat * 180 / math.pi
+
+
+def geocode_shop_baidu(name, city, district):
+    kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
+    url = f'https://map.baidu.com/?newmap=1&qt=s&wd={kw}&from=webmap&biz_forward=SG&tn=B_NORMAL'
+    try:
+        text = _http_get_json(url)
+    except Exception as e:
+        return _hit(False, error=f'{e}')
+    if isinstance(text, dict):
+        d = text
+    else:
+        text = str(text)
+        s = text.find('{')
+        if s < 0:
+            return _hit(False, error='no json')
+        depth, e = 0, len(text)
+        for i in range(s, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    e = i + 1
+                    break
+        try:
+            d = json.loads(text[s:e])
+        except Exception:
+            return _hit(False, error='no json')
+    content = (d or {}).get('content') or []
+    if not content:
+        return _hit(False, error='no poi')
+    scored = sorted(((name_similarity(name, p.get('name', '')), p) for p in content), key=lambda t: -t[0])
+    best_s, poi = scored[0]
+    if best_s < NAME_MATCH_WEAK:
+        return _hit(False, error=f'weak name match (best={poi.get("name", "-")} sim={best_s:.2f})',
+                    weak={'name': poi.get('name', ''), 'sim': round(best_s, 2), 'addr': poi.get('addr', '')})
+    poi_dist = poi.get('addr', '') or poi.get('area_name', '')
+    dist_key = _strip_suffix(district)
+    if dist_key and poi_dist and dist_key not in poi_dist:
+        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    mx = float(poi.get('diPointX', 0) or 0) / 100 or float(poi.get('x', 0) or 0)
+    my = float(poi.get('diPointY', 0) or 0) / 100 or float(poi.get('y', 0) or 0)
+    if not mx or not my or not (7e6 < mx < 2e7 and 1e6 < my < 1e7):
+        return _hit(False, error='no coords')
+    lng0, lat0 = _mercator_to_lnglat(mx, my)
+    g_lng, g_lat = bd09_to_gcj02(lng0, lat0)
+    wgs = gcj02_to_wgs84(g_lng, g_lat)
+    return _hit(True, name=poi.get('name', name), address=poi.get('addr', ''),
+                district=poi.get('area_name', ''), adcode=(poi.get('admin_info') or {}).get('area_id'),
+                match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
+                bd09={'lng': lng0, 'lat': lat0}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
+                raw={'x': mx, 'y': my})
+
+
+def geocode_shop_amap(name, city, district):
+    key = os.environ.get('AMAP_WEB_API_KEY') or os.environ.get('AMAP_KEY', '')
+    if not key:
+        return _hit(False, error='no amap key', disabled=True)
+    kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
+    url = f'https://restapi.amap.com/v3/place/text?key={urllib.parse.quote(key)}&keywords={kw}&city={urllib.parse.quote(city or "")}&citylimit=1&offset=20&page=1&output=JSON'
+    try:
+        d = _http_get_json(url)
+    except Exception as e:
+        return _hit(False, error=f'{e}')
+    if str(d.get('status')) != '1':
+        info_code = str(d.get('infocode', ''))
+        return _hit(False, error=d.get('info', 'amap status != 1'), tstatus=info_code, quota=(info_code == '10044'))
+    pois = d.get('pois') or []
+    if not pois:
+        return _hit(False, error='no poi')
+    scored = sorted(((name_similarity(name, p.get('name', '')), p) for p in pois), key=lambda t: -t[0])
+    best_s, poi = scored[0]
+    if best_s < NAME_MATCH_WEAK:
+        return _hit(False, error=f'weak name match (best={poi.get("name", "-")} sim={best_s:.2f})',
+                    weak={'name': poi.get('name', ''), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
+    loc = (poi.get('location') or '').split(',')
+    if len(loc) != 2:
+        return _hit(False, error='no coords')
+    lng, lat = float(loc[0]), float(loc[1])
+    poi_dist = f'{poi.get("address", "")} {poi.get("adname", "")}'
+    dist_key = _strip_suffix(district)
+    if dist_key and poi_dist.strip() and dist_key not in poi_dist:
+        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    wgs = gcj02_to_wgs84(lng, lat)
+    return _hit(True, name=poi.get('name', name), address=poi.get('address', ''),
+                district=poi.get('adname', ''), adcode=poi.get('adcode'),
+                match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
+                gcj02={'lng': lng, 'lat': lat}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
+                raw={'x': lng, 'y': lat})
+
+
+def geocode_shop_tencent(name, city, district):
+    key = os.environ.get('TENCENT_WEB_API_KEY', '')
+    if not key:
+        return _hit(False, error='no tencent key', disabled=True)
+    kw = urllib.parse.quote(f'{name} {_strip_suffix(district or city or "")}')
+    boundary = f'region({city or district or ""},0)'
+    url = f'https://apis.map.qq.com/ws/place/v1/search?key={urllib.parse.quote(key)}&keyword={kw}&boundary={urllib.parse.quote(boundary)}&page_size=20'
+    try:
+        d = _http_get_json(url, referer='https://xp.zaitu.cn')
+    except Exception as e:
+        return _hit(False, error=f'{e}')
+    if d.get('status') != 0:
+        st = d.get('status')
+        return _hit(False, error=d.get('message', f'tencent status {st}'), tstatus=st, quota=(st == 120))
+    data = d.get('data') or []
+    if not data:
+        return _hit(False, error='no poi')
+    scored = sorted(((name_similarity(name, p.get('title') or p.get('name', '')), p) for p in data), key=lambda t: -t[0])
+    best_s, poi = scored[0]
+    if best_s < NAME_MATCH_WEAK:
+        return _hit(False, error=f'weak name match (best={poi.get("title", "-")} sim={best_s:.2f})',
+                    weak={'name': poi.get('title', ''), 'sim': round(best_s, 2), 'addr': poi.get('address', '')})
+    loc = poi.get('location') or {}
+    lng, lat = float(loc.get('lng', 0) or 0), float(loc.get('lat', 0) or 0)
+    if not lng or not lat:
+        return _hit(False, error='no coords')
+    poi_dist = f'{poi.get("address", "")} {poi.get("district", "")}'
+    dist_key = _strip_suffix(district)
+    if dist_key and poi_dist.strip() and dist_key not in poi_dist:
+        return _hit(False, error=f'district mismatch: poi={poi_dist} (want {dist_key})')
+    wgs = gcj02_to_wgs84(lng, lat)
+    return _hit(True, name=poi.get('title') or poi.get('name', name), address=poi.get('address', ''),
+                district=poi.get('district', ''), adcode=(poi.get('ad_info') or {}).get('adcode'),
+                match_sim=round(best_s, 2), match_level='strong' if best_s >= NAME_MATCH_MIN else 'medium',
+                gcj02={'lng': lng, 'lat': lat}, wgs84={'lng': wgs[0], 'lat': wgs[1]},
+                raw={'x': lng, 'y': lat})
+
+
+_ADAPTERS = {
+    '360': geocode_shop_360,
+    'baidu': geocode_shop_baidu,
+    'amap': geocode_shop_amap,
+    'tencent': geocode_shop_tencent,
+}
+
+
+def gps_search(name, city=None, district=None, sources=None, priority='normal', stats_db=None):
+    chain = sources or GPS_ORDER.get(priority) or GPS_ORDER['normal']
+    attempts = []
+    had_fail = False
+    for sid in chain:
+        src = GPS_SOURCES.get(sid)
+        if not src:
+            attempts.append({'source': sid, 'outcome': 'disabled', 'sim': None, 'error': 'unknown source'})
+            had_fail = True
+            continue
+        if not src['available']:
+            attempts.append({'source': sid, 'outcome': 'disabled', 'sim': None, 'error': src['reason'] or 'disabled'})
+            had_fail = True
+            continue
+        r = _ADAPTERS[sid](name, city, district)
+        outcome = 'hit' if r.get('ok') else 'miss'
+        attempts.append({'source': sid, 'outcome': outcome,
+                         'sim': r.get('match_sim'), 'error': r.get('error')})
+        if stats_db:
+            try:
+                record_gps_stat(stats_db, sid, priority, outcome, r.get('match_sim'),
+                                had_fail, name, r.get('error'))
+            except Exception:
+                pass
+        if r.get('ok'):
+            return {'ok': True, 'source': sid, 'coord': r['wgs84'], 'gcj02': r.get('gcj02'),
+                    'matchSim': r.get('match_sim'), 'matchLevel': r.get('match_level'),
+                    'poiName': r.get('name'), 'poiAddr': r.get('address'),
+                    'adcode': r.get('adcode'), 'attempts': attempts, 'raw': r.get('raw')}
+        had_fail = True
+    return {'ok': False, 'source': None, 'coord': None, 'gcj02': None, 'attempts': attempts}
+
+
+def gps_sources_info():
+    return {'sources': [{'id': sid, **meta} for sid, meta in GPS_SOURCES.items()],
+            'order': GPS_ORDER}
+
+
+STATS_DDL = """
+CREATE TABLE IF NOT EXISTS pf_gps_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  priority TEXT,
+  outcome TEXT NOT NULL,
+  sim REAL,
+  fallback INTEGER DEFAULT 0,
+  shop_name TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pf_gps_stats_ts ON pf_gps_stats(ts);
+CREATE INDEX IF NOT EXISTS idx_pf_gps_stats_source ON pf_gps_stats(source);
+"""
+
+
+def _stats_conn(db_path):
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(STATS_DDL)
+    conn.commit()
+    return conn
+
+
+def record_gps_stat(db_path, source, priority, outcome, sim, fallback, shop_name, error=None):
+    conn = _stats_conn(db_path)
+    try:
+        conn.execute(
+            'INSERT INTO pf_gps_stats (ts, source, priority, outcome, sim, fallback, shop_name, error) VALUES (?,?,?,?,?,?,?,?)',
+            (int(time.time()), source, priority, outcome, sim, 1 if fallback else 0, shop_name, error))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def gps_stats(db_path):
+    conn = _stats_conn(db_path)
+    try:
+        per = {}
+        for row in conn.execute(
+                "SELECT source, outcome, COUNT(*) n, SUM(CASE WHEN outcome='hit' THEN 1 ELSE 0 END) hits "
+                'FROM pf_gps_stats GROUP BY source').fetchall():
+            per[row['source']] = {'calls': row['n'], 'hits': row['hits'],
+                                  'hit_rate': round(row['hits'] / row['n'], 4) if row['n'] else 0}
+        f = conn.execute(
+            "SELECT COUNT(*) total, SUM(CASE WHEN fallback=0 AND outcome='hit' THEN 1 ELSE 0 END) first_hit, "
+            'SUM(CASE WHEN fallback=1 THEN 1 ELSE 0 END) fb_attempts, '
+            "SUM(CASE WHEN fallback=1 AND outcome='hit' THEN 1 ELSE 0 END) fb_hit FROM pf_gps_stats").fetchone()
+        total = f['total'] or 0
+        fb_attempts = f['fb_attempts'] or 0
+        return {'per_source': per,
+                'fallback': {'total_calls': total, 'first_source_hit': f['first_hit'] or 0,
+                             'fallback_attempts': fb_attempts, 'fallback_hit': f['fb_hit'] or 0,
+                             'fallback_rate': round(f['fb_hit'] / fb_attempts, 4) if fb_attempts else 0}}
+    finally:
+        conn.close()
